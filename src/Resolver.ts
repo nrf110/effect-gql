@@ -1,5 +1,6 @@
-import { Effect, Runtime } from "effect"
+import { Effect, Runtime, Schema as S } from "effect"
 import type { GraphQLFieldResolver } from "graphql"
+import { ValidationError } from "./Error"
 
 /**
  * Effect-based resolver type
@@ -43,4 +44,27 @@ export const fieldResolver = <Parent, Args, R, E, A>(
   fn: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
 ): EffectResolver<Args, R, E, A> => {
   return (parent, args) => fn(parent as Parent, args)
+}
+
+/**
+ * Create a resolver with automatic argument validation using Effect Schema
+ */
+export const createValidatedResolver = <ArgsSchema extends S.Schema<any, any, any>, R, E, A>(
+  argsSchema: ArgsSchema,
+  fn: (args: S.Schema.Type<ArgsSchema>) => Effect.Effect<A, E, R>
+): EffectResolver<S.Schema.Type<ArgsSchema>, R, E | ValidationError, A> => {
+  return (_parent, args) =>
+    Effect.gen(function* () {
+      // Validate arguments using the schema
+      const validated = yield* S.decodeUnknown(argsSchema)(args).pipe(
+        Effect.mapError(
+          (error) =>
+            new ValidationError({
+              message: `Argument validation failed: ${error.message}`,
+            })
+        )
+      )
+      // Call the resolver with validated arguments
+      return yield* fn(validated)
+    })
 }

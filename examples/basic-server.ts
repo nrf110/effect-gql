@@ -1,5 +1,5 @@
 import { Effect, Layer, Context, Schema as S } from "effect"
-import { GraphQLString, GraphQLInt, GraphQLNonNull } from "graphql"
+import { GraphQLString } from "graphql"
 import { createServer } from "http"
 import {
   createSchemaBuilder,
@@ -8,6 +8,7 @@ import {
   ValidationError,
   NotFoundError,
   toGraphQLObjectType,
+  field,
 } from "../src"
 
 // Define User schema with Effect Schema
@@ -22,6 +23,16 @@ type User = S.Schema.Type<typeof UserSchema>
 
 // Derive GraphQL type from schema
 const UserType = toGraphQLObjectType("User", UserSchema)
+
+// Define argument schemas with validation
+const GetUserArgsSchema = S.Struct({
+  id: S.Number.pipe(S.int(), S.positive()),
+})
+
+const CreateUserArgsSchema = S.Struct({
+  name: S.String.pipe(S.minLength(1), S.maxLength(100)),
+  email: S.String.pipe(S.pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
+})
 
 class UserService extends Context.Tag("UserService")<
   UserService,
@@ -40,16 +51,9 @@ const UserServiceLive = Layer.succeed(UserService, {
     id === 1
       ? Effect.succeed({ id: 1, name: "Alice", email: "alice@example.com" })
       : Effect.fail(new NotFoundError({ message: `User ${id} not found` })),
-  
+
   createUser: (name: string, email: string) =>
-    email.includes("@")
-      ? Effect.succeed({ id: 2, name, email })
-      : Effect.fail(
-          new ValidationError({
-            message: "Invalid email format",
-            field: "email",
-          })
-        ),
+    Effect.succeed({ id: Math.floor(Math.random() * 1000), name, email }),
 })
 
 // Build the schema
@@ -58,38 +62,30 @@ const buildSchema = async () => {
 
   return builder.build({
     query: {
-      user: {
+      user: field({
         type: UserType,
-        args: {
-          id: { type: new GraphQLNonNull(GraphQLInt) },
-        },
-        resolve: resolver(({ id }: { id: number }) =>
+        argsSchema: GetUserArgsSchema,
+        resolve: ({ id }) =>
           Effect.gen(function* () {
             const userService = yield* UserService
             return yield* userService.getUser(id)
-          })
-        ),
-      },
+          }),
+      }),
       hello: {
         type: GraphQLString,
         resolve: resolver(() => Effect.succeed("Hello from Effect GraphQL!")),
       },
     },
     mutation: {
-      createUser: {
+      createUser: field({
         type: UserType,
-        args: {
-          name: { type: new GraphQLNonNull(GraphQLString) },
-          email: { type: new GraphQLNonNull(GraphQLString) },
-        },
-        resolve: resolver(
-          ({ name, email }: { name: string; email: string }) =>
-            Effect.gen(function* () {
-              const userService = yield* UserService
-              return yield* userService.createUser(name, email)
-            })
-        ),
-      },
+        argsSchema: CreateUserArgsSchema,
+        resolve: ({ name, email }) =>
+          Effect.gen(function* () {
+            const userService = yield* UserService
+            return yield* userService.createUser(name, email)
+          }),
+      }),
     },
   })
 }

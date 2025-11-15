@@ -61,13 +61,13 @@ Define your types once with Effect Schema and derive both TypeScript types and G
 
 ```typescript
 import { Schema as S } from "effect"
-import { toGraphQLObjectType } from "effect-graphql"
+import { toGraphQLObjectType, field } from "effect-graphql"
 
-// Define schema
+// Define schema with validation
 const UserSchema = S.Struct({
   id: S.Number,
-  name: S.String,
-  email: S.String,
+  name: S.String.pipe(S.minLength(1), S.maxLength(100)),
+  email: S.String.pipe(S.pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
 })
 
 // Derive TypeScript type
@@ -75,12 +75,31 @@ type User = S.Schema.Type<typeof UserSchema>
 
 // Derive GraphQL type
 const UserType = toGraphQLObjectType("User", UserSchema)
+
+// Define validated arguments
+const CreateUserArgsSchema = S.Struct({
+  name: S.String.pipe(S.minLength(1)),
+  email: S.String.pipe(S.pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
+})
+
+// Use in resolver with automatic validation
+const createUserField = field({
+  type: UserType,
+  argsSchema: CreateUserArgsSchema,
+  resolve: ({ name, email }) => 
+    Effect.gen(function* () {
+      // Arguments are already validated!
+      const service = yield* UserService
+      return yield* service.createUser(name, email)
+    })
+})
 ```
 
 This approach gives you:
 - Single source of truth for your data models
-- Automatic validation with Effect Schema
+- Automatic argument validation before resolver execution
 - Type safety across your entire stack
+- Rich validation rules (patterns, ranges, custom validators)
 - No manual GraphQL type definitions
 
 ### Effect Resolvers
@@ -144,13 +163,48 @@ The framework consists of:
 - **Server Adapters**: HTTP handlers for Node.js and Bun
 - **Context Management**: Request-scoped context with Effect layers
 
-## Example
+### Relational Fields
 
-See `examples/basic-server.ts` for a complete working example with:
-- Service definitions
-- Query and mutation resolvers
-- Error handling
-- HTTP server setup
+Use `objectType()` to create types with computed/relational fields that have their own resolvers:
+
+```typescript
+import { objectType } from "effect-graphql"
+
+// Create User type with a relational orders field
+const UserTypeBuilder = objectType<User, AppLayer>("User", UserSchema)
+  .field("orders", {
+    type: new GraphQLList(OrderType),
+    argsSchema: S.Struct({
+      startDate: S.optional(S.String),
+      endDate: S.optional(S.String),
+    }),
+    resolve: (parent, args) =>
+      Effect.gen(function* () {
+        const orderService = yield* OrderService
+        return yield* orderService.getOrdersForUser(
+          parent.id,
+          args.startDate,
+          args.endDate
+        )
+      })
+  })
+
+// Register with schema builder to get runtime
+builder.registerObjectType(UserTypeBuilder)
+const UserType = UserTypeBuilder.build()
+```
+
+This enables:
+- Field-level resolvers with access to parent object
+- Arguments on nested fields (e.g., filtering, pagination)
+- Full Effect integration with services and error handling
+- Type-safe parent and argument types
+
+## Examples
+
+- `examples/basic-server.ts` - Basic queries and mutations with validation
+- `examples/schema-validation.ts` - Advanced validation with Effect Schema
+- `examples/relational-fields.ts` - Relational fields with arguments (User → Orders)
 
 ## License
 

@@ -1,5 +1,5 @@
 import { Effect, Layer, Context, Schema as S } from "effect"
-import { GraphQLString, GraphQLInt, GraphQLNonNull } from "graphql"
+import { GraphQLString } from "graphql"
 import { createServer } from "http"
 import {
   createSchemaBuilder,
@@ -7,6 +7,7 @@ import {
   createHttpHandler,
   ValidationError,
   toGraphQLObjectType,
+  field,
 } from "../src"
 
 // Define schemas with validation
@@ -27,6 +28,13 @@ type User = S.Schema.Type<typeof UserSchema>
 // Derive GraphQL type
 const UserType = toGraphQLObjectType("User", UserSchema)
 
+// Define argument schema with validation
+const CreateUserArgsSchema = S.Struct({
+  name: S.String.pipe(S.minLength(1), S.maxLength(100)),
+  email: EmailSchema,
+  age: S.optional(S.Number.pipe(S.int(), S.greaterThanOrEqualTo(0), S.lessThanOrEqualTo(150))),
+})
+
 // Service
 class UserService extends Context.Tag("UserService")<
   UserService,
@@ -42,19 +50,19 @@ class UserService extends Context.Tag("UserService")<
 const UserServiceLive = Layer.succeed(UserService, {
   createUser: (input) =>
     Effect.gen(function* () {
-      // Validate input using Effect Schema
-      const validated = yield* S.decodeUnknown(UserSchema)({
+      // Validate the complete user object with the schema
+      const user = yield* S.decodeUnknown(UserSchema)({
         id: Math.floor(Math.random() * 1000),
         ...input,
       }).pipe(
         Effect.mapError(
           (error) =>
             new ValidationError({
-              message: `Validation failed: ${error.message}`,
+              message: `User validation failed: ${error.message}`,
             })
         )
       )
-      return validated
+      return user
     }),
 })
 
@@ -72,21 +80,16 @@ const buildSchema = async () => {
       },
     },
     mutation: {
-      createUser: {
+      createUser: field({
         type: UserType,
-        args: {
-          name: { type: new GraphQLNonNull(GraphQLString) },
-          email: { type: new GraphQLNonNull(GraphQLString) },
-          age: { type: GraphQLInt },
-        },
-        resolve: resolver(
-          (args: { name: string; email: string; age?: number }) =>
-            Effect.gen(function* () {
-              const userService = yield* UserService
-              return yield* userService.createUser(args)
-            })
-        ),
-      },
+        argsSchema: CreateUserArgsSchema,
+        description: "Create a new user with validated input",
+        resolve: ({ name, email, age }) =>
+          Effect.gen(function* () {
+            const userService = yield* UserService
+            return yield* userService.createUser({ name, email, age })
+          }),
+      }),
     },
   })
 }
