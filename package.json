@@ -1,0 +1,30 @@
+{
+  "name": "effect-graphql",
+  "version": "0.1.0",
+  "description": "A GraphQL framework for Effect-TS with full type safety and composability",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest --run"
+  },
+  "keywords": [
+    "effect",
+    "graphql",
+    "typescript",
+    "functional-programming"
+  ],
+  "peerDependencies": {
+    "effect": "^3.0.0",
+    "graphql": "^16.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "effect": "^3.0.0",
+    "graphql": "^16.0.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {},
+  "license": "MIT"
+}
