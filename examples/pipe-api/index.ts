@@ -1,4 +1,4 @@
-import { Effect, Layer, pipe } from "effect"
+import { Effect, Layer } from "effect"
 import { GraphQLSchemaBuilder, execute, compose } from "../../src/builder"
 import { userType, userQueries, userMutations } from "./user-schema"
 import { postType } from "./post-schema"
@@ -15,9 +15,7 @@ import { DatabaseServiceLive, LoggerServiceLive } from "./services"
 // Assemble Schema Using Pipe
 // ============================================================================
 
-const builder = pipe(
-  GraphQLSchemaBuilder.empty,
-
+const builder = GraphQLSchemaBuilder.empty.pipe(
   // Add types (from separate files)
   userType,
   postType,

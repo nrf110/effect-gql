@@ -1,6 +1,6 @@
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchemaBuilder, execute } from "../src/service/builder"
+import { GraphQLSchemaBuilder, execute } from "../src/builder"
 
 /**
  * Example: Colocated Fields

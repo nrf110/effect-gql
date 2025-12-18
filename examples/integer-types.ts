@@ -1,4 +1,4 @@
-import { Effect, Layer, pipe } from "effect"
+import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
 import { GraphQLSchemaBuilder, execute, objectType, query } from "../src/builder"
 import { printSchema } from "graphql"
@@ -37,9 +37,7 @@ const products: Product[] = [
 ]
 
 // Build schema
-const builder = pipe(
-  GraphQLSchemaBuilder.empty,
-
+const builder = GraphQLSchemaBuilder.empty.pipe(
   objectType("Product", ProductSchema),
   objectType("Stats", StatsSchema),
 

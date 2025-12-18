@@ -1,4 +1,4 @@
-import { Effect, Layer, Runtime } from "effect"
+import { Effect, Layer, Runtime, Pipeable } from "effect"
 import * as S from "effect/Schema"
 import { GraphQLSchema, GraphQLObjectType, GraphQLFieldConfigMap, GraphQLFieldConfig, GraphQLList, graphql } from "graphql"
 import { toGraphQLType, toGraphQLArgs } from "./schema-mapping"
@@ -50,13 +50,29 @@ export interface GraphQLEffectContext<R> {
  * - Dynamic service provision
  * - Better testing (mock different services per request)
  */
-export class GraphQLSchemaBuilder<R = never> {
+export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   private constructor(
     private readonly types: Map<string, TypeRegistration>,
     private readonly queries: Map<string, FieldRegistration>,
     private readonly mutations: Map<string, FieldRegistration>,
     private readonly objectFields: Map<string, Map<string, ObjectFieldRegistration>>
   ) {}
+
+  /**
+   * Pipeable interface implementation - enables fluent .pipe() syntax
+   */
+  pipe<A>(this: A): A
+  pipe<A, B>(this: A, ab: (a: A) => B): B
+  pipe<A, B, C>(this: A, ab: (a: A) => B, bc: (b: B) => C): C
+  pipe<A, B, C, D>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D): D
+  pipe<A, B, C, D, E>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E): E
+  pipe<A, B, C, D, E, F>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E, ef: (e: E) => F): F
+  pipe<A, B, C, D, E, F, G>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E, ef: (e: E) => F, fg: (f: F) => G): G
+  pipe<A, B, C, D, E, F, G, H>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E, ef: (e: E) => F, fg: (f: F) => G, gh: (g: G) => H): H
+  pipe<A, B, C, D, E, F, G, H, I>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E, ef: (e: E) => F, fg: (f: F) => G, gh: (g: G) => H, hi: (h: H) => I): I
+  pipe() {
+    return Pipeable.pipeArguments(this, arguments)
+  }
 
   /**
    * Create an empty schema builder

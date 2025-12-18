@@ -53,8 +53,7 @@ export const postType = objectType("Post", PostSchema, {
 
 **index.ts**:
 ```typescript
-const builder = pipe(
-  GraphQLSchemaBuilder.empty,
+const builder = GraphQLSchemaBuilder.empty.pipe(
   userType,
   postType,
   compose(...userQueries),    // Use compose for arrays
@@ -66,14 +65,12 @@ const schema = builder.buildSchema()
 
 **Note**: Use the `compose` helper to combine multiple operations from an array. This is needed because TypeScript can't properly type-check spread arguments in `pipe`.
 
-## Comparison with Method Chaining
+## Usage
 
-Both APIs are supported:
+`GraphQLSchemaBuilder` implements the Effect `Pipeable` interface, so you can use the fluent `.pipe()` syntax:
 
-**Pipe-based** (recommended for large schemas):
 ```typescript
-pipe(
-  GraphQLSchemaBuilder.empty,
+GraphQLSchemaBuilder.empty.pipe(
   objectType("User", UserSchema, { /* fields */ }),
   objectType("Post", PostSchema),
   query("user", { /* ... */ }),
@@ -81,7 +78,7 @@ pipe(
 )
 ```
 
-**Method chaining** (fine for small schemas):
+You can also use method chaining directly:
 ```typescript
 GraphQLSchemaBuilder.empty
   .objectType("User", UserSchema, { /* fields */ })
