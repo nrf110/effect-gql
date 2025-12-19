@@ -1,7 +1,10 @@
 import { Effect, Layer, Runtime, Pipeable } from "effect"
 import * as S from "effect/Schema"
 import * as AST from "effect/SchemaAST"
-import { GraphQLSchema, GraphQLObjectType, GraphQLInterfaceType, GraphQLEnumType, GraphQLUnionType, GraphQLInputObjectType, GraphQLFieldConfigMap, GraphQLFieldConfig, GraphQLInputFieldConfigMap, GraphQLList, GraphQLNonNull, graphql } from "graphql"
+import { GraphQLSchema, GraphQLObjectType, GraphQLInterfaceType, GraphQLEnumType, GraphQLUnionType, GraphQLInputObjectType, GraphQLFieldConfigMap, GraphQLFieldConfig, GraphQLInputFieldConfigMap, GraphQLList, GraphQLNonNull, GraphQLDirective, DirectiveLocation, graphql } from "graphql"
+
+// Re-export DirectiveLocation for convenience
+export { DirectiveLocation } from "graphql"
 import { toGraphQLType, toGraphQLArgs, toGraphQLInputType } from "./schema-mapping"
 
 /**
@@ -42,6 +45,7 @@ interface FieldRegistration<Args = any, A = any, E = any, R = any> {
   type: S.Schema<A, any, any>
   args?: S.Schema<Args, any, any>
   description?: string
+  directives?: readonly DirectiveApplication[]
   resolve: (args: Args) => Effect.Effect<A, E, R>
 }
 
@@ -52,6 +56,7 @@ interface TypeRegistration {
   name: string
   schema: S.Schema<any, any, any>
   implements?: readonly string[]
+  directives?: readonly DirectiveApplication[]
 }
 
 /**
@@ -91,12 +96,36 @@ interface InputTypeRegistration {
 }
 
 /**
+ * A reference to a directive applied to a type, field, or argument
+ */
+export interface DirectiveApplication {
+  readonly name: string
+  readonly args?: Record<string, unknown>
+}
+
+/**
+ * Configuration for a directive definition
+ */
+interface DirectiveRegistration<Args = any, R = never> {
+  name: string
+  description?: string
+  locations: readonly DirectiveLocation[]
+  args?: S.Schema<Args, any, any>
+  /**
+   * For executable directives - transforms the resolver Effect.
+   * Called with directive args, returns an Effect transformer.
+   */
+  apply?: (args: Args) => <A, E, R2>(effect: Effect.Effect<A, E, R2>) => Effect.Effect<A, E, R | R2>
+}
+
+/**
  * Configuration for a field on an object type
  */
 interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = any, R = any> {
   type: S.Schema<A, any, any>
   args?: S.Schema<Args, any, any>
   description?: string
+  directives?: readonly DirectiveApplication[]
   resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
 }
 
@@ -126,6 +155,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     private readonly enums: Map<string, EnumRegistration>,
     private readonly unions: Map<string, UnionRegistration>,
     private readonly inputs: Map<string, InputTypeRegistration>,
+    private readonly directives: Map<string, DirectiveRegistration>,
     private readonly queries: Map<string, FieldRegistration>,
     private readonly mutations: Map<string, FieldRegistration>,
     private readonly objectFields: Map<string, Map<string, ObjectFieldRegistration>>
@@ -158,6 +188,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     new Map(),
     new Map(),
     new Map(),
+    new Map(),
     new Map()
   )
 
@@ -170,6 +201,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       type: S.Schema<A, any, any>
       args?: S.Schema<Args, any, any>
       description?: string
+      directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
   ): GraphQLSchemaBuilder<R | R2> {
@@ -181,6 +213,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.enums,
       this.unions,
       this.inputs,
+      this.directives,
       newQueries,
       this.mutations,
       this.objectFields
@@ -196,6 +229,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       type: S.Schema<A, any, any>
       args?: S.Schema<Args, any, any>
       description?: string
+      directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
   ): GraphQLSchemaBuilder<R | R2> {
@@ -207,6 +241,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.enums,
       this.unions,
       this.inputs,
+      this.directives,
       this.queries,
       newMutations,
       this.objectFields
@@ -220,26 +255,29 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    * @param config.name - The GraphQL type name (optional if schema is TaggedStruct, TaggedClass, or Schema.Class)
    * @param config.schema - The Effect Schema for this type
    * @param config.implements - Optional array of interface names this type implements
+   * @param config.directives - Optional array of directives applied to this type
    * @param config.fields - Optional additional/computed fields for this type
    */
   objectType<A, R2 = never>(config: {
     name?: string
     schema: S.Schema<A, any, any>
     implements?: readonly string[]
+    directives?: readonly DirectiveApplication[]
     fields?: Record<string, {
       type: S.Schema<any, any, any>
       args?: S.Schema<any, any, any>
       description?: string
+      directives?: readonly DirectiveApplication[]
       resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
     }>
   }): GraphQLSchemaBuilder<R | R2> {
-    const { schema, implements: implementsInterfaces, fields } = config
+    const { schema, implements: implementsInterfaces, directives, fields } = config
     const name = config.name ?? getSchemaName(schema)
     if (!name) {
       throw new Error("objectType requires a name. Either provide one explicitly or use a TaggedStruct/TaggedClass/Schema.Class")
     }
     const newTypes = new Map(this.types)
-    newTypes.set(name, { name, schema, implements: implementsInterfaces })
+    newTypes.set(name, { name, schema, implements: implementsInterfaces, directives })
 
     // If fields are provided, add them
     let newObjectFields = this.objectFields
@@ -260,6 +298,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.enums,
       this.unions,
       this.inputs,
+      this.directives,
       this.queries,
       this.mutations,
       newObjectFields
@@ -297,6 +336,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.enums,
       this.unions,
       this.inputs,
+      this.directives,
       this.queries,
       this.mutations,
       this.objectFields
@@ -326,6 +366,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       newEnums,
       this.unions,
       this.inputs,
+      this.directives,
       this.queries,
       this.mutations,
       this.objectFields
@@ -359,6 +400,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.enums,
       newUnions,
       this.inputs,
+      this.directives,
       this.queries,
       this.mutations,
       this.objectFields
@@ -392,10 +434,44 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.enums,
       this.unions,
       newInputs,
+      this.directives,
       this.queries,
       this.mutations,
       this.objectFields
     )
+  }
+
+  /**
+   * Register a directive
+   *
+   * @param config - Directive configuration
+   * @param config.name - The directive name (without @)
+   * @param config.description - Optional description
+   * @param config.locations - Array of DirectiveLocation values where this directive can be applied
+   * @param config.args - Optional Effect Schema for directive arguments
+   * @param config.apply - Optional function to transform resolver Effects (for executable directives)
+   */
+  directive<Args = void, R2 = never>(config: {
+    name: string
+    description?: string
+    locations: readonly DirectiveLocation[]
+    args?: S.Schema<Args, any, any>
+    apply?: (args: Args) => <A, E, R3>(effect: Effect.Effect<A, E, R3>) => Effect.Effect<A, E, R2 | R3>
+  }): GraphQLSchemaBuilder<R | R2> {
+    const newDirectives = new Map(this.directives)
+    newDirectives.set(config.name, config as DirectiveRegistration)
+
+    return new GraphQLSchemaBuilder(
+      this.types,
+      this.interfaces,
+      this.enums,
+      this.unions,
+      this.inputs,
+      newDirectives,
+      this.queries,
+      this.mutations,
+      this.objectFields
+    ) as any
   }
 
   /**
@@ -408,6 +484,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       type: S.Schema<A, any, any>
       args?: S.Schema<Args, any, any>
       description?: string
+      directives?: readonly DirectiveApplication[]
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>
     }
   ): GraphQLSchemaBuilder<R | R2> {
@@ -422,6 +499,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.enums,
       this.unions,
       this.inputs,
+      this.directives,
       this.queries,
       this.mutations,
       newObjectFields
@@ -435,6 +513,21 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    * Use the `execute` function to run queries with a service layer.
    */
   buildSchema(): GraphQLSchema {
+    // STEP 0: Build directive registry first
+    const directiveRegistry: Map<string, GraphQLDirective> = new Map()
+
+    for (const [directiveName, directiveReg] of this.directives) {
+      const graphqlDirective = new GraphQLDirective({
+        name: directiveName,
+        description: directiveReg.description,
+        locations: [...directiveReg.locations],
+        args: directiveReg.args
+          ? this.toGraphQLArgsWithRegistry(directiveReg.args, new Map(), new Map())
+          : undefined,
+      })
+      directiveRegistry.set(directiveName, graphqlDirective)
+    }
+
     // STEP 1: Build enum registry first (can be used anywhere)
     const enumRegistry: Map<string, GraphQLEnumType> = new Map()
 
@@ -541,7 +634,10 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
         ...Array.from(interfaceRegistry.values()),
         ...Array.from(typeRegistry.values()),
         ...Array.from(unionRegistry.values()),
-      ]
+      ],
+      directives: directiveRegistry.size > 0
+        ? [...Array.from(directiveRegistry.values())]
+        : undefined,
     }
 
     if (Object.keys(queryFields).length > 0) {
@@ -575,7 +671,18 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     const fieldConfig: GraphQLFieldConfig<any, any> = {
       type: this.toGraphQLTypeWithRegistry(config.type, typeRegistry, interfaceRegistry, enumRegistry, unionRegistry),
       resolve: async (_parent, args, context: GraphQLEffectContext<any>) => {
-        const effect = config.resolve(args)
+        let effect = config.resolve(args)
+
+        // Apply directives in order (first directive wraps outermost)
+        if (config.directives) {
+          for (const directiveApp of config.directives) {
+            const directiveReg = this.directives.get(directiveApp.name)
+            if (directiveReg?.apply) {
+              effect = directiveReg.apply(directiveApp.args ?? {})(effect)
+            }
+          }
+        }
+
         return await Runtime.runPromise(context.runtime)(effect)
       }
     }
@@ -602,7 +709,18 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     const fieldConfig: GraphQLFieldConfig<any, any> = {
       type: this.toGraphQLTypeWithRegistry(config.type, typeRegistry, interfaceRegistry, enumRegistry, unionRegistry),
       resolve: async (parent, args, context: GraphQLEffectContext<any>) => {
-        const effect = config.resolve(parent, args)
+        let effect = config.resolve(parent, args)
+
+        // Apply directives in order (first directive wraps outermost)
+        if (config.directives) {
+          for (const directiveApp of config.directives) {
+            const directiveReg = this.directives.get(directiveApp.name)
+            if (directiveReg?.apply) {
+              effect = directiveReg.apply(directiveApp.args ?? {})(effect)
+            }
+          }
+        }
+
         return await Runtime.runPromise(context.runtime)(effect)
       }
     }
@@ -951,10 +1069,12 @@ export const objectType = <A, R2 = never>(config: {
   name?: string
   schema: S.Schema<A, any, any>
   implements?: readonly string[]
+  directives?: readonly DirectiveApplication[]
   fields?: Record<string, {
     type: S.Schema<any, any, any>
     args?: S.Schema<any, any, any>
     description?: string
+    directives?: readonly DirectiveApplication[]
     resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
   }>
 }) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
@@ -1003,6 +1123,25 @@ export const inputType = (config: {
   builder.inputType(config)
 
 /**
+ * Register a directive (pipe-able)
+ *
+ * @param config - Directive configuration
+ * @param config.name - The directive name (without @)
+ * @param config.description - Optional description
+ * @param config.locations - Array of DirectiveLocation values where this directive can be applied
+ * @param config.args - Optional Effect Schema for directive arguments
+ * @param config.apply - Optional function to transform resolver Effects (for executable directives)
+ */
+export const directive = <Args = void, R2 = never>(config: {
+  name: string
+  description?: string
+  locations: readonly DirectiveLocation[]
+  args?: S.Schema<Args, any, any>
+  apply?: (args: Args) => <A, E, R3>(effect: Effect.Effect<A, E, R3>) => Effect.Effect<A, E, R2 | R3>
+}) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
+  builder.directive(config)
+
+/**
  * Add a query field to the schema builder (pipe-able)
  */
 export const query = <A, E, R2, Args = void>(
@@ -1011,6 +1150,7 @@ export const query = <A, E, R2, Args = void>(
     type: S.Schema<A, any, any>
     args?: S.Schema<Args, any, any>
     description?: string
+    directives?: readonly DirectiveApplication[]
     resolve: (args: Args) => Effect.Effect<A, E, R2>
   }
 ) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
@@ -1025,6 +1165,7 @@ export const mutation = <A, E, R2, Args = void>(
     type: S.Schema<A, any, any>
     args?: S.Schema<Args, any, any>
     description?: string
+    directives?: readonly DirectiveApplication[]
     resolve: (args: Args) => Effect.Effect<A, E, R2>
   }
 ) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
@@ -1040,6 +1181,7 @@ export const field = <Parent, A, E, R2, Args = void>(
     type: S.Schema<A, any, any>
     args?: S.Schema<Args, any, any>
     description?: string
+    directives?: readonly DirectiveApplication[]
     resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>
   }
 ) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
