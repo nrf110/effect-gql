@@ -1,4 +1,4 @@
-import { Effect, Layer, Runtime, Pipeable } from "effect"
+import { Effect, Layer, Runtime, Pipeable, Stream, Queue, Fiber, Option, Chunk } from "effect"
 import * as S from "effect/Schema"
 import * as AST from "effect/SchemaAST"
 import { GraphQLSchema, GraphQLObjectType, GraphQLInterfaceType, GraphQLEnumType, GraphQLUnionType, GraphQLInputObjectType, GraphQLFieldConfigMap, GraphQLFieldConfig, GraphQLInputFieldConfigMap, GraphQLList, GraphQLNonNull, GraphQLDirective, DirectiveLocation, graphql } from "graphql"
@@ -119,6 +119,27 @@ interface DirectiveRegistration<Args = any, R = never> {
 }
 
 /**
+ * Configuration for a subscription field
+ * Returns a Stream that yields values over time
+ */
+interface SubscriptionFieldRegistration<Args = any, A = any, E = any, R = any> {
+  type: S.Schema<A, any, any>
+  args?: S.Schema<Args, any, any>
+  description?: string
+  directives?: readonly DirectiveApplication[]
+  /**
+   * Subscribe function returns an Effect that produces a Stream.
+   * The Stream yields values that are passed to the resolve function.
+   */
+  subscribe: (args: Args) => Effect.Effect<Stream.Stream<A, E, R>, E, R>
+  /**
+   * Optional resolve function to transform each yielded value.
+   * If not provided, yields values directly.
+   */
+  resolve?: (value: A, args: Args) => Effect.Effect<A, E, R>
+}
+
+/**
  * Configuration for a field on an object type
  */
 interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = any, R = any> {
@@ -158,6 +179,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     private readonly directives: Map<string, DirectiveRegistration>,
     private readonly queries: Map<string, FieldRegistration>,
     private readonly mutations: Map<string, FieldRegistration>,
+    private readonly subscriptions: Map<string, SubscriptionFieldRegistration>,
     private readonly objectFields: Map<string, Map<string, ObjectFieldRegistration>>
   ) {}
 
@@ -181,6 +203,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    * Create an empty schema builder
    */
   static readonly empty = new GraphQLSchemaBuilder<never>(
+    new Map(),
     new Map(),
     new Map(),
     new Map(),
@@ -216,6 +239,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.directives,
       newQueries,
       this.mutations,
+      this.subscriptions,
       this.objectFields
     ) as any
   }
@@ -244,6 +268,59 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.directives,
       this.queries,
       newMutations,
+      this.subscriptions,
+      this.objectFields
+    ) as any
+  }
+
+  /**
+   * Add a subscription field
+   *
+   * Subscriptions return a Stream that yields values over time.
+   * The subscribe function returns an Effect that produces a Stream.
+   *
+   * @example
+   * ```typescript
+   * builder.subscription("userCreated", {
+   *   type: User,
+   *   subscribe: Effect.gen(function*() {
+   *     const pubsub = yield* PubSubService
+   *     return pubsub.subscribe("USER_CREATED")
+   *   }),
+   * })
+   * ```
+   */
+  subscription<A, E, R2, Args = void>(
+    name: string,
+    config: {
+      type: S.Schema<A, any, any>
+      args?: S.Schema<Args, any, any>
+      description?: string
+      directives?: readonly DirectiveApplication[]
+      /**
+       * Subscribe function returns an Effect that produces a Stream.
+       * The Stream yields values that are passed to the resolve function.
+       */
+      subscribe: (args: Args) => Effect.Effect<Stream.Stream<A, E, R2>, E, R2>
+      /**
+       * Optional resolve function to transform each yielded value.
+       * If not provided, yields values directly.
+       */
+      resolve?: (value: A, args: Args) => Effect.Effect<A, E, R2>
+    }
+  ): GraphQLSchemaBuilder<R | R2> {
+    const newSubscriptions = new Map(this.subscriptions)
+    newSubscriptions.set(name, config)
+    return new GraphQLSchemaBuilder(
+      this.types,
+      this.interfaces,
+      this.enums,
+      this.unions,
+      this.inputs,
+      this.directives,
+      this.queries,
+      this.mutations,
+      newSubscriptions,
       this.objectFields
     ) as any
   }
@@ -301,6 +378,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.directives,
       this.queries,
       this.mutations,
+      this.subscriptions,
       newObjectFields
     ) as any
   }
@@ -339,6 +417,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.directives,
       this.queries,
       this.mutations,
+      this.subscriptions,
       this.objectFields
     )
   }
@@ -369,6 +448,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.directives,
       this.queries,
       this.mutations,
+      this.subscriptions,
       this.objectFields
     )
   }
@@ -403,6 +483,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.directives,
       this.queries,
       this.mutations,
+      this.subscriptions,
       this.objectFields
     )
   }
@@ -437,6 +518,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.directives,
       this.queries,
       this.mutations,
+      this.subscriptions,
       this.objectFields
     )
   }
@@ -470,6 +552,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       newDirectives,
       this.queries,
       this.mutations,
+      this.subscriptions,
       this.objectFields
     ) as any
   }
@@ -502,6 +585,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       this.directives,
       this.queries,
       this.mutations,
+      this.subscriptions,
       newObjectFields
     ) as any
   }
@@ -615,7 +699,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       unionRegistry.set(unionName, unionType)
     }
 
-    // STEP 6: Build query and mutation fields
+    // STEP 6: Build query, mutation, and subscription fields
     const queryFields: GraphQLFieldConfigMap<any, any> = {}
     for (const [name, config] of this.queries) {
       queryFields[name] = this.buildField(config, typeRegistry, interfaceRegistry, enumRegistry, unionRegistry, inputRegistry)
@@ -624,6 +708,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     const mutationFields: GraphQLFieldConfigMap<any, any> = {}
     for (const [name, config] of this.mutations) {
       mutationFields[name] = this.buildField(config, typeRegistry, interfaceRegistry, enumRegistry, unionRegistry, inputRegistry)
+    }
+
+    const subscriptionFields: GraphQLFieldConfigMap<any, any> = {}
+    for (const [name, config] of this.subscriptions) {
+      subscriptionFields[name] = this.buildSubscriptionField(config, typeRegistry, interfaceRegistry, enumRegistry, unionRegistry, inputRegistry)
     }
 
     // STEP 7: Build schema
@@ -651,6 +740,13 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       schemaConfig.mutation = new GraphQLObjectType({
         name: "Mutation",
         fields: mutationFields
+      })
+    }
+
+    if (Object.keys(subscriptionFields).length > 0) {
+      schemaConfig.subscription = new GraphQLObjectType({
+        name: "Subscription",
+        fields: subscriptionFields
       })
     }
 
@@ -686,6 +782,127 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
         return await Runtime.runPromise(context.runtime)(effect)
       }
     }
+    if (config.args) {
+      fieldConfig.args = this.toGraphQLArgsWithRegistry(config.args, enumRegistry, inputRegistry)
+    }
+    if (config.description) {
+      fieldConfig.description = config.description
+    }
+    return fieldConfig
+  }
+
+  /**
+   * Build a GraphQL subscription field config.
+   *
+   * Subscriptions in GraphQL have a special structure:
+   * - `subscribe` returns an AsyncIterator that yields the "root value" for each event
+   * - `resolve` transforms each yielded value into the final result
+   *
+   * We convert Effect's Stream to an AsyncIterator using a Queue-based approach.
+   */
+  private buildSubscriptionField(
+    config: SubscriptionFieldRegistration,
+    typeRegistry: Map<string, GraphQLObjectType>,
+    interfaceRegistry: Map<string, GraphQLInterfaceType>,
+    enumRegistry: Map<string, GraphQLEnumType>,
+    unionRegistry: Map<string, GraphQLUnionType>,
+    inputRegistry: Map<string, GraphQLInputObjectType>
+  ): GraphQLFieldConfig<any, any> {
+    const directivesRef = this.directives
+
+    const fieldConfig: GraphQLFieldConfig<any, any> = {
+      type: this.toGraphQLTypeWithRegistry(config.type, typeRegistry, interfaceRegistry, enumRegistry, unionRegistry),
+
+      // The subscribe function returns an AsyncIterator
+      subscribe: async (_parent, args, context: GraphQLEffectContext<any>) => {
+        // Get the Stream from the subscribe Effect
+        let subscribeEffect = config.subscribe(args)
+
+        // Apply directives to the subscribe effect
+        if (config.directives) {
+          for (const directiveApp of config.directives) {
+            const directiveReg = directivesRef.get(directiveApp.name)
+            if (directiveReg?.apply) {
+              subscribeEffect = directiveReg.apply(directiveApp.args ?? {})(subscribeEffect) as any
+            }
+          }
+        }
+
+        const stream = await Runtime.runPromise(context.runtime)(subscribeEffect)
+
+        // Use a Queue to bridge between Effect Stream and AsyncIterator
+        // Create the queue first
+        const queue = await Runtime.runPromise(context.runtime)(
+          Queue.unbounded<Option.Option<any>>()
+        )
+
+        // Fork a fiber to run the stream and push values to the queue
+        // Use Runtime.runFork to ensure proper execution context
+        const fiber = Runtime.runFork(context.runtime)(
+          Effect.ensuring(
+            Stream.runForEach(stream, (value) => Queue.offer(queue, Option.some(value))),
+            // Signal completion by pushing None
+            Queue.offer(queue, Option.none())
+          )
+        )
+
+        // Track if we're done
+        let done = false
+
+        // Return an AsyncIterator that takes from the queue
+        return {
+          [Symbol.asyncIterator]() { return this },
+          async next(): Promise<IteratorResult<any>> {
+            if (done) {
+              return { done: true, value: undefined }
+            }
+
+            try {
+              const optionValue = await Runtime.runPromise(context.runtime)(
+                Queue.take(queue)
+              )
+
+              if (Option.isNone(optionValue)) {
+                done = true
+                return { done: true, value: undefined }
+              }
+
+              return { done: false, value: optionValue.value }
+            } catch (error) {
+              done = true
+              throw error
+            }
+          },
+          async return(): Promise<IteratorResult<any>> {
+            // Cleanup - interrupt the fiber and shutdown the queue
+            done = true
+            try {
+              // Interrupt the fiber (fiber is a RuntimeFiber from Runtime.runFork)
+              await Runtime.runPromise(context.runtime)(
+                Fiber.interrupt(fiber as unknown as Fiber.Fiber<any, any>)
+              )
+              await Runtime.runPromise(context.runtime)(
+                Queue.shutdown(queue)
+              )
+            } catch {
+              // Ignore cleanup errors
+            }
+            return { done: true, value: undefined }
+          },
+        }
+      },
+
+      // The resolve function transforms each yielded value
+      // If no custom resolve is provided, return the payload directly
+      // (GraphQL's default resolver would look for a property matching the field name)
+      resolve: config.resolve
+        ? async (value, args, context: GraphQLEffectContext<any>) => {
+            const effect = config.resolve!(value, args)
+            return await Runtime.runPromise(context.runtime)(effect)
+          }
+        : (value) => value,
+    }
+
     if (config.args) {
       fieldConfig.args = this.toGraphQLArgsWithRegistry(config.args, enumRegistry, inputRegistry)
     }
@@ -1175,6 +1392,37 @@ export const mutation = <A, E, R2, Args = void>(
   }
 ) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
   builder.mutation(name, config)
+
+/**
+ * Add a subscription field to the schema builder (pipe-able)
+ *
+ * Subscriptions return a Stream that yields values over time.
+ *
+ * @example
+ * ```typescript
+ * GraphQLSchemaBuilder.empty.pipe(
+ *   subscription("userCreated", {
+ *     type: User,
+ *     subscribe: Effect.gen(function*() {
+ *       const pubsub = yield* PubSubService
+ *       return pubsub.subscribe("USER_CREATED")
+ *     }),
+ *   })
+ * )
+ * ```
+ */
+export const subscription = <A, E, R2, Args = void>(
+  name: string,
+  config: {
+    type: S.Schema<A, any, any>
+    args?: S.Schema<Args, any, any>
+    description?: string
+    directives?: readonly DirectiveApplication[]
+    subscribe: (args: Args) => Effect.Effect<Stream.Stream<A, E, R2>, E, R2>
+    resolve?: (value: A, args: Args) => Effect.Effect<A, E, R2>
+  }
+) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
+  builder.subscription(name, config)
 
 /**
  * Add a field to an existing object type (pipe-able)
