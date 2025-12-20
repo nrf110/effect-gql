@@ -1,10 +1,5 @@
 import { Effect, Runtime, Stream, Queue, Fiber, Option } from "effect"
 import {
-  GraphQLObjectType,
-  GraphQLInterfaceType,
-  GraphQLEnumType,
-  GraphQLUnionType,
-  GraphQLInputObjectType,
   GraphQLFieldConfig,
 } from "graphql"
 import type {
