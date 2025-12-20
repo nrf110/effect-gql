@@ -1,0 +1,321 @@
+---
+title: Schema Builder
+description: Build GraphQL schemas with the fluent, type-safe builder API
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The `GraphQLSchemaBuilder` is the core API for constructing GraphQL schemas in Effect GraphQL. It provides an immutable, pipeable interface that accumulates type information as you build.
+
+## Getting Started
+
+```typescript
+import { GraphQLSchemaBuilder } from "effect-graphql"
+
+// Start with an empty builder
+const builder = GraphQLSchemaBuilder.empty
+
+// Build your schema
+const schema = builder
+  .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+  .buildSchema()
+```
+
+## Immutability
+
+Every method returns a **new builder instance**. This enables safe composition:
+
+```typescript
+const base = GraphQLSchemaBuilder.empty
+  .objectType({ name: "User", schema: UserSchema })
+
+// Create different schemas from the same base
+const simpleSchema = base
+  .query("users", { ... })
+  .buildSchema()
+
+const fullSchema = base
+  .query("users", { ... })
+  .mutation("createUser", { ... })
+  .buildSchema()
+```
+
+## Pipe API
+
+For a more functional style, use the standalone functions with `.pipe()`:
+
+```typescript
+import {
+  query,
+  mutation,
+  objectType,
+  field,
+  compose,
+} from "effect-graphql"
+
+const schema = GraphQLSchemaBuilder.empty.pipe(
+  objectType({ name: "User", schema: UserSchema }),
+  query("users", { type: S.Array(UserSchema), resolve: () => Effect.succeed([]) }),
+  mutation("createUser", { type: UserSchema, args: CreateUserInput, resolve: ... }),
+).buildSchema()
+```
+
+### Composing Builders
+
+Use `compose` to combine multiple operations:
+
+```typescript
+const withUserTypes = compose(
+  objectType({ name: "User", schema: UserSchema }),
+  objectType({ name: "Post", schema: PostSchema }),
+)
+
+const withQueries = compose(
+  query("users", { ... }),
+  query("posts", { ... }),
+)
+
+const schema = GraphQLSchemaBuilder.empty.pipe(
+  withUserTypes,
+  withQueries,
+).buildSchema()
+```
+
+## Object Types
+
+### Basic Registration
+
+```typescript
+const UserSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+builder.objectType({ name: "User", schema: UserSchema })
+```
+
+### Name Inference
+
+With `S.TaggedStruct` or `S.Class`, names are inferred automatically:
+
+```typescript
+const UserSchema = S.TaggedStruct("User", {
+  id: S.String,
+  name: S.String,
+})
+
+// Name "User" is inferred
+builder.objectType({ schema: UserSchema })
+```
+
+### With Computed Fields
+
+Add fields with resolvers inline:
+
+```typescript
+builder.objectType({
+  name: "User",
+  schema: UserSchema,
+  fields: {
+    fullName: {
+      type: S.String,
+      resolve: (parent) => Effect.succeed(
+        `${parent.firstName} ${parent.lastName}`
+      ),
+    },
+    posts: {
+      type: S.Array(PostSchema),
+      args: S.Struct({ limit: S.optional(S.Int) }),
+      resolve: (parent, args) => Effect.gen(function* () {
+        const postService = yield* PostService
+        return yield* postService.getByAuthor(parent.id, args.limit)
+      }),
+    },
+  },
+})
+```
+
+### Adding Fields Separately
+
+Use `.field()` to add fields after type registration:
+
+```typescript
+builder
+  .objectType({ name: "User", schema: UserSchema })
+  .field("User", "posts", {
+    type: S.Array(PostSchema),
+    resolve: (parent) => Effect.succeed([]),
+  })
+```
+
+## Root Operations
+
+### Queries
+
+```typescript
+// Simple query
+.query("hello", {
+  type: S.String,
+  resolve: () => Effect.succeed("world"),
+})
+
+// With arguments
+.query("user", {
+  type: UserSchema,
+  args: S.Struct({ id: S.String }),
+  resolve: (args) => Effect.succeed({ id: args.id, name: "Alice" }),
+})
+
+// With description
+.query("users", {
+  type: S.Array(UserSchema),
+  description: "Get all users in the system",
+  resolve: () => Effect.succeed([]),
+})
+```
+
+### Mutations
+
+```typescript
+.mutation("createUser", {
+  type: UserSchema,
+  args: S.Struct({
+    name: S.String,
+    email: S.String,
+  }),
+  resolve: (args) => Effect.gen(function* () {
+    const userService = yield* UserService
+    return yield* userService.create(args.name, args.email)
+  }),
+})
+```
+
+### Subscriptions
+
+Subscriptions return an Effect that produces a Stream:
+
+```typescript
+import { Stream } from "effect"
+
+.subscription("userCreated", {
+  type: UserSchema,
+  subscribe: () => Effect.gen(function* () {
+    const events = yield* EventService
+    return events.userCreatedStream()
+  }),
+})
+```
+
+## Enums
+
+Register enum types with values:
+
+```typescript
+.enumType({
+  name: "UserStatus",
+  values: ["ACTIVE", "INACTIVE", "PENDING"],
+  description: "User account status",
+})
+```
+
+Use in queries with `S.Literal`:
+
+```typescript
+.query("usersByStatus", {
+  type: S.Array(UserSchema),
+  args: S.Struct({
+    status: S.Literal("ACTIVE", "INACTIVE", "PENDING"),
+  }),
+  resolve: (args) => Effect.succeed([]),
+})
+```
+
+## Interfaces
+
+```typescript
+const NodeSchema = S.Struct({ id: S.String })
+
+builder
+  .interfaceType({ name: "Node", schema: NodeSchema })
+  .objectType({
+    name: "User",
+    schema: UserSchema,
+    implements: ["Node"],
+  })
+```
+
+## Unions
+
+```typescript
+const TextSchema = S.TaggedStruct("Text", { body: S.String })
+const ImageSchema = S.TaggedStruct("Image", { url: S.String })
+
+builder
+  .objectType({ schema: TextSchema })
+  .objectType({ schema: ImageSchema })
+  .unionType({
+    name: "Content",
+    types: ["Text", "Image"],
+  })
+```
+
+## Input Types
+
+Register input types for complex arguments:
+
+```typescript
+const CreateUserInput = S.Struct({
+  name: S.String,
+  email: S.String,
+  role: S.optional(S.Literal("USER", "ADMIN")),
+})
+
+builder
+  .inputType({ name: "CreateUserInput", schema: CreateUserInput })
+  .mutation("createUser", {
+    type: UserSchema,
+    args: S.Struct({ input: CreateUserInput }),
+    resolve: (args) => Effect.succeed({ id: "1", ...args.input }),
+  })
+```
+
+## Directives
+
+Register custom directives:
+
+```typescript
+import { DirectiveLocation } from "graphql"
+
+builder.directive({
+  name: "auth",
+  description: "Requires authentication",
+  locations: [DirectiveLocation.FIELD_DEFINITION],
+  args: S.Struct({
+    role: S.optional(S.Literal("USER", "ADMIN")),
+  }),
+  transformer: (effect, args) =>
+    Effect.gen(function* () {
+      const auth = yield* AuthService
+      yield* auth.requireRole(args.role ?? "USER")
+      return yield* effect
+    }),
+})
+```
+
+## Building the Schema
+
+Call `.buildSchema()` to produce the final `GraphQLSchema`:
+
+```typescript
+const schema = builder.buildSchema()
+
+// Use with any GraphQL server
+import { graphql } from "graphql"
+const result = await graphql({ schema, source: "{ hello }" })
+```
+
+<Aside type="tip">
+  For request execution with Effect services, use the `execute` function instead of `graphql()` directly.
+  See the [Resolvers guide](/effect-graphql-prototype/guides/resolvers/) for details.
+</Aside>

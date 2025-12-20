@@ -1,0 +1,211 @@
+---
+title: Quick Start
+description: Build a simple GraphQL API in 5 minutes
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+This guide walks you through building a simple GraphQL API with queries, mutations, and type-safe arguments.
+
+## What We'll Build
+
+A basic user API with:
+- A `users` query that returns a list of users
+- A `user(id)` query that returns a single user
+- A `createUser` mutation
+
+<Steps>
+
+1. **Define Your Schema**
+
+   Use Effect Schema to define your data types:
+
+   ```typescript
+   import * as S from "effect/Schema"
+
+   // User schema with validation
+   const UserSchema = S.Struct({
+     id: S.String,
+     name: S.String,
+     email: S.String,
+   })
+
+   // Input for creating users
+   const CreateUserInput = S.Struct({
+     name: S.String.pipe(S.minLength(1)),
+     email: S.String.pipe(S.pattern(/@/)),
+   })
+
+   // TypeScript types are inferred automatically
+   type User = S.Schema.Type<typeof UserSchema>
+   ```
+
+2. **Build the GraphQL Schema**
+
+   Use `GraphQLSchemaBuilder` to create your schema:
+
+   ```typescript
+   import { Effect } from "effect"
+   import { GraphQLSchemaBuilder } from "effect-graphql"
+
+   // Sample data
+   const users: User[] = [
+     { id: "1", name: "Alice", email: "alice@example.com" },
+     { id: "2", name: "Bob", email: "bob@example.com" },
+   ]
+
+   const schema = GraphQLSchemaBuilder.empty
+     // Register the User type
+     .objectType({ name: "User", schema: UserSchema })
+
+     // Query: get all users
+     .query("users", {
+       type: S.Array(UserSchema),
+       resolve: () => Effect.succeed(users),
+     })
+
+     // Query: get user by ID
+     .query("user", {
+       type: UserSchema,
+       args: S.Struct({ id: S.String }),
+       resolve: (args) => {
+         const user = users.find(u => u.id === args.id)
+         return user
+           ? Effect.succeed(user)
+           : Effect.fail(new Error("User not found"))
+       },
+     })
+
+     // Mutation: create a new user
+     .mutation("createUser", {
+       type: UserSchema,
+       args: CreateUserInput,
+       resolve: (args) => {
+         const newUser: User = {
+           id: String(users.length + 1),
+           name: args.name,
+           email: args.email,
+         }
+         users.push(newUser)
+         return Effect.succeed(newUser)
+       },
+     })
+
+     // Build the final GraphQL schema
+     .buildSchema()
+   ```
+
+3. **Execute Queries**
+
+   Use the `execute` function to run GraphQL operations:
+
+   ```typescript
+   import { execute } from "effect-graphql"
+   import { Layer } from "effect"
+
+   // Execute a query
+   const result = await Effect.runPromise(
+     execute(schema, Layer.empty)(`
+       query {
+         users {
+           id
+           name
+           email
+         }
+       }
+     `)
+   )
+
+   console.log(JSON.stringify(result, null, 2))
+   ```
+
+   Output:
+   ```json
+   {
+     "data": {
+       "users": [
+         { "id": "1", "name": "Alice", "email": "alice@example.com" },
+         { "id": "2", "name": "Bob", "email": "bob@example.com" }
+       ]
+     }
+   }
+   ```
+
+4. **Run with Arguments**
+
+   Pass variables to your queries:
+
+   ```typescript
+   const result = await Effect.runPromise(
+     execute(schema, Layer.empty)(
+       `query GetUser($id: String!) {
+         user(id: $id) {
+           name
+           email
+         }
+       }`,
+       { id: "1" }  // variables
+     )
+   )
+   ```
+
+</Steps>
+
+## Complete Example
+
+Here's the full code in one file:
+
+```typescript
+import { Effect, Layer } from "effect"
+import * as S from "effect/Schema"
+import { GraphQLSchemaBuilder, execute } from "effect-graphql"
+
+// Schema definitions
+const UserSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+type User = S.Schema.Type<typeof UserSchema>
+
+// In-memory data store
+const users: User[] = [
+  { id: "1", name: "Alice", email: "alice@example.com" },
+  { id: "2", name: "Bob", email: "bob@example.com" },
+]
+
+// Build schema
+const schema = GraphQLSchemaBuilder.empty
+  .objectType({ name: "User", schema: UserSchema })
+  .query("users", {
+    type: S.Array(UserSchema),
+    resolve: () => Effect.succeed(users),
+  })
+  .query("user", {
+    type: UserSchema,
+    args: S.Struct({ id: S.String }),
+    resolve: (args) => {
+      const user = users.find(u => u.id === args.id)
+      return user
+        ? Effect.succeed(user)
+        : Effect.fail(new Error("User not found"))
+    },
+  })
+  .buildSchema()
+
+// Execute
+const main = execute(schema, Layer.empty)(`
+  query {
+    users { id name email }
+  }
+`)
+
+Effect.runPromise(main).then(console.log)
+```
+
+## Next Steps
+
+- Learn about the [Schema Builder](/effect-graphql-prototype/guides/schema-builder/) in detail
+- Understand how [Resolvers](/effect-graphql-prototype/guides/resolvers/) work with services
+- Handle errors with [Structured Errors](/effect-graphql-prototype/guides/error-handling/)

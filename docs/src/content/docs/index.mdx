@@ -1,0 +1,88 @@
+---
+title: Effect GraphQL
+description: Type-safe GraphQL servers with Effect-TS
+template: splash
+hero:
+  tagline: Build type-safe, composable GraphQL APIs with the power of Effect-TS
+  image:
+    file: ../../assets/houston.webp
+  actions:
+    - text: Get Started
+      link: /effect-graphql-prototype/getting-started/installation/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/nickfisher/effect-graphql-prototype
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Why Effect GraphQL?
+
+<CardGrid stagger>
+  <Card title="Type-Safe End-to-End" icon="approve-check">
+    Define your schema once with Effect Schema. Get automatic TypeScript types, GraphQL types, and runtime validation.
+  </Card>
+  <Card title="Effect-Powered Resolvers" icon="rocket">
+    Resolvers are Effect programs with built-in error handling, service injection, and composability.
+  </Card>
+  <Card title="Service Integration" icon="puzzle">
+    Use Effect's Layer system for dependency injection. No magic, just types.
+  </Card>
+  <Card title="Functional & Immutable" icon="seti:typescript">
+    Immutable builder pattern with pipe-able API. Compose your schema from reusable parts.
+  </Card>
+</CardGrid>
+
+## Quick Example
+
+```typescript
+import { Effect } from "effect"
+import * as S from "effect/Schema"
+import { GraphQLSchemaBuilder } from "effect-graphql"
+
+// Define your schema with Effect Schema
+const UserSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+// Build your GraphQL schema
+const schema = GraphQLSchemaBuilder.empty
+  .objectType({ name: "User", schema: UserSchema })
+  .query("user", {
+    type: UserSchema,
+    args: S.Struct({ id: S.String }),
+    resolve: (args) => Effect.succeed({
+      id: args.id,
+      name: "Alice",
+      email: "alice@example.com",
+    }),
+  })
+  .buildSchema()
+```
+
+## Features
+
+<CardGrid>
+  <Card title="Schema Builder" icon="setting">
+    Fluent, immutable API for building GraphQL schemas with full type inference.
+  </Card>
+  <Card title="Automatic Validation" icon="approve-check">
+    Arguments validated automatically using Effect Schema before resolvers run.
+  </Card>
+  <Card title="Subscriptions" icon="random">
+    First-class subscription support using Effect Streams.
+  </Card>
+  <Card title="DataLoader Integration" icon="list-format">
+    Built-in batching and caching with Effect-based DataLoaders.
+  </Card>
+  <Card title="Structured Errors" icon="warning">
+    Type-safe error handling that integrates with GraphQL's error system.
+  </Card>
+  <Card title="Request Context" icon="document">
+    Request-scoped context using Effect's Layer system.
+  </Card>
+</CardGrid>

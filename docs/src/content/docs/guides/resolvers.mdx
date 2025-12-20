@@ -1,0 +1,307 @@
+---
+title: Resolvers
+description: Effect-based resolvers with service injection and composability
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Resolvers in Effect GraphQL are Effect programs. This gives you type-safe error handling, dependency injection, and composability out of the box.
+
+## Basic Resolvers
+
+A resolver is a function that returns an `Effect`:
+
+```typescript
+import { Effect } from "effect"
+import * as S from "effect/Schema"
+
+.query("hello", {
+  type: S.String,
+  resolve: () => Effect.succeed("world"),
+})
+```
+
+### With Arguments
+
+Arguments are passed to the resolver function and are automatically validated:
+
+```typescript
+.query("greet", {
+  type: S.String,
+  args: S.Struct({ name: S.String }),
+  resolve: (args) => Effect.succeed(`Hello, ${args.name}!`),
+})
+```
+
+The `args` object is fully typed based on your schema.
+
+### Field Resolvers
+
+Field resolvers on object types receive the parent value:
+
+```typescript
+.field("User", "fullName", {
+  type: S.String,
+  resolve: (parent) => Effect.succeed(
+    `${parent.firstName} ${parent.lastName}`
+  ),
+})
+```
+
+With arguments:
+
+```typescript
+.field("User", "posts", {
+  type: S.Array(PostSchema),
+  args: S.Struct({
+    limit: S.optional(S.Int),
+    offset: S.optional(S.Int),
+  }),
+  resolve: (parent, args) => Effect.succeed(
+    posts
+      .filter(p => p.authorId === parent.id)
+      .slice(args.offset ?? 0, args.limit)
+  ),
+})
+```
+
+## Service Injection
+
+The real power of Effect resolvers is service injection. Define services with Effect's `Context.Tag`:
+
+```typescript
+import { Context, Layer } from "effect"
+
+// Define a service interface
+class UserService extends Context.Tag("UserService")<
+  UserService,
+  {
+    readonly getAll: () => Effect.Effect<User[]>
+    readonly getById: (id: string) => Effect.Effect<User | null>
+    readonly create: (name: string, email: string) => Effect.Effect<User>
+  }
+>() {}
+```
+
+Use services in resolvers with `Effect.gen`:
+
+```typescript
+.query("users", {
+  type: S.Array(UserSchema),
+  resolve: () => Effect.gen(function* () {
+    const userService = yield* UserService
+    return yield* userService.getAll()
+  }),
+})
+
+.mutation("createUser", {
+  type: UserSchema,
+  args: S.Struct({ name: S.String, email: S.String }),
+  resolve: (args) => Effect.gen(function* () {
+    const userService = yield* UserService
+    return yield* userService.create(args.name, args.email)
+  }),
+})
+```
+
+### Providing Services
+
+Services are provided when executing queries via a Layer:
+
+```typescript
+import { execute } from "effect-graphql"
+
+// Create service implementation
+const UserServiceLive = Layer.succeed(UserService, {
+  getAll: () => Effect.succeed(users),
+  getById: (id) => Effect.succeed(users.find(u => u.id === id) ?? null),
+  create: (name, email) => Effect.succeed({ id: generateId(), name, email }),
+})
+
+// Compose all services
+const AppLayer = Layer.merge(UserServiceLive, PostServiceLive)
+
+// Execute with services
+const result = await Effect.runPromise(
+  execute(schema, AppLayer)(`
+    query {
+      users { id name }
+    }
+  `)
+)
+```
+
+<Aside>
+  The builder's type parameter `R` accumulates all service requirements as you add resolvers.
+  TypeScript will error if you forget to provide a required service at execution time.
+</Aside>
+
+## Effect Composition
+
+Since resolvers are Effects, you can use all Effect combinators:
+
+### Sequential Operations
+
+```typescript
+resolve: (args) => Effect.gen(function* () {
+  const userService = yield* UserService
+  const user = yield* userService.getById(args.id)
+
+  if (!user) {
+    return yield* Effect.fail(new NotFoundError({ message: "User not found" }))
+  }
+
+  const postService = yield* PostService
+  const posts = yield* postService.getByAuthor(user.id)
+
+  return { ...user, posts }
+})
+```
+
+### Parallel Operations
+
+```typescript
+resolve: () => Effect.gen(function* () {
+  const userService = yield* UserService
+  const postService = yield* PostService
+
+  // Fetch in parallel
+  const [users, posts] = yield* Effect.all([
+    userService.getAll(),
+    postService.getAll(),
+  ], { concurrency: "unbounded" })
+
+  return { users, posts }
+})
+```
+
+### Error Handling
+
+```typescript
+resolve: (args) => Effect.gen(function* () {
+  const userService = yield* UserService
+  const user = yield* userService.getById(args.id)
+
+  if (!user) {
+    return yield* Effect.fail(
+      new NotFoundError({ message: `User ${args.id} not found` })
+    )
+  }
+
+  return user
+}).pipe(
+  Effect.catchTag("DatabaseError", (e) =>
+    Effect.fail(new GraphQLError({ message: "Database unavailable" }))
+  )
+)
+```
+
+## The Execute Function
+
+The `execute` function bridges Effect resolvers with GraphQL execution:
+
+```typescript
+import { execute } from "effect-graphql"
+
+const runQuery = execute(schema, serviceLayer)
+
+// Execute a query
+const result = await Effect.runPromise(
+  runQuery(
+    `query GetUser($id: String!) { user(id: $id) { name } }`,
+    { id: "123" },  // variables
+    "GetUser"       // operation name (optional)
+  )
+)
+```
+
+### How It Works
+
+1. Creates an Effect runtime from your Layer
+2. Passes the runtime to GraphQL via context
+3. Each resolver receives the runtime and runs its Effect
+4. Services are available throughout the request
+
+```typescript
+// Simplified internal flow
+execute(schema, layer)(query, variables) =>
+  Effect.gen(function* () {
+    const runtime = yield* Effect.runtime<R>()
+    const result = yield* Effect.promise(() =>
+      graphql({
+        schema,
+        source: query,
+        variableValues: variables,
+        contextValue: { runtime },
+      })
+    )
+    return result
+  }).pipe(Effect.provide(layer))
+```
+
+## Request Context
+
+Access request-scoped data using `GraphQLRequestContext`:
+
+```typescript
+import { GraphQLRequestContext, makeRequestContextLayer } from "effect-graphql"
+
+.query("me", {
+  type: UserSchema,
+  resolve: () => Effect.gen(function* () {
+    const ctx = yield* GraphQLRequestContext
+    const authHeader = ctx.request.headers["authorization"]
+
+    // Extract user from token...
+    const userId = parseToken(authHeader)
+
+    const userService = yield* UserService
+    return yield* userService.getById(userId)
+  }),
+})
+```
+
+Create the request context layer at request time:
+
+```typescript
+const requestLayer = makeRequestContextLayer({
+  request: {
+    headers: req.headers,
+    query: req.body.query,
+    variables: req.body.variables,
+  },
+})
+
+const fullLayer = Layer.merge(requestLayer, AppLayer)
+
+execute(schema, fullLayer)(query, variables)
+```
+
+## Type Safety
+
+The builder tracks service requirements in its type parameter:
+
+```typescript
+// Type: GraphQLSchemaBuilder<never>
+const empty = GraphQLSchemaBuilder.empty
+
+// Type: GraphQLSchemaBuilder<UserService>
+const withUserQuery = empty.query("users", {
+  type: S.Array(UserSchema),
+  resolve: () => Effect.gen(function* () {
+    const userService = yield* UserService
+    return yield* userService.getAll()
+  }),
+})
+
+// Type: GraphQLSchemaBuilder<UserService | PostService>
+const withBoth = withUserQuery.query("posts", {
+  type: S.Array(PostSchema),
+  resolve: () => Effect.gen(function* () {
+    const postService = yield* PostService
+    return yield* postService.getAll()
+  }),
+})
+```
+
+When you call `execute(schema, layer)`, TypeScript verifies that `layer` provides all required services.

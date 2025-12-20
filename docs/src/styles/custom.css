@@ -1,0 +1,22 @@
+/* Effect GraphQL Documentation Custom Styles */
+
+:root {
+	/* Primary accent color - Effect-inspired purple */
+	--sl-color-accent-low: #2d1b4e;
+	--sl-color-accent: #7c3aed;
+	--sl-color-accent-high: #c4b5fd;
+
+	/* Slightly warmer background */
+	--sl-color-bg: #0f0f14;
+	--sl-color-bg-nav: #16161d;
+}
+
+/* Better code block styling */
+.expressive-code pre {
+	border-radius: 0.5rem;
+}
+
+/* Hero section enhancements */
+.hero {
+	padding-block: 4rem;
+}

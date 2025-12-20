@@ -1,0 +1,284 @@
+---
+title: Your First Schema
+description: Step-by-step guide to building a complete GraphQL schema
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This guide takes you through building a more complete schema with object types, relationships, and services.
+
+## Understanding Effect Schema
+
+Effect GraphQL uses Effect Schema as the single source of truth for your types. From one schema definition, you get:
+
+- **TypeScript types** - Full type inference
+- **GraphQL types** - Automatic conversion
+- **Validation** - Runtime argument validation
+
+```typescript
+import * as S from "effect/Schema"
+
+// Define a schema
+const UserSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  age: S.Int.pipe(S.positive()),  // Must be positive integer
+  email: S.String.pipe(S.pattern(/@/)),  // Must contain @
+})
+
+// TypeScript type is inferred
+type User = S.Schema.Type<typeof UserSchema>
+// { id: string; name: string; age: number; email: string }
+```
+
+## The Schema Builder
+
+`GraphQLSchemaBuilder` is an immutable builder for constructing your GraphQL schema:
+
+```typescript
+import { GraphQLSchemaBuilder } from "effect-graphql"
+
+const builder = GraphQLSchemaBuilder.empty
+  .objectType({ name: "User", schema: UserSchema })
+  .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+```
+
+Each method returns a **new builder instance** (immutability). You can chain methods or use `.pipe()`:
+
+<Tabs>
+  <TabItem label="Method Chaining">
+```typescript
+const schema = GraphQLSchemaBuilder.empty
+  .objectType({ name: "User", schema: UserSchema })
+  .query("users", { ... })
+  .mutation("createUser", { ... })
+  .buildSchema()
+```
+  </TabItem>
+  <TabItem label="Pipe API">
+```typescript
+import { query, mutation, objectType } from "effect-graphql"
+
+const schema = GraphQLSchemaBuilder.empty.pipe(
+  objectType({ name: "User", schema: UserSchema }),
+  query("users", { ... }),
+  mutation("createUser", { ... }),
+).buildSchema()
+```
+  </TabItem>
+</Tabs>
+
+## Defining Object Types
+
+Register object types with `objectType()`:
+
+```typescript
+const PostSchema = S.Struct({
+  id: S.String,
+  title: S.String,
+  body: S.String,
+  authorId: S.String,
+})
+
+const builder = GraphQLSchemaBuilder.empty
+  .objectType({ name: "User", schema: UserSchema })
+  .objectType({ name: "Post", schema: PostSchema })
+```
+
+<Aside>
+  Type names can be inferred from `S.TaggedStruct`:
+  ```typescript
+  const UserSchema = S.TaggedStruct("User", { id: S.String, name: S.String })
+  // Name "User" is inferred automatically
+  builder.objectType({ schema: UserSchema })
+  ```
+</Aside>
+
+## Adding Queries and Mutations
+
+### Simple Query
+
+```typescript
+.query("users", {
+  type: S.Array(UserSchema),
+  description: "Get all users",
+  resolve: () => Effect.succeed(users),
+})
+```
+
+### Query with Arguments
+
+```typescript
+.query("user", {
+  type: UserSchema,
+  args: S.Struct({ id: S.String }),
+  resolve: (args) => {
+    const user = users.find(u => u.id === args.id)
+    return user
+      ? Effect.succeed(user)
+      : Effect.fail(new NotFoundError({ message: "User not found" }))
+  },
+})
+```
+
+### Mutation
+
+```typescript
+.mutation("createUser", {
+  type: UserSchema,
+  args: S.Struct({
+    name: S.String.pipe(S.minLength(1)),
+    email: S.String.pipe(S.pattern(/@/)),
+  }),
+  resolve: (args) => Effect.succeed({
+    id: generateId(),
+    name: args.name,
+    email: args.email,
+  }),
+})
+```
+
+## Adding Computed Fields
+
+Add fields with custom resolvers using `.field()`:
+
+```typescript
+const builder = GraphQLSchemaBuilder.empty
+  .objectType({ name: "User", schema: UserSchema })
+  .objectType({ name: "Post", schema: PostSchema })
+  // Add a computed field to User
+  .field("User", "posts", {
+    type: S.Array(PostSchema),
+    resolve: (parent) => {
+      // parent is typed as User
+      const userPosts = posts.filter(p => p.authorId === parent.id)
+      return Effect.succeed(userPosts)
+    },
+  })
+```
+
+Or define fields inline with `objectType`:
+
+```typescript
+.objectType({
+  name: "User",
+  schema: UserSchema,
+  fields: {
+    posts: {
+      type: S.Array(PostSchema),
+      resolve: (parent) => Effect.succeed(
+        posts.filter(p => p.authorId === parent.id)
+      ),
+    },
+    fullName: {
+      type: S.String,
+      resolve: (parent) => Effect.succeed(
+        `${parent.firstName} ${parent.lastName}`
+      ),
+    },
+  },
+})
+```
+
+## Complete Example
+
+Putting it all together:
+
+```typescript
+import { Effect, Layer } from "effect"
+import * as S from "effect/Schema"
+import { GraphQLSchemaBuilder, execute } from "effect-graphql"
+
+// Schemas
+const UserSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+const PostSchema = S.Struct({
+  id: S.String,
+  title: S.String,
+  body: S.String,
+  authorId: S.String,
+})
+
+type User = S.Schema.Type<typeof UserSchema>
+type Post = S.Schema.Type<typeof PostSchema>
+
+// Sample data
+const users: User[] = [
+  { id: "1", name: "Alice", email: "alice@example.com" },
+  { id: "2", name: "Bob", email: "bob@example.com" },
+]
+
+const posts: Post[] = [
+  { id: "1", title: "Hello World", body: "...", authorId: "1" },
+  { id: "2", title: "GraphQL Tips", body: "...", authorId: "1" },
+  { id: "3", title: "Effect Patterns", body: "...", authorId: "2" },
+]
+
+// Build schema with relationships
+const schema = GraphQLSchemaBuilder.empty
+  .objectType({ name: "User", schema: UserSchema })
+  .objectType({ name: "Post", schema: PostSchema })
+
+  // User.posts - posts by this user
+  .field("User", "posts", {
+    type: S.Array(PostSchema),
+    resolve: (parent) => Effect.succeed(
+      posts.filter(p => p.authorId === parent.id)
+    ),
+  })
+
+  // Post.author - the post's author
+  .field("Post", "author", {
+    type: UserSchema,
+    resolve: (parent) => {
+      const author = users.find(u => u.id === parent.authorId)
+      return author
+        ? Effect.succeed(author)
+        : Effect.fail(new Error("Author not found"))
+    },
+  })
+
+  // Queries
+  .query("users", {
+    type: S.Array(UserSchema),
+    resolve: () => Effect.succeed(users),
+  })
+
+  .query("posts", {
+    type: S.Array(PostSchema),
+    resolve: () => Effect.succeed(posts),
+  })
+
+  .buildSchema()
+
+// Execute a nested query
+const result = await Effect.runPromise(
+  execute(schema, Layer.empty)(`
+    query {
+      users {
+        name
+        posts {
+          title
+          author {
+            name
+          }
+        }
+      }
+    }
+  `)
+)
+
+console.log(JSON.stringify(result, null, 2))
+```
+
+## Next Steps
+
+Now that you understand the basics:
+
+- Learn about [Effect-based resolvers](/effect-graphql-prototype/guides/resolvers/) and service injection
+- Handle errors with [structured error types](/effect-graphql-prototype/guides/error-handling/)
+- Explore the [Schema Builder API](/effect-graphql-prototype/guides/schema-builder/) in depth

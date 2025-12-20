@@ -1,0 +1,359 @@
+---
+title: Error Handling
+description: Structured errors that integrate with GraphQL's error system
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Effect GraphQL provides structured error types that integrate seamlessly with GraphQL's error system and Effect's error channel.
+
+## Built-in Error Types
+
+Effect GraphQL provides several error types out of the box:
+
+```typescript
+import {
+  GraphQLError,
+  ValidationError,
+  AuthorizationError,
+  NotFoundError,
+} from "effect-graphql"
+```
+
+### GraphQLError
+
+The base error type with support for extensions:
+
+```typescript
+new GraphQLError({
+  message: "Something went wrong",
+  extensions: {
+    code: "INTERNAL_ERROR",
+    timestamp: new Date().toISOString(),
+  },
+})
+```
+
+### ValidationError
+
+For input validation failures:
+
+```typescript
+new ValidationError({
+  message: "Invalid email format",
+  field: "email",
+  extensions: {
+    code: "VALIDATION_ERROR",
+  },
+})
+```
+
+### AuthorizationError
+
+For access control violations:
+
+```typescript
+new AuthorizationError({
+  message: "You don't have permission to access this resource",
+  extensions: {
+    code: "FORBIDDEN",
+    requiredRole: "ADMIN",
+  },
+})
+```
+
+### NotFoundError
+
+For missing resources:
+
+```typescript
+new NotFoundError({
+  message: "User not found",
+  resourceType: "User",
+  resourceId: "123",
+  extensions: {
+    code: "NOT_FOUND",
+  },
+})
+```
+
+## Using Errors in Resolvers
+
+Return errors using `Effect.fail`:
+
+```typescript
+.query("user", {
+  type: UserSchema,
+  args: S.Struct({ id: S.String }),
+  resolve: (args) => Effect.gen(function* () {
+    const userService = yield* UserService
+    const user = yield* userService.getById(args.id)
+
+    if (!user) {
+      return yield* Effect.fail(
+        new NotFoundError({
+          message: `User with id ${args.id} not found`,
+          resourceType: "User",
+          resourceId: args.id,
+        })
+      )
+    }
+
+    return user
+  }),
+})
+```
+
+## Error Transformation
+
+Transform errors as they propagate using Effect combinators:
+
+### Catch Specific Errors
+
+```typescript
+resolve: (args) => Effect.gen(function* () {
+  const db = yield* DatabaseService
+  return yield* db.query(`SELECT * FROM users WHERE id = $1`, [args.id])
+}).pipe(
+  Effect.catchTag("DatabaseError", (error) =>
+    Effect.fail(new GraphQLError({
+      message: "Database temporarily unavailable",
+      extensions: { code: "SERVICE_UNAVAILABLE" },
+    }))
+  )
+)
+```
+
+### Map All Errors
+
+```typescript
+resolve: (args) => Effect.gen(function* () {
+  // ... resolver logic
+}).pipe(
+  Effect.mapError((error) => {
+    if (error instanceof NotFoundError) {
+      return error // Keep as-is
+    }
+    // Wrap unknown errors
+    return new GraphQLError({
+      message: "An unexpected error occurred",
+      extensions: { code: "INTERNAL_ERROR" },
+    })
+  })
+)
+```
+
+### Catch and Recover
+
+```typescript
+resolve: (args) => Effect.gen(function* () {
+  const cache = yield* CacheService
+  return yield* cache.get(args.key)
+}).pipe(
+  Effect.catchAll(() =>
+    // Fallback to database if cache fails
+    Effect.gen(function* () {
+      const db = yield* DatabaseService
+      return yield* db.get(args.key)
+    })
+  )
+)
+```
+
+## Custom Error Types
+
+Create your own error types using Effect's `Data.TaggedError`:
+
+```typescript
+import { Data } from "effect"
+
+class RateLimitError extends Data.TaggedError("RateLimitError")<{
+  readonly message: string
+  readonly retryAfter: number
+}> {}
+
+class QuotaExceededError extends Data.TaggedError("QuotaExceededError")<{
+  readonly message: string
+  readonly quota: number
+  readonly used: number
+}> {}
+```
+
+Use in resolvers:
+
+```typescript
+resolve: (args) => Effect.gen(function* () {
+  const rateLimiter = yield* RateLimiterService
+  const allowed = yield* rateLimiter.check(args.userId)
+
+  if (!allowed.ok) {
+    return yield* Effect.fail(
+      new RateLimitError({
+        message: "Too many requests",
+        retryAfter: allowed.retryAfter,
+      })
+    )
+  }
+
+  // Continue with request...
+})
+```
+
+## Validation Errors
+
+Arguments are validated automatically using Effect Schema. Validation errors are returned as GraphQL errors:
+
+```typescript
+.mutation("createUser", {
+  type: UserSchema,
+  args: S.Struct({
+    email: S.String.pipe(S.pattern(/@/)),
+    age: S.Int.pipe(S.positive()),
+  }),
+  resolve: (args) => {
+    // This only runs if validation passes
+    return Effect.succeed({ ... })
+  },
+})
+```
+
+If validation fails, the client receives:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Invalid argument: email must match pattern /@/",
+      "extensions": {
+        "code": "VALIDATION_ERROR"
+      }
+    }
+  ]
+}
+```
+
+## Error Response Format
+
+Errors are formatted according to the GraphQL spec:
+
+```json
+{
+  "data": null,
+  "errors": [
+    {
+      "message": "User not found",
+      "path": ["user"],
+      "extensions": {
+        "code": "NOT_FOUND",
+        "resourceType": "User",
+        "resourceId": "123"
+      }
+    }
+  ]
+}
+```
+
+## Partial Errors
+
+GraphQL supports partial responses where some fields succeed while others fail:
+
+```typescript
+.query("dashboard", {
+  type: DashboardSchema,
+  resolve: () => Effect.gen(function* () {
+    const userService = yield* UserService
+    const statsService = yield* StatsService
+
+    // If stats fail, we still want user data
+    const [user, stats] = yield* Effect.all([
+      userService.getCurrentUser(),
+      statsService.getDashboardStats().pipe(
+        Effect.catchAll(() => Effect.succeed(null))
+      ),
+    ])
+
+    return { user, stats }
+  }),
+})
+```
+
+<Aside type="tip">
+  Use `Effect.catchAll` or `Effect.option` to convert errors to null values
+  when you want partial responses instead of full failures.
+</Aside>
+
+## Best Practices
+
+### 1. Be Specific
+
+Use specific error types rather than generic ones:
+
+```typescript
+// Good
+new NotFoundError({ message: "User not found", resourceType: "User" })
+
+// Less helpful
+new GraphQLError({ message: "Not found" })
+```
+
+### 2. Include Context
+
+Add relevant information to error extensions:
+
+```typescript
+new AuthorizationError({
+  message: "Access denied",
+  extensions: {
+    code: "FORBIDDEN",
+    resource: "admin/users",
+    requiredRole: "ADMIN",
+    userRole: currentUser.role,
+  },
+})
+```
+
+### 3. Don't Leak Internals
+
+Transform internal errors before returning to clients:
+
+```typescript
+Effect.catchAll((error) => {
+  // Log the full error internally
+  console.error("Internal error:", error)
+
+  // Return sanitized error to client
+  return Effect.fail(new GraphQLError({
+    message: "An error occurred processing your request",
+    extensions: { code: "INTERNAL_ERROR" },
+  }))
+})
+```
+
+### 4. Use Error Boundaries
+
+Create error handling layers for different concerns:
+
+```typescript
+const withAuthErrors = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.catchTag("AuthError", (e) =>
+      Effect.fail(new AuthorizationError({ message: e.message }))
+    )
+  )
+
+const withDatabaseErrors = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.catchTag("DatabaseError", (e) =>
+      Effect.fail(new GraphQLError({
+        message: "Database error",
+        extensions: { code: "DATABASE_ERROR" },
+      }))
+    )
+  )
+
+// Use in resolver
+resolve: (args) => myLogic(args).pipe(
+  withAuthErrors,
+  withDatabaseErrors,
+)
+```

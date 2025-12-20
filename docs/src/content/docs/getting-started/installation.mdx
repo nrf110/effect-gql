@@ -1,0 +1,94 @@
+---
+title: Installation
+description: How to install Effect GraphQL and its dependencies
+---
+
+## Prerequisites
+
+Effect GraphQL requires:
+- Node.js 18 or later
+- TypeScript 5.0 or later (for full type inference)
+
+## Install Dependencies
+
+```bash
+npm install effect-graphql effect graphql
+```
+
+This installs:
+- `effect-graphql` - The core library
+- `effect` - The Effect runtime and Schema library
+- `graphql` - GraphQL.js for schema execution
+
+## TypeScript Configuration
+
+For the best experience, ensure your `tsconfig.json` includes:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+Key settings:
+- `strict: true` - Enables full type checking (required for Effect)
+- `target: ES2022` - Enables modern JavaScript features used by Effect
+- `moduleResolution: NodeNext` - Proper ESM resolution
+
+## Optional: Decorators
+
+If you want to use the decorator-based API (experimental), add:
+
+```json
+{
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  }
+}
+```
+
+## Verify Installation
+
+Create a simple test file to verify everything is working:
+
+```typescript
+// test-install.ts
+import { Effect } from "effect"
+import * as S from "effect/Schema"
+import { GraphQLSchemaBuilder } from "effect-graphql"
+
+const schema = GraphQLSchemaBuilder.empty
+  .query("hello", {
+    type: S.String,
+    resolve: () => Effect.succeed("world"),
+  })
+  .buildSchema()
+
+console.log("Schema created successfully!")
+console.log("Query type:", schema.getQueryType()?.name)
+```
+
+Run it:
+
+```bash
+npx tsx test-install.ts
+```
+
+You should see:
+
+```
+Schema created successfully!
+Query type: Query
+```
+
+## Next Steps
+
+Now that you have Effect GraphQL installed, continue to the [Quick Start](/effect-graphql-prototype/getting-started/quick-start/) guide to build your first API.
