@@ -705,6 +705,121 @@ describe("type-registry.ts", () => {
   })
 
   // ==========================================================================
+  // toGraphQLTypeWithRegistry - Suspend (recursive types)
+  // ==========================================================================
+  describe("toGraphQLTypeWithRegistry - Suspend", () => {
+    it("should handle S.suspend for self-referential types", () => {
+      // Define a self-referential Person schema
+      interface Person {
+        readonly name: string
+        readonly friends: readonly Person[]
+      }
+      const PersonSchema: S.Schema<Person> = S.Struct({
+        name: S.String,
+        friends: S.Array(S.suspend(() => PersonSchema)),
+      })
+
+      const personType = new GraphQLObjectType({
+        name: "Person",
+        fields: () => ({
+          name: { type: GraphQLString },
+          friends: { type: personType },
+        }),
+      })
+
+      const ctx = createEmptyContext()
+      ctx.types.set("Person", { name: "Person", schema: PersonSchema })
+      ctx.typeRegistry.set("Person", personType)
+
+      // Test that suspend resolves to the registered type
+      const result = toGraphQLTypeWithRegistry(S.Array(S.suspend(() => PersonSchema)), ctx)
+      expect(isListType(result)).toBe(true)
+      expect((result as any).ofType).toBe(personType)
+    })
+
+    it("should handle S.suspend that resolves to a primitive", () => {
+      const ctx = createEmptyContext()
+
+      const LazyString = S.suspend(() => S.String)
+      const result = toGraphQLTypeWithRegistry(LazyString, ctx)
+      expect(result).toBe(GraphQLString)
+    })
+
+    it("should handle nested suspend in arrays", () => {
+      const ItemSchema = S.Struct({ id: S.String })
+      const itemType = new GraphQLObjectType({
+        name: "Item",
+        fields: { id: { type: GraphQLString } },
+      })
+
+      const ctx = createEmptyContext()
+      ctx.types.set("Item", { name: "Item", schema: ItemSchema })
+      ctx.typeRegistry.set("Item", itemType)
+
+      // Array of suspended items
+      const result = toGraphQLTypeWithRegistry(
+        S.Array(S.suspend(() => ItemSchema)),
+        ctx
+      )
+
+      expect(isListType(result)).toBe(true)
+      expect((result as any).ofType).toBe(itemType)
+    })
+  })
+
+  // ==========================================================================
+  // toGraphQLInputTypeWithRegistry - Suspend (recursive types)
+  // ==========================================================================
+  describe("toGraphQLInputTypeWithRegistry - Suspend", () => {
+    it("should handle S.suspend for self-referential input types", () => {
+      interface NestedInput {
+        readonly value: string
+        readonly children?: readonly NestedInput[]
+      }
+      const NestedInputSchema: S.Schema<NestedInput> = S.Struct({
+        value: S.String,
+        children: S.optional(S.Array(S.suspend(() => NestedInputSchema))),
+      })
+
+      const nestedInputType = new GraphQLInputObjectType({
+        name: "NestedInput",
+        fields: () => ({
+          value: { type: GraphQLString },
+          children: { type: nestedInputType },
+        }),
+      })
+
+      const inputRegistry = new Map<string, GraphQLInputObjectType>()
+      inputRegistry.set("NestedInput", nestedInputType)
+
+      const inputs = new Map()
+      inputs.set("NestedInput", { name: "NestedInput", schema: NestedInputSchema })
+
+      // Test that suspend resolves to the registered input type
+      const result = toGraphQLInputTypeWithRegistry(
+        S.suspend(() => NestedInputSchema),
+        new Map(),
+        inputRegistry,
+        inputs,
+        new Map()
+      )
+      expect(result).toBe(nestedInputType)
+    })
+
+    it("should handle S.suspend that resolves to a primitive for input", () => {
+      const LazyString = S.suspend(() => S.String)
+      const result = toGraphQLInputTypeWithRegistry(
+        LazyString,
+        new Map(),
+        new Map(),
+        new Map(),
+        new Map()
+      )
+      expect(result).toBe(GraphQLString)
+    })
+  })
+
+  // ==========================================================================
   // Complex scenarios
   // ==========================================================================
   describe("Complex scenarios", () => {

@@ -105,6 +105,12 @@ export function toGraphQLTypeWithRegistry(
     return handleTupleTypeAST(ast, ctx)
   }
 
+  // Handle Suspend (recursive/self-referential schemas)
+  if (ast._tag === "Suspend") {
+    const innerAst = (ast as any).f()
+    return toGraphQLTypeWithRegistry(S.make(innerAst), ctx)
+  }
+
   // Fall back to default conversion
   return toGraphQLType(schema)
 }
@@ -435,6 +441,12 @@ export function toGraphQLInputTypeWithRegistry(
         if (result) return result
       }
     }
+  }
+
+  // Handle Suspend (recursive/self-referential schemas)
+  if (ast._tag === "Suspend") {
+    const innerAst = (ast as any).f()
+    return toGraphQLInputTypeWithRegistry(S.make(innerAst), enumRegistry, inputRegistry, inputs, enums)
   }
 
   // Fall back to default toGraphQLInputType

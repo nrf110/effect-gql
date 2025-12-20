@@ -119,6 +119,12 @@ export const toGraphQLType = (schema: S.Schema<any, any, any>): GraphQLOutputTyp
     }
   }
 
+  // Handle Suspend (recursive/self-referential schemas)
+  if (ast._tag === "Suspend") {
+    const innerAst = (ast as any).f()
+    return toGraphQLType(S.make(innerAst))
+  }
+
   // Default fallback
   return GraphQLString
 }
@@ -198,6 +204,12 @@ export const toGraphQLInputType = (schema: S.Schema<any, any, any>): GraphQLInpu
     if (types.length > 0) {
       return toGraphQLInputType(S.make(types[0]))
     }
+  }
+
+  // Handle Suspend (recursive/self-referential schemas)
+  if (ast._tag === "Suspend") {
+    const innerAst = (ast as any).f()
+    return toGraphQLInputType(S.make(innerAst))
   }
 
   // Default fallback

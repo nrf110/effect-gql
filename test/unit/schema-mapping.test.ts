@@ -591,6 +591,107 @@ describe("schema-mapping.ts", () => {
   })
 
   // ==========================================================================
+  // toGraphQLType - Suspend (recursive types)
+  // ==========================================================================
+  describe("toGraphQLType - Suspend", () => {
+    it("should handle S.suspend for primitive types", () => {
+      const LazyString = S.suspend(() => S.String)
+      const result = toGraphQLType(LazyString)
+      expect(result).toBe(GraphQLString)
+    })
+
+    it("should handle S.suspend for Int", () => {
+      const LazyInt = S.suspend(() => S.Int)
+      const result = toGraphQLType(LazyInt)
+      expect(result).toBe(GraphQLInt)
+    })
+
+    it("should handle S.suspend for struct types", () => {
+      const PersonSchema = S.Struct({
+        name: S.String,
+        age: S.Int,
+      })
+      const LazyPerson = S.suspend(() => PersonSchema)
+      const result = toGraphQLType(LazyPerson)
+
+      expect(result).toBeInstanceOf(GraphQLObjectType)
+      const fields = (result as GraphQLObjectType).getFields()
+      expect(fields.name).toBeDefined()
+      expect(fields.age).toBeDefined()
+    })
+
+    it("should handle suspend that references a different schema (non-recursive)", () => {
+      // Non-recursive suspend - references a different schema
+      const AddressSchema = S.Struct({
+        city: S.String,
+      })
+      const PersonSchema = S.Struct({
+        name: S.String,
+        address: S.suspend(() => AddressSchema),
+      })
+
+      const result = toGraphQLType(PersonSchema)
+      expect(result).toBeInstanceOf(GraphQLObjectType)
+
+      const fields = (result as GraphQLObjectType).getFields()
+      expect(fields.name).toBeDefined()
+      expect(fields.address).toBeDefined()
+
+      const addressType = unwrapNonNull(fields.address.type)
+      expect(addressType).toBeInstanceOf(GraphQLObjectType)
+    })
+
+    // Note: True self-referential types require the registry-aware version
+    // (toGraphQLTypeWithRegistry) to avoid infinite recursion. The base
+    // toGraphQLType function cannot handle cycles on its own.
+  })
+
+  // ==========================================================================
+  // toGraphQLInputType - Suspend (recursive types)
+  // ==========================================================================
+  describe("toGraphQLInputType - Suspend", () => {
+    it("should handle S.suspend for primitive input types", () => {
+      const LazyString = S.suspend(() => S.String)
+      const result = toGraphQLInputType(LazyString)
+      expect(result).toBe(GraphQLString)
+    })
+
+    it("should handle S.suspend for struct input types", () => {
+      const InputSchema = S.Struct({
+        name: S.String,
+      })
+      const LazyInput = S.suspend(() => InputSchema)
+      const result = toGraphQLInputType(LazyInput)
+
+      expect(result).toBeInstanceOf(GraphQLInputObjectType)
+    })
+
+    it("should handle suspend that references a different input schema (non-recursive)", () => {
+      // Non-recursive suspend - references a different schema
+      const AddressInput = S.Struct({
+        city: S.String,
+      })
+      const PersonInput = S.Struct({
+        name: S.String,
+        address: S.suspend(() => AddressInput),
+      })
+
+      const result = toGraphQLInputType(PersonInput)
+      expect(result).toBeInstanceOf(GraphQLInputObjectType)
+
+      const fields = (result as GraphQLInputObjectType).getFields()
+      expect(fields.name).toBeDefined()
+      expect(fields.address).toBeDefined()
+
+      const addressType = unwrapNonNull(fields.address.type)
+      expect(addressType).toBeInstanceOf(GraphQLInputObjectType)
+    })
+
+    // Note: True self-referential input types require the registry-aware version
+    // (toGraphQLInputTypeWithRegistry) to avoid infinite recursion.
+  })
+
+  // ==========================================================================
   // Edge Cases
   // ==========================================================================
   describe("Edge Cases", () => {

@@ -775,4 +775,144 @@ describe("schema-builder.ts", () => {
       expect(sdl).toContain("input CreateUserInput")
     })
   })
+
+  // ==========================================================================
+  // Recursive/Self-referential types
+  // ==========================================================================
+  describe("Recursive/Self-referential types", () => {
+    it("should build schema with self-referential object type using S.suspend", () => {
+      // Define a self-referential Person schema
+      interface Person {
+        readonly name: string
+        readonly friends: readonly Person[]
+      }
+      const PersonSchema: S.Schema<Person> = S.Struct({
+        name: S.String,
+        friends: S.Array(S.suspend(() => PersonSchema)),
+      })
+
+      const builder = GraphQLSchemaBuilder.empty
+        .objectType({ name: "Person", schema: PersonSchema })
+        .query("person", {
+          type: PersonSchema,
+          resolve: () => Effect.succeed({ name: "Alice", friends: [] }),
+        })
+
+      const schema = builder.buildSchema()
+
+      // Verify Person type exists
+      const personType = schema.getType("Person") as GraphQLObjectType
+      expect(personType).toBeInstanceOf(GraphQLObjectType)
+
+      // Verify fields
+      const fields = personType.getFields()
+      expect(fields.name).toBeDefined()
+      expect(fields.friends).toBeDefined()
+
+      // Verify friends field is a list of Person
+      const friendsType = fields.friends.type
+      expect(isNonNullType(friendsType)).toBe(true)
+      const innerType = (friendsType as any).ofType
+      expect(innerType.ofType).toBe(personType) // Should reference the same Person type
+    })
+
+    it("should build schema with mutually recursive types using S.suspend", () => {
+      // Define mutually recursive Post and Comment schemas
+      interface Post {
+        readonly id: string
+        readonly title: string
+        readonly comments: readonly Comment[]
+      }
+      interface Comment {
+        readonly id: string
+        readonly text: string
+        readonly post: Post
+      }
+
+      const PostSchema: S.Schema<Post> = S.Struct({
+        id: S.String,
+        title: S.String,
+        comments: S.Array(S.suspend(() => CommentSchema)),
+      })
+
+      const CommentSchema: S.Schema<Comment> = S.Struct({
+        id: S.String,
+        text: S.String,
+        post: S.suspend(() => PostSchema),
+      })
+
+      const builder = GraphQLSchemaBuilder.empty
+        .objectType({ name: "Post", schema: PostSchema })
+        .objectType({ name: "Comment", schema: CommentSchema })
+        .query("post", {
+          type: PostSchema,
+          resolve: () => Effect.succeed({ id: "1", title: "Hello", comments: [] }),
+        })
+
+      const schema = builder.buildSchema()
+
+      // Verify both types exist
+      const postType = schema.getType("Post") as GraphQLObjectType
+      const commentType = schema.getType("Comment") as GraphQLObjectType
+      expect(postType).toBeInstanceOf(GraphQLObjectType)
+      expect(commentType).toBeInstanceOf(GraphQLObjectType)
+
+      // Verify Post.comments references Comment
+      const postFields = postType.getFields()
+      const commentsField = postFields.comments
+      const commentsListType = (commentsField.type as any).ofType // unwrap NonNull
+      expect(commentsListType.ofType).toBe(commentType)
+
+      // Verify Comment.post references Post
+      const commentFields = commentType.getFields()
+      const postField = commentFields.post
+      const postFieldType = (postField.type as any).ofType // unwrap NonNull
+      expect(postFieldType).toBe(postType)
+    })
+
+    it("should build schema with tree-like recursive structure", () => {
+      // Define a recursive Category schema (tree structure)
+      interface Category {
+        readonly name: string
+        readonly parent?: Category
+        readonly children: readonly Category[]
+      }
+      const CategorySchema: S.Schema<Category> = S.Struct({
+        name: S.String,
+        parent: S.optional(S.suspend(() => CategorySchema)),
+        children: S.Array(S.suspend(() => CategorySchema)),
+      })
+
+      const builder = GraphQLSchemaBuilder.empty
+        .objectType({ name: "Category", schema: CategorySchema })
+        .query("category", {
+          type: CategorySchema,
+          resolve: () => Effect.succeed({ name: "Root", children: [] }),
+        })
+
+      const schema = builder.buildSchema()
+
+      const categoryType = schema.getType("Category") as GraphQLObjectType
+      expect(categoryType).toBeInstanceOf(GraphQLObjectType)
+
+      const fields = categoryType.getFields()
+      expect(fields.name).toBeDefined()
+      expect(fields.parent).toBeDefined()
+      expect(fields.children).toBeDefined()
+
+      // parent is optional, so not wrapped in NonNull
+      expect(isNonNullType(fields.parent.type)).toBe(false)
+      expect(fields.parent.type).toBe(categoryType)
+
+      // children is required list
+      expect(isNonNullType(fields.children.type)).toBe(true)
+
+      // Verify the SDL is valid
+      const sdl = printSchema(schema)
+      expect(sdl).toContain("type Category")
+      expect(sdl).toContain("parent: Category")
+      // Note: Array elements are nullable by default (matches Effect Schema behavior)
+      expect(sdl).toContain("children: [Category]!")
+    })
+  })
 })

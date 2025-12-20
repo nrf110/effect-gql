@@ -39,47 +39,81 @@ The mapping traverses Effect's SchemaAST and handles:
 - Transformations (uses "to" for output, "from" for input)
 - Unions (currently uses first type as fallback)
 
-### 2. Decorator System (Experimental)
+### 2. Schema Builder
 
-**Files**: `src/decorators/`
+**File**: `src/builder/schema-builder.ts`
 
-The project experiments with two approaches:
+The `GraphQLSchemaBuilder` is an immutable, pipeable builder for constructing GraphQL schemas:
+- Implements `Pipeable.Pipeable` for fluent `.pipe()` syntax
+- Accumulates service requirements via type parameter `R`
+- Static `GraphQLSchemaBuilder.empty` creates a fresh builder
+- Each method returns a new builder instance (immutability)
 
-**A. TypeScript Decorators** (`@ObjectType`, `@Resolver`, `@Resolve`, `@Arg`, `@Root`)
-- Located in `src/decorators/object-type.ts`, `resolver.ts`, `arg.ts`
-- Uses `reflect-metadata` for runtime metadata
-- `@ObjectType()` - Converts Effect Schema.Class to GraphQL types
-- `@Arg()` - Parameter decorator for validated arguments
-- Relies on `experimentalDecorators: true` and `emitDecoratorMetadata: true` in tsconfig.json
+Key registration methods:
+- `query()` / `mutation()` / `subscription()` - Root operation fields
+- `objectType()` / `interfaceType()` / `enumType()` / `unionType()` / `inputType()` - Type definitions
+- `directive()` - Custom directives with optional Effect transformers
+- `field()` - Add computed/relational fields to object types
 
-**B. Builder Pattern** (in progress)
-- `src/builder/object-builder.ts` - Fluent API for building GraphQL Object Types
-- `src/builder/schema-mapper.ts` - Maps schemas programmatically
-- `src/service/builder.ts` - Service integration (work in progress)
+Type name inference: Automatically extracts names from `S.TaggedStruct`, `S.TaggedClass`, or `S.Class`. Plain structs require explicit `name` parameter.
 
-Both approaches aim to achieve automatic Effect Schema → GraphQL type derivation with validation.
+### 3. Pipe-able API
 
-### 3. Schema Builder
+**File**: `src/builder/pipe-api.ts`
 
-**File**: `src/builder/index.ts`
+Provides standalone functions for use with `.pipe()`:
+```typescript
+GraphQLSchemaBuilder.empty.pipe(
+  query("hello", { type: S.String, resolve: () => Effect.succeed("world") }),
+  objectType({ name: "User", schema: UserSchema }),
+  field("User", "posts", { type: S.Array(PostSchema), resolve: ... })
+)
+```
 
-Singleton `GraphQLSchemaBuilder` that:
-- Registers GraphQL types, directives, query/mutation/subscription fields
-- Exports global `schemaBuilder` instance used by decorators
-- Provides centralized type registry for cross-references (e.g., unions, interfaces)
+### 4. Type Registry System
 
-### 4. Server Integration
+**File**: `src/builder/type-registry.ts`
 
-**File**: `src/server.ts`
+Handles type resolution during schema building:
+- `toGraphQLTypeWithRegistry()` - Checks registered types before falling back to default conversion
+- Supports circular type references via lazy field builders
+- Matches Effect Schema unions to registered GraphQL enums/unions
+- Extracts type names from TaggedStruct `_tag` literals or Schema identifier annotations
 
-Effect HTTP server using `@effect/platform` and `@effect/platform-node`:
-- GraphQL endpoint at `/graphql` (POST)
-- GraphiQL IDE at `/_graphiql` (GET)
-- `executeQuery()` wraps graphql-js execution in Effect
-- Request parsing via `HttpServerRequest.schemaBodyJson()`
-- Currently runs on port 11001
+### 5. Field Builders
 
-### 5. Error System
+**File**: `src/builder/field-builders.ts`
+
+Builds GraphQL field configs from registrations:
+- `buildField()` - Query/mutation fields
+- `buildObjectField()` - Object type fields (receives parent)
+- `buildSubscriptionField()` - Subscription fields with Stream → AsyncIterator conversion
+- `applyDirectives()` - Wraps resolver Effects with directive transformers
+
+### 6. Execution
+
+**File**: `src/builder/execute.ts`
+
+Layer-per-request execution model:
+```typescript
+const result = await Effect.runPromise(
+  execute(schema, serviceLayer)(source, variables, operationName)
+)
+```
+Creates an Effect runtime from the provided layer and passes it to resolvers via GraphQL context.
+
+### 7. DataLoader Integration
+
+**File**: `src/loader.ts`
+
+Type-safe DataLoader helpers using Effect services:
+- `Loader.single()` - One key → one value (e.g., user by ID)
+- `Loader.grouped()` - One key → many values (e.g., posts by author ID)
+- `Loader.define()` - Creates a `LoaderRegistry` with:
+  - `toLayer()` - Request-scoped Layer for fresh DataLoader instances
+  - `load()` / `loadMany()` - Effect-based loading in resolvers
+
+### 8. Error System
 
 **File**: `src/error.ts`
 
@@ -89,56 +123,34 @@ Effect-based tagged errors using `Data.TaggedError`:
 - `AuthorizationError` - Access control
 - `NotFoundError` - Missing resources
 
-These integrate with Effect's error channel and can be mapped to GraphQL errors.
-
-### 6. Context System
+### 9. Context System
 
 **File**: `src/context.ts`
 
-Request-scoped context using Effect's Context system:
+Request-scoped context using Effect's Context:
 - `GraphQLRequestContext` - Contains headers, query, variables, operationName
-- `makeRequestContextLayer()` - Creates Effect Layer for dependency injection
+- `makeRequestContextLayer()` - Creates Layer for dependency injection
 
 ## Key Design Patterns
 
 1. **Effect Schema as Single Source of Truth**: Define data models once with Effect Schema, derive both TypeScript types and GraphQL types
-2. **Effect-based Resolvers**: Resolvers return `Effect.Effect<A, E, R>` for composability, error handling, and service access
-3. **Service Integration**: Use Effect's Context/Tag system to inject dependencies into resolvers
-4. **Validation at the Boundary**: Arguments are validated via Effect Schema before resolver execution
-5. **Relational/Computed Fields**: Object types can have additional fields with their own resolvers (parent, args) for relationships
-
-## Current State
-
-This is a **prototype/experimental** codebase. Based on git history:
-- Initial commit established basic Effect Schema → GraphQL mapping
-- Added support for relational/computed fields with validation
-- Currently exploring decorator vs builder pattern approaches
-- Server implementation exists but integration with schema builder is incomplete (see TODO in server.ts:53)
-
-The codebase appears to be in active development - some features referenced in README.md may not be fully implemented.
+2. **Immutable Builder**: Each builder method returns a new instance, enabling safe composition
+3. **Type Parameter Accumulation**: Service requirements `R` accumulate as resolvers are added
+4. **Effect-based Resolvers**: Resolvers return `Effect.Effect<A, E, R>` for composability
+5. **Layer-per-Request**: Build schema once, execute each request with its own service Layer
+6. **Lazy Type Resolution**: Object type fields use thunks to support circular references
 
 ## TypeScript Configuration
 
-- Target: ES2022
-- Module: CommonJS
+- Target: ES2022, Module: CommonJS
 - Decorators enabled (`experimentalDecorators`, `emitDecoratorMetadata`)
 - Strict mode enabled
-- Output: `./dist`
-- Excludes: examples directory (not in repo yet)
 
 ## Dependencies
 
 Core:
-- `effect` ^3.19.11 - Effect ecosystem
-- `@effect/platform` - HTTP abstractions
-- `@effect/platform-node` - Node.js runtime
-- `graphql` ^16.0.0 - GraphQL execution
+- `effect` - Effect ecosystem
+- `@effect/platform` / `@effect/platform-node` - HTTP server
+- `graphql` - GraphQL execution
+- `dataloader` - Batching/caching for resolvers
 - `reflect-metadata` - Decorator metadata
-
-## Notes for Implementation
-
-- When adding GraphQL types, register them with the global `schemaBuilder` to enable cross-references
-- Resolver functions should return Effect, not Promises
-- Use Effect Schema for all validation - it automatically generates GraphQL types
-- The decorator approach requires classes to extend Effect's `Schema.Class`
-- Optional fields in Effect Schema remain optional in GraphQL (no automatic NonNull wrapping)
