@@ -1,4 +1,5 @@
-import { Effect, Pipeable } from "effect"
+import { Effect, Layer, Pipeable } from "effect"
+import { HttpRouter } from "@effect/platform"
 import * as S from "effect/Schema"
 import {
   GraphQLSchema,
@@ -36,6 +37,7 @@ import {
   buildSubscriptionField,
   type FieldBuilderContext,
 } from "./field-builders"
+import { makeGraphQLRouter, type GraphQLRouterConfigInput } from "../server"
 
 /**
  * Internal state for the builder
@@ -383,6 +385,33 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       mutationFields,
       subscriptionFields,
     })
+  }
+
+  /**
+   * Build the schema and create an HTTP router for GraphQL
+   *
+   * This is a convenience method that combines buildSchema() with makeGraphQLRouter().
+   * The router can be composed with other routes in your application.
+   *
+   * @param layer - Effect layer providing services required by resolvers
+   * @param config - Optional configuration for paths and GraphiQL
+   * @returns An HttpRouter that can be composed with other routes
+   *
+   * @example
+   * ```typescript
+   * const router = GraphQLSchemaBuilder.empty
+   *   .pipe(
+   *     query("hello", { type: S.String, resolve: () => Effect.succeed("world") }),
+   *   )
+   *   .toRouter(Layer.empty, { graphiql: true })
+   * ```
+   */
+  toRouter<R2>(
+    layer: Layer.Layer<R2>,
+    config?: GraphQLRouterConfigInput
+  ): HttpRouter.HttpRouter<never, never> {
+    const schema = this.buildSchema()
+    return makeGraphQLRouter(schema, layer, config)
   }
 
   private buildDirectiveRegistry(): Map<string, GraphQLDirective> {
