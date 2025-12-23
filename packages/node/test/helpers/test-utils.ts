@@ -2,8 +2,11 @@ import { Effect, Layer, Stream } from "effect"
 import * as S from "effect/Schema"
 import { HttpApp } from "@effect/platform"
 import { GraphQLSchemaBuilder, makeGraphQLRouter } from "@effect-graphql/core"
-import { DirectiveLocation } from "graphql"
-import { createServer, IncomingMessage, ServerResponse } from "node:http"
+import { DirectiveLocation, GraphQLSchema } from "graphql"
+import { createServer, IncomingMessage, ServerResponse, Server } from "node:http"
+import { createClient, Client } from "graphql-ws"
+import WebSocket from "ws"
+import { createGraphQLWSServer } from "../../src/ws"
 
 /**
  * Create a test schema with various GraphQL features:
@@ -193,4 +196,132 @@ export const getGraphiQL = async (
     status: response.status,
     body: await response.text(),
   }
+}
+
+/**
+ * Start a test server with WebSocket subscription support.
+ * Returns the port, schema, and cleanup functions.
+ */
+export const startTestServerWithWS = async (port: number = 0) => {
+  const schema = createTestSchema()
+  const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
+  const { handler } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+
+  const server = createServer(
+    async (req: IncomingMessage, res: ServerResponse) => {
+      try {
+        // Collect request body
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(chunk as Buffer)
+        }
+        const body = Buffer.concat(chunks).toString()
+
+        // Convert Node.js request to web standard Request
+        const url = `http://localhost${req.url}`
+        const headers = new Headers()
+        for (const [key, value] of Object.entries(req.headers)) {
+          if (value) {
+            if (Array.isArray(value)) {
+              value.forEach((v) => headers.append(key, v))
+            } else {
+              headers.set(key, value)
+            }
+          }
+        }
+
+        const webRequest = new Request(url, {
+          method: req.method,
+          headers,
+          body: ["GET", "HEAD"].includes(req.method!) ? undefined : body,
+        })
+
+        // Process through Effect handler
+        const webResponse = await handler(webRequest)
+
+        // Write response
+        res.statusCode = webResponse.status
+        webResponse.headers.forEach((value, key) => {
+          res.setHeader(key, value)
+        })
+        const responseBody = await webResponse.text()
+        res.end(responseBody)
+      } catch (error) {
+        res.statusCode = 500
+        res.end(JSON.stringify({ error: String(error) }))
+      }
+    }
+  )
+
+  // Create WebSocket server for subscriptions
+  const { handleUpgrade, close: closeWS } = createGraphQLWSServer(
+    schema,
+    Layer.empty,
+    { path: "/graphql" }
+  )
+
+  // Attach WebSocket upgrade handler
+  server.on("upgrade", (request, socket, head) => {
+    handleUpgrade(request, socket, head)
+  })
+
+  return new Promise<{
+    port: number
+    schema: GraphQLSchema
+    stop: () => Promise<void>
+  }>((resolve) => {
+    server.listen(port, () => {
+      const addr = server.address() as { port: number }
+      resolve({
+        port: addr.port,
+        schema,
+        stop: async () => {
+          await closeWS()
+          return new Promise<void>((res, rej) => {
+            server.close((err) => {
+              if (err) rej(err)
+              else res()
+            })
+          })
+        },
+      })
+    })
+  })
+}
+
+/**
+ * Execute a GraphQL subscription and collect all results.
+ */
+export const executeSubscription = async <T = unknown>(
+  port: number,
+  query: string,
+  variables?: Record<string, unknown>
+): Promise<T[]> => {
+  const client = createClient({
+    url: `ws://localhost:${port}/graphql`,
+    webSocketImpl: WebSocket,
+  })
+
+  const results: T[] = []
+
+  return new Promise((resolve, reject) => {
+    client.subscribe<T>(
+      { query, variables },
+      {
+        next: (data) => {
+          if (data.data) {
+            results.push(data.data)
+          }
+        },
+        error: (error) => {
+          client.dispose()
+          reject(error)
+        },
+        complete: () => {
+          client.dispose()
+          resolve(results)
+        },
+      }
+    )
+  })
 }

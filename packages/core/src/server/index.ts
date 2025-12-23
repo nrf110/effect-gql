@@ -19,3 +19,18 @@ export { makeGraphQLRouter } from "./router"
 
 // Schema builder extension
 export { toRouter } from "./schema-builder-extensions"
+
+// WebSocket subscription support
+export type {
+  EffectWebSocket,
+  CloseEvent,
+  ConnectionContext,
+  GraphQLWSOptions,
+  GraphQLWSConfig,
+  SubscribeMessage,
+  CompleteMessage,
+} from "./ws-types"
+
+export { WebSocketError } from "./ws-types"
+
+export { makeGraphQLWSHandler } from "./ws-adapter"

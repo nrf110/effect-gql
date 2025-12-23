@@ -1,10 +1,13 @@
 import { Effect, Layer, Stream } from "effect"
 import * as S from "effect/Schema"
 import { GraphQLSchemaBuilder, makeGraphQLRouter } from "@effect-graphql/core"
-import { DirectiveLocation } from "graphql"
+import { DirectiveLocation, GraphQLSchema } from "graphql"
 import express, { Express } from "express"
-import { Server } from "node:http"
+import { createServer, Server } from "node:http"
 import { toMiddleware } from "../../src/middleware"
+import { attachWebSocket } from "../../src/ws"
+import { createClient } from "graphql-ws"
+import { WebSocket } from "ws"
 
 /**
  * Create a test schema with various GraphQL features:
@@ -154,4 +157,88 @@ export const getGraphiQL = async (
     status: response.status,
     body: await response.text(),
   }
+}
+
+/**
+ * Start an Express test server with WebSocket subscription support.
+ * Returns the port, app, schema, and a cleanup function.
+ */
+export const startTestServerWithWS = async (
+  port: number = 0
+): Promise<{
+  port: number
+  app: Express
+  schema: GraphQLSchema
+  stop: () => Promise<void>
+}> => {
+  const app = express()
+  app.use(express.json())
+
+  const schema = createTestSchema()
+  const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
+  app.use(toMiddleware(router, Layer.empty))
+
+  const server = createServer(app)
+
+  // Attach WebSocket support
+  const ws = attachWebSocket(server, schema, Layer.empty, {
+    path: "/graphql",
+  })
+
+  return new Promise((resolve) => {
+    server.listen(port, () => {
+      const addr = server.address() as { port: number }
+      resolve({
+        port: addr.port,
+        app,
+        schema,
+        stop: async () => {
+          await ws.close()
+          return new Promise<void>((res, rej) => {
+            server.close((err) => {
+              if (err) rej(err)
+              else res()
+            })
+          })
+        },
+      })
+    })
+  })
+}
+
+/**
+ * Execute a GraphQL subscription and collect all results.
+ */
+export const executeSubscription = async <T = unknown>(
+  port: number,
+  query: string,
+  variables?: Record<string, unknown>
+): Promise<T[]> => {
+  const client = createClient({
+    url: `ws://localhost:${port}/graphql`,
+    webSocketImpl: WebSocket,
+  })
+
+  const results: T[] = []
+
+  return new Promise((resolve, reject) => {
+    client.subscribe<T>(
+      { query, variables },
+      {
+        next: (data) => {
+          if (data.data) {
+            results.push(data.data)
+          }
+        },
+        error: (error) => {
+          client.dispose()
+          reject(error)
+        },
+        complete: () => {
+          client.dispose()
+          resolve(results)
+        },
+      }
+    )
+  })
 }

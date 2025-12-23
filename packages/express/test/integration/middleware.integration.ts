@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { startTestServer, executeQuery, getGraphiQL } from "../helpers/test-utils"
+import {
+  startTestServerWithWS,
+  executeQuery,
+  executeSubscription,
+  getGraphiQL,
+} from "../helpers/test-utils"
 
 describe("Express Middleware Integration", () => {
   let port: number
   let stop: () => Promise<void>
 
   beforeAll(async () => {
-    const server = await startTestServer()
+    // Use WebSocket-enabled server for all tests
+    const server = await startTestServerWithWS()
     port = server.port
     stop = server.stop
   })
@@ -116,11 +122,39 @@ describe("Express Middleware Integration", () => {
   // ==========================================================================
   // Subscriptions
   // ==========================================================================
-  describe.skip("subscriptions", () => {
-    // WebSocket subscription tests would go here
-    // These require WebSocket support in the server which may need to be implemented
+  describe("subscriptions", () => {
     it("should stream subscription events", async () => {
-      // TODO: Implement WebSocket subscription testing
+      const results = await executeSubscription<{ countdown: number }>(
+        port,
+        "subscription { countdown(from: 3) }"
+      )
+
+      expect(results).toHaveLength(3)
+      expect(results.map((r) => r.countdown)).toEqual([3, 2, 1])
+    })
+
+    it("should handle subscription with variables", async () => {
+      const results = await executeSubscription<{ countdown: number }>(
+        port,
+        "subscription Countdown($from: Int!) { countdown(from: $from) }",
+        { from: 5 }
+      )
+
+      expect(results).toHaveLength(5)
+      expect(results.map((r) => r.countdown)).toEqual([5, 4, 3, 2, 1])
+    })
+
+    it("should complete subscription when stream ends", async () => {
+      const startTime = Date.now()
+      const results = await executeSubscription<{ countdown: number }>(
+        port,
+        "subscription { countdown(from: 2) }"
+      )
+      const elapsed = Date.now() - startTime
+
+      // Should complete quickly since stream is synchronous
+      expect(elapsed).toBeLessThan(5000)
+      expect(results).toHaveLength(2)
     })
   })
 
