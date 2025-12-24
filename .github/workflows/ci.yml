@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  # Build and test packages that run on Node.js
+  # Build all packages and run tests for Node.js packages
   test-node:
     name: Test (${{ matrix.package }})
     runs-on: ubuntu-latest
@@ -28,12 +28,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build core (dependency)
-        if: matrix.package != 'core'
-        run: npm run build -w @effect-graphql/core
-
-      - name: Build package
-        run: npm run build -w @effect-graphql/${{ matrix.package }}
+      - name: Build all packages
+        run: tsc --build
 
       - name: Run tests
         run: npm test -w @effect-graphql/${{ matrix.package }}
@@ -60,11 +56,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build core (dependency)
-        run: npm run build -w @effect-graphql/core
-
-      - name: Build bun package
-        run: npm run build -w @effect-graphql/bun
+      - name: Build all packages
+        run: tsc --build
 
       - name: Run tests
         run: npm test -w @effect-graphql/bun
@@ -86,11 +79,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build core (dependency)
-        run: npm run build -w @effect-graphql/core
-
-      - name: Build web package
-        run: npm run build -w @effect-graphql/web
+      - name: Build all packages
+        run: tsc --build
 
   # Type checking across the entire monorepo
   typecheck:
@@ -109,8 +99,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build all packages
-        run: npm run build
-
       - name: Typecheck
-        run: npm run typecheck
+        run: tsc --build
