@@ -1,0 +1,398 @@
+---
+title: Context API
+description: Request context and resolver context APIs
+---
+
+Effect GraphQL provides two context systems: `ResolverContext` for dynamic request-scoped values and `GraphQLRequestContext` for HTTP request information.
+
+## ResolverContext
+
+Type-safe context for passing values through the resolver hierarchy.
+
+### Import
+
+```typescript
+import { ResolverContext } from "@effect-graphql/core"
+```
+
+### `ResolverContext.make(name)`
+
+Create a new typed context slot.
+
+```typescript
+function make<A>(name: string): ResolverContextSlot<A>
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `name` | `string` | Identifier for error messages |
+
+**Returns:** `ResolverContextSlot<A>` - A typed slot for storing values
+
+**Example:**
+
+```typescript
+const CurrentUser = ResolverContext.make<User>("CurrentUser")
+const TenantId = ResolverContext.make<string>("TenantId")
+```
+
+### `ResolverContext.get(slot)`
+
+Get a value from the context. Fails if not set.
+
+```typescript
+function get<A>(
+  slot: ResolverContextSlot<A>
+): Effect.Effect<A, MissingResolverContextError, ResolverContextStore>
+```
+
+**Example:**
+
+```typescript
+const user = yield* ResolverContext.get(CurrentUser)
+// Type: User
+// Fails with MissingResolverContextError if not set
+```
+
+### `ResolverContext.getOption(slot)`
+
+Get a value as an Option. Returns `None` if not set.
+
+```typescript
+function getOption<A>(
+  slot: ResolverContextSlot<A>
+): Effect.Effect<Option.Option<A>, never, ResolverContextStore>
+```
+
+**Example:**
+
+```typescript
+const maybeUser = yield* ResolverContext.getOption(CurrentUser)
+// Type: Option<User>
+
+if (Option.isSome(maybeUser)) {
+  console.log(maybeUser.value.name)
+}
+```
+
+### `ResolverContext.getOrElse(slot, orElse)`
+
+Get a value or return a default if not set.
+
+```typescript
+function getOrElse<A>(
+  slot: ResolverContextSlot<A>,
+  orElse: () => A
+): Effect.Effect<A, never, ResolverContextStore>
+```
+
+**Example:**
+
+```typescript
+const requestId = yield* ResolverContext.getOrElse(
+  RequestId,
+  () => "unknown"
+)
+// Type: string (never fails)
+```
+
+### `ResolverContext.set(slot, value)`
+
+Set a value in the context.
+
+```typescript
+function set<A>(
+  slot: ResolverContextSlot<A>,
+  value: A
+): Effect.Effect<void, never, ResolverContextStore>
+```
+
+**Example:**
+
+```typescript
+yield* ResolverContext.set(CurrentUser, user)
+```
+
+### `ResolverContext.setMany(values)`
+
+Set multiple values at once.
+
+```typescript
+function setMany(
+  values: ReadonlyArray<readonly [ResolverContextSlot<any>, any]>
+): Effect.Effect<void, never, ResolverContextStore>
+```
+
+**Example:**
+
+```typescript
+yield* ResolverContext.setMany([
+  [CurrentUser, user],
+  [TenantId, user.tenantId],
+  [RequestId, crypto.randomUUID()]
+])
+```
+
+### `ResolverContext.has(slot)`
+
+Check if a slot has a value set.
+
+```typescript
+function has<A>(
+  slot: ResolverContextSlot<A>
+): Effect.Effect<boolean, never, ResolverContextStore>
+```
+
+**Example:**
+
+```typescript
+const isAuthenticated = yield* ResolverContext.has(CurrentUser)
+```
+
+### `ResolverContext.scoped(slot, value)`
+
+Run an effect with a temporary context value. The value is set before the effect runs and restored after.
+
+```typescript
+function scoped<A>(
+  slot: ResolverContextSlot<A>,
+  value: A
+): <B, E, R>(
+  effect: Effect.Effect<B, E, R>
+) => Effect.Effect<B, E, R | ResolverContextStore>
+```
+
+**Example:**
+
+```typescript
+const result = yield* ResolverContext.scoped(LogPrefix, "[Resolver]")(
+  Effect.gen(function* () {
+    const prefix = yield* ResolverContext.get(LogPrefix)
+    console.log(prefix, "Running...")
+    return yield* someEffect
+  })
+)
+// LogPrefix is restored to previous value after
+```
+
+### `ResolverContext.storeLayer`
+
+Layer that provides the `ResolverContextStore`. Include this in your service layer.
+
+```typescript
+const storeLayer: Layer.Layer<ResolverContextStore>
+```
+
+**Example:**
+
+```typescript
+const serviceLayer = Layer.mergeAll(
+  DatabaseLive,
+  ResolverContext.storeLayer
+)
+```
+
+### `ResolverContext.makeStoreLayer()`
+
+Create a new store layer programmatically.
+
+```typescript
+function makeStoreLayer(): Effect.Effect<Layer.Layer<ResolverContextStore>>
+```
+
+### `ResolverContext.Store`
+
+The Effect Context tag for the store. Useful for advanced use cases.
+
+```typescript
+const Store: Context.Tag<ResolverContextStore, ResolverContextStore>
+```
+
+## Type Definitions
+
+### `ResolverContextSlot<A>`
+
+A typed slot for storing values in the resolver context.
+
+```typescript
+interface ResolverContextSlot<A> {
+  readonly _tag: "ResolverContextSlot"
+  readonly name: string
+  readonly _A: A  // Phantom type
+}
+```
+
+### `ResolverContextStore`
+
+Internal storage for resolver context values.
+
+```typescript
+interface ResolverContextStore {
+  readonly ref: Ref.Ref<HashMap.HashMap<string, unknown>>
+}
+```
+
+### `MissingResolverContextError`
+
+Error thrown when accessing a context slot that hasn't been set.
+
+```typescript
+class MissingResolverContextError extends Error {
+  readonly _tag = "MissingResolverContextError"
+  readonly contextName: string
+
+  constructor(contextName: string)
+}
+```
+
+**Properties:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `contextName` | `string` | The name of the missing context slot |
+| `message` | `string` | Human-readable error message |
+
+---
+
+## GraphQLRequestContext
+
+HTTP request information available in resolvers.
+
+### Import
+
+```typescript
+import { GraphQLRequestContext, makeRequestContextLayer } from "@effect-graphql/core"
+```
+
+### `GraphQLRequestContext`
+
+Effect Context tag for accessing request information.
+
+```typescript
+interface GraphQLRequestContext {
+  readonly request: {
+    readonly headers: Record<string, string>
+    readonly query: string
+    readonly variables?: Record<string, unknown>
+    readonly operationName?: string
+  }
+}
+
+const GraphQLRequestContext: Context.Tag<GraphQLRequestContext, GraphQLRequestContext>
+```
+
+**Example:**
+
+```typescript
+const resolve = () => Effect.gen(function* () {
+  const ctx = yield* GraphQLRequestContext
+
+  const authHeader = ctx.request.headers.authorization
+  const operationName = ctx.request.operationName
+
+  // ...
+})
+```
+
+### `makeRequestContextLayer(context)`
+
+Create a layer from request context data.
+
+```typescript
+function makeRequestContextLayer(
+  context: GraphQLRequestContext
+): Layer.Layer<GraphQLRequestContext>
+```
+
+**Example:**
+
+```typescript
+const requestLayer = makeRequestContextLayer({
+  request: {
+    headers: { authorization: "Bearer token" },
+    query: "query { users { id } }",
+    variables: {},
+    operationName: "GetUsers"
+  }
+})
+```
+
+## Complete Example
+
+```typescript
+import {
+  GraphQLSchemaBuilder,
+  query,
+  directive,
+  ResolverContext,
+  GraphQLRequestContext,
+  AuthorizationError
+} from "@effect-graphql/core"
+import { Effect, Layer } from "effect"
+import * as S from "effect/Schema"
+
+// Define context slots
+const CurrentUser = ResolverContext.make<User>("CurrentUser")
+const Permissions = ResolverContext.make<Set<string>>("Permissions")
+
+// Auth directive that populates context
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  directive("auth", {
+    locations: ["FIELD_DEFINITION"],
+    transformer: (next) => Effect.gen(function* () {
+      // Get auth header from request
+      const ctx = yield* GraphQLRequestContext
+      const token = ctx.request.headers.authorization?.replace("Bearer ", "")
+
+      if (!token) {
+        return yield* Effect.fail(new AuthorizationError({
+          message: "Authentication required"
+        }))
+      }
+
+      // Validate and set context
+      const user = yield* AuthService.validateToken(token)
+      const perms = yield* PermissionService.getForUser(user.id)
+
+      yield* ResolverContext.setMany([
+        [CurrentUser, user],
+        [Permissions, new Set(perms)]
+      ])
+
+      return yield* next
+    })
+  }),
+
+  query("me", {
+    type: UserSchema,
+    directives: ["@auth"],
+    resolve: () => ResolverContext.get(CurrentUser)
+  }),
+
+  query("adminDashboard", {
+    type: DashboardSchema,
+    directives: ["@auth"],
+    resolve: () => Effect.gen(function* () {
+      const perms = yield* ResolverContext.get(Permissions)
+
+      if (!perms.has("admin:read")) {
+        return yield* Effect.fail(new AuthorizationError({
+          message: "Admin access required"
+        }))
+      }
+
+      return yield* DashboardService.getData()
+    })
+  })
+)
+
+// Service layer must include ResolverContext.storeLayer
+const serviceLayer = Layer.mergeAll(
+  AuthServiceLive,
+  PermissionServiceLive,
+  DashboardServiceLive,
+  ResolverContext.storeLayer
+)
+```

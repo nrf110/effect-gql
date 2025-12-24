@@ -1,0 +1,455 @@
+---
+title: Resolver Context
+description: Type-safe context passing through the resolver hierarchy
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Effect GraphQL provides a type-safe context system for passing values through the resolver hierarchy. Unlike simple property bags, `ResolverContext` gives you typed slots with clear errors when required context is missing.
+
+## Why ResolverContext?
+
+In GraphQL APIs, you often need to pass data from one resolver to another:
+
+- **Authentication**: Validate a token in a directive, access the user in any resolver
+- **Multi-tenancy**: Extract tenant ID from headers, use it in all database queries
+- **Tracing**: Create a request ID, include it in all logs and errors
+- **Feature flags**: Load flags once, check them throughout the request
+
+`ResolverContext` solves this with:
+- **Type safety**: Each slot knows its value type
+- **Clear errors**: Missing context gives helpful error messages
+- **Request scoping**: Values are isolated per request
+- **Hierarchical access**: Parent resolvers can set context for children
+
+## Quick Start
+
+```typescript
+import { ResolverContext } from "@effect-graphql/core"
+import { Effect } from "effect"
+
+// 1. Define a context slot
+const CurrentUser = ResolverContext.make<User>("CurrentUser")
+
+// 2. Set it in a directive or parent resolver
+directive("auth", {
+  locations: ["FIELD_DEFINITION"],
+  transformer: (next) => Effect.gen(function* () {
+    const token = yield* getAuthToken()
+    const user = yield* AuthService.validateToken(token)
+
+    // Set the context
+    yield* ResolverContext.set(CurrentUser, user)
+
+    return yield* next
+  })
+})
+
+// 3. Access it in any nested resolver
+field("User", "privateEmail", {
+  type: S.String,
+  resolve: (parent) => Effect.gen(function* () {
+    const currentUser = yield* ResolverContext.get(CurrentUser)
+
+    // Only show email if viewing own profile
+    if (currentUser.id === parent.id) {
+      return parent.email
+    }
+    return "[hidden]"
+  })
+})
+```
+
+## Creating Context Slots
+
+Use `ResolverContext.make<T>(name)` to create a typed slot:
+
+```typescript
+import { ResolverContext } from "@effect-graphql/core"
+
+// Each slot has a specific type
+const CurrentUser = ResolverContext.make<User>("CurrentUser")
+const TenantId = ResolverContext.make<string>("TenantId")
+const RequestId = ResolverContext.make<string>("RequestId")
+const FeatureFlags = ResolverContext.make<Set<string>>("FeatureFlags")
+
+// The name is used in error messages
+// "Resolver context "CurrentUser" was not provided..."
+```
+
+<Aside type="tip">
+Define context slots in a central file (e.g., `context-slots.ts`) and export them. This makes it easy to discover available context and ensures type consistency.
+</Aside>
+
+## Setting Context
+
+### In Directives
+
+Directives are the most common place to set context:
+
+```typescript
+import { GraphQLSchemaBuilder, directive } from "@effect-graphql/core"
+import { ResolverContext } from "@effect-graphql/core"
+
+const CurrentUser = ResolverContext.make<User>("CurrentUser")
+
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  directive("auth", {
+    locations: ["FIELD_DEFINITION"],
+    transformer: (next) => Effect.gen(function* () {
+      const headers = yield* getRequestHeaders()
+      const token = headers.authorization?.replace("Bearer ", "")
+
+      if (!token) {
+        return yield* Effect.fail(new AuthorizationError({
+          message: "Authentication required"
+        }))
+      }
+
+      const user = yield* AuthService.validateToken(token)
+      yield* ResolverContext.set(CurrentUser, user)
+
+      return yield* next
+    })
+  })
+)
+```
+
+### In Parent Resolvers
+
+Parent resolvers can set context for their field resolvers:
+
+```typescript
+query("organization", {
+  type: OrganizationSchema,
+  args: { id: S.String },
+  resolve: ({ id }) => Effect.gen(function* () {
+    const org = yield* OrganizationService.getById(id)
+
+    // Set tenant context for all nested resolvers
+    yield* ResolverContext.set(TenantId, org.tenantId)
+
+    return org
+  })
+})
+
+// Nested resolver automatically has access
+field("Organization", "members", {
+  type: S.Array(UserSchema),
+  resolve: (org) => Effect.gen(function* () {
+    const tenantId = yield* ResolverContext.get(TenantId)
+    // tenantId is available here
+    return yield* UserService.getByTenant(tenantId)
+  })
+})
+```
+
+### Setting Multiple Values
+
+```typescript
+yield* ResolverContext.setMany([
+  [CurrentUser, user],
+  [TenantId, user.tenantId],
+  [RequestId, crypto.randomUUID()]
+])
+```
+
+## Getting Context
+
+### Required Context
+
+Use `get` when the context must be present:
+
+```typescript
+const user = yield* ResolverContext.get(CurrentUser)
+// Type: User
+// Throws MissingResolverContextError if not set
+```
+
+### Optional Context
+
+Use `getOption` when context might not be set:
+
+```typescript
+import { Option } from "effect"
+
+const maybeUser = yield* ResolverContext.getOption(CurrentUser)
+// Type: Option<User>
+
+if (Option.isSome(maybeUser)) {
+  console.log("Logged in as:", maybeUser.value.name)
+}
+```
+
+### With Default Value
+
+Use `getOrElse` to provide a fallback:
+
+```typescript
+const requestId = yield* ResolverContext.getOrElse(
+  RequestId,
+  () => "unknown"
+)
+// Type: string (never fails)
+```
+
+### Checking Existence
+
+Use `has` to check if a slot has a value:
+
+```typescript
+const isAuthenticated = yield* ResolverContext.has(CurrentUser)
+// Type: boolean
+```
+
+## Scoped Context
+
+Use `scoped` for temporary context that shouldn't persist:
+
+```typescript
+import { ResolverContext } from "@effect-graphql/core"
+
+const LogPrefix = ResolverContext.make<string>("LogPrefix")
+
+// Context is set only for the duration of the effect
+const result = yield* ResolverContext.scoped(
+  LogPrefix,
+  "[UserResolver]"
+)(
+  Effect.gen(function* () {
+    const prefix = yield* ResolverContext.get(LogPrefix)
+    console.log(prefix, "Fetching user...")
+    return yield* fetchUser()
+  })
+)
+// LogPrefix is restored to previous value (or removed) after
+```
+
+This is useful for:
+- Logging prefixes that vary by resolver
+- Temporary overrides in tests
+- Isolation in parallel operations
+
+## Setup
+
+The `ResolverContextStore` must be provided in your service layer:
+
+```typescript
+import { ResolverContext } from "@effect-graphql/core"
+import { Layer } from "effect"
+
+// Include the store layer in your service layer
+const serviceLayer = Layer.mergeAll(
+  DatabaseLive,
+  AuthServiceLive,
+  ResolverContext.storeLayer  // Add this
+)
+
+// Use when creating the router
+const router = toRouter(builder, serviceLayer, { graphiql: true })
+```
+
+<Aside type="note">
+The `ResolverContextStore` is automatically request-scoped. Each request gets its own isolated context store.
+</Aside>
+
+## Common Patterns
+
+### Authentication Context
+
+```typescript
+// context-slots.ts
+export const CurrentUser = ResolverContext.make<User>("CurrentUser")
+export const Permissions = ResolverContext.make<Set<string>>("Permissions")
+
+// directives.ts
+directive("auth", {
+  locations: ["FIELD_DEFINITION"],
+  args: { permission: S.optional(S.String) },
+  transformer: (next, { permission }) => Effect.gen(function* () {
+    const user = yield* ResolverContext.get(CurrentUser)
+    const perms = yield* ResolverContext.get(Permissions)
+
+    if (permission && !perms.has(permission)) {
+      return yield* Effect.fail(new AuthorizationError({
+        message: `Missing permission: ${permission}`
+      }))
+    }
+
+    return yield* next
+  })
+})
+
+// resolvers.ts
+mutation("deleteUser", {
+  type: S.Boolean,
+  args: { id: S.String },
+  directives: ["@auth(permission: \"admin:delete\")"],
+  resolve: ({ id }) => Effect.gen(function* () {
+    const currentUser = yield* ResolverContext.get(CurrentUser)
+    yield* AuditLog.record({
+      action: "delete_user",
+      targetId: id,
+      actorId: currentUser.id
+    })
+    return yield* UserService.delete(id)
+  })
+})
+```
+
+### Multi-Tenant Context
+
+```typescript
+// context-slots.ts
+export const TenantId = ResolverContext.make<string>("TenantId")
+export const TenantConfig = ResolverContext.make<TenantConfig>("TenantConfig")
+
+// middleware (set early in request lifecycle)
+const extractTenant = Effect.gen(function* () {
+  const headers = yield* getRequestHeaders()
+  const tenantId = headers["x-tenant-id"]
+
+  if (!tenantId) {
+    return yield* Effect.fail(new ValidationError({
+      message: "X-Tenant-ID header required"
+    }))
+  }
+
+  const config = yield* TenantService.getConfig(tenantId)
+
+  yield* ResolverContext.setMany([
+    [TenantId, tenantId],
+    [TenantConfig, config]
+  ])
+})
+
+// Any resolver can access tenant context
+query("products", {
+  type: S.Array(ProductSchema),
+  resolve: () => Effect.gen(function* () {
+    const tenantId = yield* ResolverContext.get(TenantId)
+    return yield* ProductService.getByTenant(tenantId)
+  })
+})
+```
+
+### Request Tracing
+
+```typescript
+// context-slots.ts
+export const RequestId = ResolverContext.make<string>("RequestId")
+export const TraceSpan = ResolverContext.make<Span>("TraceSpan")
+
+// Set at request start
+yield* ResolverContext.set(RequestId, crypto.randomUUID())
+
+// Access in error handling
+const handleError = (error: Error) => Effect.gen(function* () {
+  const requestId = yield* ResolverContext.getOrElse(RequestId, () => "unknown")
+  yield* Logger.error({
+    message: error.message,
+    requestId,
+    stack: error.stack
+  })
+})
+```
+
+## Error Handling
+
+When `get` is called on a slot that hasn't been set, it throws `MissingResolverContextError`:
+
+```typescript
+try {
+  yield* ResolverContext.get(CurrentUser)
+} catch (error) {
+  if (error instanceof ResolverContext.MissingResolverContextError) {
+    console.error(error.message)
+    // "Resolver context "CurrentUser" was not provided.
+    //  Ensure a parent resolver or directive provides this context."
+    console.error(error.contextName)
+    // "CurrentUser"
+  }
+}
+```
+
+Handle gracefully with `catchTag`:
+
+```typescript
+const user = yield* ResolverContext.get(CurrentUser).pipe(
+  Effect.catchTag("MissingResolverContextError", () =>
+    Effect.fail(new AuthorizationError({ message: "Login required" }))
+  )
+)
+```
+
+## Best Practices
+
+### 1. Define Slots Centrally
+
+```typescript
+// src/context-slots.ts
+import { ResolverContext } from "@effect-graphql/core"
+
+export const CurrentUser = ResolverContext.make<User>("CurrentUser")
+export const TenantId = ResolverContext.make<string>("TenantId")
+export const RequestId = ResolverContext.make<string>("RequestId")
+```
+
+### 2. Use Descriptive Names
+
+```typescript
+// Good - clear what it contains
+const CurrentUser = ResolverContext.make<User>("CurrentUser")
+const RequestStartTime = ResolverContext.make<Date>("RequestStartTime")
+
+// Avoid - too generic
+const User = ResolverContext.make<User>("User")
+const Time = ResolverContext.make<Date>("Time")
+```
+
+### 3. Set Context Early
+
+Set context as early as possible in the request lifecycle (directives, root resolvers) so all nested resolvers can access it.
+
+### 4. Prefer getOption for Truly Optional Context
+
+```typescript
+// When auth is required, use get
+const user = yield* ResolverContext.get(CurrentUser)
+
+// When auth is optional (e.g., public with personalization)
+const maybeUser = yield* ResolverContext.getOption(CurrentUser)
+```
+
+### 5. Don't Overuse
+
+For simple cases, Effect's built-in `Context.Tag` system may be simpler. Use `ResolverContext` when you need:
+- Values set dynamically during request processing
+- Hierarchical context (parent sets, children read)
+- Request-scoped mutation
+
+## ResolverContext vs Effect Context
+
+| Feature | Effect Context | ResolverContext |
+|---------|---------------|-----------------|
+| Type safety | ✓ | ✓ |
+| Set at runtime | ✗ (layers are static) | ✓ |
+| Mutable during request | ✗ | ✓ |
+| Hierarchical | ✗ | ✓ |
+| Use case | Services, configs | Request data, auth |
+
+Use **Effect Context** for:
+- Database connections
+- External service clients
+- Configuration values
+
+Use **ResolverContext** for:
+- Current authenticated user
+- Request-specific data
+- Values determined during resolution
+
+## Next Steps
+
+- [Resolvers](/effect-graphql/guides/resolvers) - Writing resolver functions
+- [Error Handling](/effect-graphql/guides/error-handling) - Handle context errors
+- [Server Integration](/effect-graphql/guides/server-integration) - Set up service layers

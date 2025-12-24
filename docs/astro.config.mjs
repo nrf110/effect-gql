@@ -27,6 +27,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Schema Builder', slug: 'guides/schema-builder' },
 						{ label: 'Resolvers', slug: 'guides/resolvers' },
+						{ label: 'Resolver Context', slug: 'guides/resolver-context' },
 						{ label: 'Error Handling', slug: 'guides/error-handling' },
 						{ label: 'Server Integration', slug: 'guides/server-integration' },
 						{ label: 'Subscriptions', slug: 'guides/subscriptions' },
@@ -41,6 +42,7 @@ export default defineConfig({
 						{ label: 'Pipe Functions', slug: 'reference/pipe-functions' },
 						{ label: 'Type Mapping', slug: 'reference/type-mapping' },
 						{ label: 'Error Types', slug: 'reference/error-types' },
+						{ label: 'Context API', slug: 'reference/context-api' },
 						{ label: 'Loader API', slug: 'reference/loader-api' },
 						{ label: 'Server API', slug: 'reference/server-api' },
 					],
