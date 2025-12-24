@@ -1,6 +1,13 @@
 import { defineConfig } from "vitest/config"
+import path from "path"
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // Use compiled dist to avoid Effect module identity issues
+      "@effect-gql/core": path.resolve(__dirname, "../core/dist/index.js"),
+    },
+  },
   test: {
     globals: true,
     environment: "node",

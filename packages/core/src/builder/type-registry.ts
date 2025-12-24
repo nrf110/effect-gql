@@ -65,6 +65,70 @@ export interface TypeConversionContext {
   enumRegistry: Map<string, GraphQLEnumType>
   unionRegistry: Map<string, GraphQLUnionType>
   inputRegistry: Map<string, GraphQLInputObjectType>
+  // Reverse lookup caches for O(1) type resolution
+  schemaToTypeName?: Map<S.Schema<any, any, any>, string>
+  astToTypeName?: Map<AST.AST, string>
+  schemaToInterfaceName?: Map<S.Schema<any, any, any>, string>
+  astToInterfaceName?: Map<AST.AST, string>
+  // Cached sorted values for enum/union matching
+  enumSortedValues?: Map<string, readonly string[]>
+  unionSortedTypes?: Map<string, readonly string[]>
+}
+
+/**
+ * Build reverse lookup maps from registration maps for O(1) type resolution
+ */
+export function buildReverseLookups(ctx: TypeConversionContext): void {
+  // Build schema/AST -> type name lookups
+  if (!ctx.schemaToTypeName) {
+    ctx.schemaToTypeName = new Map()
+    ctx.astToTypeName = new Map()
+    for (const [typeName, typeReg] of ctx.types) {
+      ctx.schemaToTypeName.set(typeReg.schema, typeName)
+      ctx.astToTypeName.set(typeReg.schema.ast, typeName)
+    }
+  }
+
+  // Build schema/AST -> interface name lookups
+  if (!ctx.schemaToInterfaceName) {
+    ctx.schemaToInterfaceName = new Map()
+    ctx.astToInterfaceName = new Map()
+    for (const [interfaceName, interfaceReg] of ctx.interfaces) {
+      ctx.schemaToInterfaceName.set(interfaceReg.schema, interfaceName)
+      ctx.astToInterfaceName.set(interfaceReg.schema.ast, interfaceName)
+    }
+  }
+
+  // Build cached sorted enum values
+  if (!ctx.enumSortedValues) {
+    ctx.enumSortedValues = new Map()
+    for (const [enumName, enumReg] of ctx.enums) {
+      ctx.enumSortedValues.set(enumName, [...enumReg.values].sort())
+    }
+  }
+
+  // Build cached sorted union types
+  if (!ctx.unionSortedTypes) {
+    ctx.unionSortedTypes = new Map()
+    for (const [unionName, unionReg] of ctx.unions) {
+      ctx.unionSortedTypes.set(unionName, [...unionReg.types].sort())
+    }
+  }
+}
+
+// GraphQLNonNull wrapper cache for memoization
+const nonNullCache = new WeakMap<any, GraphQLNonNull<any>>()
+
+/**
+ * Get or create a GraphQLNonNull wrapper (memoized)
+ */
+export function getNonNull<T extends import("graphql").GraphQLNullableType>(type: T): GraphQLNonNull<T> {
+  let cached = nonNullCache.get(type)
+  if (!cached) {
+    cached = new GraphQLNonNull(type)
+    nonNullCache.set(type, cached)
+  }
+  return cached
 }
 
 /**
@@ -74,6 +138,9 @@ export function toGraphQLTypeWithRegistry(
   schema: S.Schema<any, any, any>,
   ctx: TypeConversionContext
 ): any {
+  // Ensure reverse lookup maps are built
+  buildReverseLookups(ctx)
+
   const ast = schema.ast
 
   // Check registered object types first
@@ -116,33 +183,33 @@ export function toGraphQLTypeWithRegistry(
 }
 
 /**
- * Find a registered object type matching this schema
+ * Find a registered object type matching this schema (O(1) with reverse lookup)
  */
 function findRegisteredType(
   schema: S.Schema<any, any, any>,
   ast: AST.AST,
   ctx: TypeConversionContext
 ): GraphQLObjectType | undefined {
-  for (const [typeName, typeReg] of ctx.types) {
-    if (typeReg.schema === schema || typeReg.schema.ast === ast) {
-      return ctx.typeRegistry.get(typeName)
-    }
+  // Use reverse lookup maps for O(1) lookup
+  const typeName = ctx.schemaToTypeName?.get(schema) ?? ctx.astToTypeName?.get(ast)
+  if (typeName) {
+    return ctx.typeRegistry.get(typeName)
   }
   return undefined
 }
 
 /**
- * Find a registered interface matching this schema
+ * Find a registered interface matching this schema (O(1) with reverse lookup)
  */
 function findRegisteredInterface(
   schema: S.Schema<any, any, any>,
   ast: AST.AST,
   ctx: TypeConversionContext
 ): GraphQLInterfaceType | undefined {
-  for (const [interfaceName, interfaceReg] of ctx.interfaces) {
-    if (interfaceReg.schema === schema || interfaceReg.schema.ast === ast) {
-      return ctx.interfaceRegistry.get(interfaceName)
-    }
+  // Use reverse lookup maps for O(1) lookup
+  const interfaceName = ctx.schemaToInterfaceName?.get(schema) ?? ctx.astToInterfaceName?.get(ast)
+  if (interfaceName) {
+    return ctx.interfaceRegistry.get(interfaceName)
   }
   return undefined
 }
@@ -195,7 +262,7 @@ function handleUnionAST(ast: any, ctx: TypeConversionContext): any {
 }
 
 /**
- * Find a registered enum matching a union of literals
+ * Find a registered enum matching a union of literals (uses cached sorted values)
  */
 function findEnumForLiteralUnion(
   types: any[],
@@ -203,9 +270,11 @@ function findEnumForLiteralUnion(
 ): GraphQLEnumType | undefined {
   const literalValues = types.map((t: any) => String(t.literal)).sort()
 
-  for (const [enumName, enumReg] of ctx.enums) {
-    const enumValues = [...enumReg.values].sort()
-    if (literalValues.length === enumValues.length &&
+  for (const [enumName] of ctx.enums) {
+    // Use cached sorted values instead of sorting on every comparison
+    const enumValues = ctx.enumSortedValues?.get(enumName)
+    if (enumValues &&
+        literalValues.length === enumValues.length &&
         literalValues.every((v: string, i: number) => v === enumValues[i])) {
       return ctx.enumRegistry.get(enumName)
     }
@@ -214,7 +283,7 @@ function findEnumForLiteralUnion(
 }
 
 /**
- * Find a registered union matching an object type union
+ * Find a registered union matching an object type union (uses cached sorted types)
  */
 function findRegisteredUnion(
   types: any[],
@@ -235,10 +304,12 @@ function findRegisteredUnion(
 
   // Check if any registered union has matching types
   if (memberTags.length === types.length) {
-    for (const [unionName, unionReg] of ctx.unions) {
-      const unionTypes = [...unionReg.types].sort()
-      const sortedTags = [...memberTags].sort()
-      if (sortedTags.length === unionTypes.length &&
+    const sortedTags = memberTags.sort()
+    for (const [unionName] of ctx.unions) {
+      // Use cached sorted types instead of sorting on every comparison
+      const unionTypes = ctx.unionSortedTypes?.get(unionName)
+      if (unionTypes &&
+          sortedTags.length === unionTypes.length &&
           sortedTags.every((tag, i) => tag === unionTypes[i])) {
         return ctx.unionRegistry.get(unionName)
       }
@@ -309,9 +380,9 @@ export function schemaToFields(
       const fieldSchema = S.make(field.type)
       let fieldType = toGraphQLTypeWithRegistry(fieldSchema, ctx)
 
-      // Make non-optional fields non-null
+      // Make non-optional fields non-null (memoized)
       if (!field.isOptional) {
-        fieldType = new GraphQLNonNull(fieldType)
+        fieldType = getNonNull(fieldType)
       }
 
       fields[fieldName] = { type: fieldType }
@@ -349,9 +420,9 @@ export function schemaToInputFields(
         enums
       )
 
-      // Make non-optional fields non-null
+      // Make non-optional fields non-null (memoized)
       if (!field.isOptional) {
-        fieldType = new GraphQLNonNull(fieldType)
+        fieldType = getNonNull(fieldType)
       }
 
       fields[fieldName] = { type: fieldType }
@@ -479,9 +550,9 @@ export function toGraphQLArgsWithRegistry(
         enums
       )
 
-      // Make non-optional fields non-null
+      // Make non-optional fields non-null (memoized)
       if (!field.isOptional) {
-        fieldType = new GraphQLNonNull(fieldType)
+        fieldType = getNonNull(fieldType)
       }
 
       args[fieldName] = { type: fieldType }

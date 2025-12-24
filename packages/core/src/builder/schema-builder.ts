@@ -28,6 +28,7 @@ import {
   schemaToFields,
   schemaToInputFields,
   toGraphQLArgsWithRegistry,
+  buildReverseLookups,
   type TypeConversionContext,
 } from "./type-registry"
 import {
@@ -459,24 +460,26 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     const typeRegistry = new Map<string, GraphQLObjectType>()
     const unionRegistry = new Map<string, GraphQLUnionType>()
 
+    // Create shared TypeConversionContext once for all interface field builders
+    const sharedCtx: TypeConversionContext = {
+      types: this.state.types,
+      interfaces: this.state.interfaces,
+      enums: this.state.enums,
+      unions: this.state.unions,
+      inputs: this.state.inputs,
+      typeRegistry,
+      interfaceRegistry: registry,
+      enumRegistry,
+      unionRegistry,
+      inputRegistry: new Map(),
+    }
+    // Pre-build reverse lookup maps once
+    buildReverseLookups(sharedCtx)
+
     for (const [name, reg] of this.state.interfaces) {
       const interfaceType = new GraphQLInterfaceType({
         name,
-        fields: () => {
-          const ctx: TypeConversionContext = {
-            types: this.state.types,
-            interfaces: this.state.interfaces,
-            enums: this.state.enums,
-            unions: this.state.unions,
-            inputs: this.state.inputs,
-            typeRegistry,
-            interfaceRegistry: registry,
-            enumRegistry,
-            unionRegistry,
-            inputRegistry: new Map(),
-          }
-          return schemaToFields(reg.schema, ctx)
-        },
+        fields: () => schemaToFields(reg.schema, sharedCtx),
         resolveType: reg.resolveType,
       })
       registry.set(name, interfaceType)
@@ -495,6 +498,31 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     const typeRegistry = new Map<string, GraphQLObjectType>()
     const unionRegistry = new Map<string, GraphQLUnionType>()
 
+    // Create shared TypeConversionContext once and reuse for all lazy field builders
+    const sharedCtx: TypeConversionContext = {
+      types: this.state.types,
+      interfaces: this.state.interfaces,
+      enums: this.state.enums,
+      unions: this.state.unions,
+      inputs: this.state.inputs,
+      typeRegistry,
+      interfaceRegistry,
+      enumRegistry,
+      unionRegistry,
+      inputRegistry: new Map(),
+    }
+    // Pre-build reverse lookup maps once
+    buildReverseLookups(sharedCtx)
+
+    // Create shared FieldBuilderContext for additional fields
+    const sharedFieldCtx = this.createFieldBuilderContext(
+      typeRegistry,
+      interfaceRegistry,
+      enumRegistry,
+      unionRegistry,
+      new Map()
+    )
+
     // Build object types with lazy field builders (allows circular references)
     for (const [typeName, typeReg] of this.state.types) {
       const implementedInterfaces = typeReg.implements?.map(
@@ -504,32 +532,12 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       const graphqlType = new GraphQLObjectType({
         name: typeName,
         fields: () => {
-          const ctx: TypeConversionContext = {
-            types: this.state.types,
-            interfaces: this.state.interfaces,
-            enums: this.state.enums,
-            unions: this.state.unions,
-            inputs: this.state.inputs,
-            typeRegistry,
-            interfaceRegistry,
-            enumRegistry,
-            unionRegistry,
-            inputRegistry: new Map(),
-          }
-
-          const baseFields = schemaToFields(typeReg.schema, ctx)
+          const baseFields = schemaToFields(typeReg.schema, sharedCtx)
           const additionalFields = this.state.objectFields.get(typeName)
 
           if (additionalFields) {
-            const fieldCtx = this.createFieldBuilderContext(
-              typeRegistry,
-              interfaceRegistry,
-              enumRegistry,
-              unionRegistry,
-              new Map()
-            )
             for (const [fieldName, fieldConfig] of additionalFields) {
-              baseFields[fieldName] = buildObjectField(fieldConfig, fieldCtx)
+              baseFields[fieldName] = buildObjectField(fieldConfig, sharedFieldCtx)
             }
           }
 

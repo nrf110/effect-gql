@@ -256,16 +256,19 @@ function createDataLoader<K, V, R>(
         const items = await Effect.runPromise(
           def.batch(keys).pipe(Effect.provide(context))
         )
-        // Group items by key
+        // Group items by key with lazy array initialization
+        // Only create arrays for keys that have matching items
         const map = new Map<K, V[]>()
-        for (const key of keys) {
-          map.set(key, [])
-        }
         for (const item of items) {
           const key = def.groupBy(item)
-          const arr = map.get(key)
-          if (arr) arr.push(item)
+          let arr = map.get(key)
+          if (!arr) {
+            arr = []
+            map.set(key, arr)
+          }
+          arr.push(item)
         }
+        // Return results in key order, defaulting to empty array for missing keys
         return keys.map((key) => map.get(key) ?? [])
       })
       return loader
@@ -327,6 +330,7 @@ function mapByKey<K, V>(
 /**
  * Group an array of items by a key function.
  * Returns a Map from key to array of matching items.
+ * Guarantees an entry (possibly empty) for each requested key.
  */
 function groupByKey<K, V>(
   keys: readonly K[],
@@ -334,9 +338,11 @@ function groupByKey<K, V>(
   keyFn: (item: V) => K
 ): Map<K, V[]> {
   const map = new Map<K, V[]>()
+  // Initialize empty arrays for all requested keys
   for (const key of keys) {
     map.set(key, [])
   }
+  // Fill in items
   for (const item of items) {
     const key = keyFn(item)
     const arr = map.get(key)
