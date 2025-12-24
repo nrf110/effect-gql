@@ -9,8 +9,15 @@
     "forceConsistentCasingInFileNames": true,
     "moduleResolution": "node",
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true
+    "emitDecoratorMetadata": true,
+    "baseUrl": ".",
+    "paths": {
+      "@effect-graphql/core": ["packages/core/src/index.ts"],
+      "@effect-graphql/core/*": ["packages/core/src/*"]
+    }
   },
+  "include": [],
+  "exclude": ["docs", "node_modules"],
   "references": [
     { "path": "./packages/core" },
     { "path": "./packages/node" },

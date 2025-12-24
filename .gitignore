@@ -1,2 +1,22 @@
 node_modules/
 dist/
+
+# TypeScript build artifacts
+*.tsbuildinfo
+
+# Generated JS/declaration files outside dist
+examples/**/*.js
+examples/**/*.d.ts
+examples/**/*.d.ts.map
+vitest.workspace.js
+vitest.workspace.d.ts
+vitest.workspace.d.ts.map
+packages/*/vitest.config.js
+packages/*/vitest.config.d.ts
+packages/*/vitest.config.d.ts.map
+packages/*/test/**/*.js
+packages/*/test/**/*.d.ts
+packages/*/test/**/*.d.ts.map
+docs/src/**/*.js
+docs/src/**/*.d.ts
+docs/src/**/*.d.ts.map
