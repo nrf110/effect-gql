@@ -16,8 +16,8 @@ import type { Request, Response, NextFunction, RequestHandler } from "express"
  * @example
  * ```typescript
  * import express from "express"
- * import { makeGraphQLRouter } from "@effect-graphql/core"
- * import { toMiddleware } from "@effect-graphql/express"
+ * import { makeGraphQLRouter } from "@effect-gql/core"
+ * import { toMiddleware } from "@effect-gql/express"
  * import { Layer } from "effect"
  *
  * const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })

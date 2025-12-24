@@ -25,7 +25,7 @@ In GraphQL APIs, you often need to pass data from one resolver to another:
 ## Quick Start
 
 ```typescript
-import { ResolverContext } from "@effect-graphql/core"
+import { ResolverContext } from "@effect-gql/core"
 import { Effect } from "effect"
 
 // 1. Define a context slot
@@ -65,7 +65,7 @@ field("User", "privateEmail", {
 Use `ResolverContext.make<T>(name)` to create a typed slot:
 
 ```typescript
-import { ResolverContext } from "@effect-graphql/core"
+import { ResolverContext } from "@effect-gql/core"
 
 // Each slot has a specific type
 const CurrentUser = ResolverContext.make<User>("CurrentUser")
@@ -88,8 +88,8 @@ Define context slots in a central file (e.g., `context-slots.ts`) and export the
 Directives are the most common place to set context:
 
 ```typescript
-import { GraphQLSchemaBuilder, directive } from "@effect-graphql/core"
-import { ResolverContext } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, directive } from "@effect-gql/core"
+import { ResolverContext } from "@effect-gql/core"
 
 const CurrentUser = ResolverContext.make<User>("CurrentUser")
 
@@ -207,7 +207,7 @@ const isAuthenticated = yield* ResolverContext.has(CurrentUser)
 Use `scoped` for temporary context that shouldn't persist:
 
 ```typescript
-import { ResolverContext } from "@effect-graphql/core"
+import { ResolverContext } from "@effect-gql/core"
 
 const LogPrefix = ResolverContext.make<string>("LogPrefix")
 
@@ -235,7 +235,7 @@ This is useful for:
 The `ResolverContextStore` must be provided in your service layer:
 
 ```typescript
-import { ResolverContext } from "@effect-graphql/core"
+import { ResolverContext } from "@effect-gql/core"
 import { Layer } from "effect"
 
 // Include the store layer in your service layer
@@ -388,7 +388,7 @@ const user = yield* ResolverContext.get(CurrentUser).pipe(
 
 ```typescript
 // src/context-slots.ts
-import { ResolverContext } from "@effect-graphql/core"
+import { ResolverContext } from "@effect-gql/core"
 
 export const CurrentUser = ResolverContext.make<User>("CurrentUser")
 export const TenantId = ResolverContext.make<string>("TenantId")

@@ -1,7 +1,7 @@
 {
-  "name": "@effect-graphql/web",
+  "name": "@effect-gql/web",
   "version": "0.1.0",
-  "description": "Web standard handler for @effect-graphql/core - works with Cloudflare Workers, Deno, and other WASM runtimes",
+  "description": "Web standard handler for @effect-gql/core - works with Cloudflare Workers, Deno, and other WASM runtimes",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -20,12 +20,12 @@
     "clean": "rm -rf dist"
   },
   "peerDependencies": {
-    "@effect-graphql/core": "^0.1.0",
+    "@effect-gql/core": "^0.1.0",
     "@effect/platform": "^0.94.0",
     "effect": "^3.19.0"
   },
   "devDependencies": {
-    "@effect-graphql/core": "*",
+    "@effect-gql/core": "*",
     "@effect/platform": "^0.94.0",
     "effect": "^3.19.13"
   },

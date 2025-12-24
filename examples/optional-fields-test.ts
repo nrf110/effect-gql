@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchemaBuilder, execute, objectType, query } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, execute, objectType, query } from "@effect-gql/core"
 import { printSchema } from "graphql"
 
 /**

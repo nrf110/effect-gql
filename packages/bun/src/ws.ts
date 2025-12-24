@@ -6,7 +6,7 @@ import {
   type GraphQLWSOptions,
   WebSocketError,
   type CloseEvent,
-} from "@effect-graphql/core"
+} from "@effect-gql/core"
 import type { Server, ServerWebSocket } from "bun"
 
 /**

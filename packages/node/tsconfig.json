@@ -13,8 +13,8 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@effect-graphql/core": ["../core/src/index.ts"],
-      "@effect-graphql/core/*": ["../core/src/*"]
+      "@effect-gql/core": ["../core/src/index.ts"],
+      "@effect-gql/core/*": ["../core/src/*"]
     }
   },
   "include": ["src/**/*"],

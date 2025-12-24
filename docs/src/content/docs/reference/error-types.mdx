@@ -15,7 +15,7 @@ import {
   ValidationError,
   AuthorizationError,
   NotFoundError
-} from "@effect-graphql/core"
+} from "@effect-gql/core"
 ```
 
 ## Base Error
@@ -34,7 +34,7 @@ class GraphQLError extends Data.TaggedError("GraphQLError")<{
 **Usage:**
 
 ```typescript
-import { GraphQLError } from "@effect-graphql/core"
+import { GraphQLError } from "@effect-gql/core"
 import { Effect } from "effect"
 
 const resolver = () => Effect.fail(
@@ -79,7 +79,7 @@ class ValidationError extends Data.TaggedError("ValidationError")<{
 **Usage:**
 
 ```typescript
-import { ValidationError } from "@effect-graphql/core"
+import { ValidationError } from "@effect-gql/core"
 
 mutation("createUser", {
   type: UserSchema,
@@ -126,7 +126,7 @@ class AuthorizationError extends Data.TaggedError("AuthorizationError")<{
 **Usage:**
 
 ```typescript
-import { AuthorizationError } from "@effect-graphql/core"
+import { AuthorizationError } from "@effect-gql/core"
 
 query("adminStats", {
   type: StatsSchema,
@@ -173,7 +173,7 @@ class NotFoundError extends Data.TaggedError("NotFoundError")<{
 **Usage:**
 
 ```typescript
-import { NotFoundError } from "@effect-graphql/core"
+import { NotFoundError } from "@effect-gql/core"
 
 query("user", {
   type: UserSchema,
@@ -255,7 +255,7 @@ const resolver = () => Effect.fail(
 
 ```typescript
 import { Effect } from "effect"
-import { NotFoundError } from "@effect-graphql/core"
+import { NotFoundError } from "@effect-gql/core"
 
 query("userOrDefault", {
   type: UserSchema,

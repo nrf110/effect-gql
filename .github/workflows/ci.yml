@@ -32,7 +32,7 @@ jobs:
         run: tsc --build
 
       - name: Run tests
-        run: npm test -w @effect-graphql/${{ matrix.package }}
+        run: npm test -w @effect-gql/${{ matrix.package }}
 
   # Build and test the bun package
   test-bun:
@@ -60,7 +60,7 @@ jobs:
         run: tsc --build
 
       - name: Run tests
-        run: npm test -w @effect-graphql/bun
+        run: npm test -w @effect-gql/bun
 
   # Verify web package builds (no tests)
   build-web:

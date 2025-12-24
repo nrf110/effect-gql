@@ -1,5 +1,5 @@
 {
-  "name": "@effect-graphql/core",
+  "name": "@effect-gql/core",
   "version": "0.1.0",
   "description": "Core GraphQL framework for Effect-TS - schema building, type mapping, and execution",
   "main": "dist/index.js",

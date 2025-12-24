@@ -9,7 +9,7 @@ import {
   type GraphQLWSOptions,
   WebSocketError,
   type CloseEvent,
-} from "@effect-graphql/core"
+} from "@effect-gql/core"
 
 /**
  * Options for Node.js WebSocket server

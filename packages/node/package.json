@@ -1,7 +1,7 @@
 {
-  "name": "@effect-graphql/node",
+  "name": "@effect-gql/node",
   "version": "0.1.0",
-  "description": "Node.js HTTP server integration for @effect-graphql/core",
+  "description": "Node.js HTTP server integration for @effect-gql/core",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -24,7 +24,7 @@
     "test:watch": "vitest"
   },
   "peerDependencies": {
-    "@effect-graphql/core": "^0.1.0",
+    "@effect-gql/core": "^0.1.0",
     "@effect/platform": "^0.94.0",
     "@effect/platform-node": "^0.87.0",
     "effect": "^3.19.0",
@@ -37,7 +37,7 @@
     }
   },
   "devDependencies": {
-    "@effect-graphql/core": "*",
+    "@effect-gql/core": "*",
     "@effect/platform": "^0.94.0",
     "@effect/platform-node": "^0.87.0",
     "effect": "^3.19.13",

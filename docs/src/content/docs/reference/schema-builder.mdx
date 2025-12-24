@@ -10,7 +10,7 @@ The `GraphQLSchemaBuilder` is an immutable, pipeable builder for constructing Gr
 ## Import
 
 ```typescript
-import { GraphQLSchemaBuilder } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder } from "@effect-gql/core"
 ```
 
 ## Creating a Builder
@@ -260,7 +260,7 @@ const schema: GraphQLSchema = builder.buildSchema()
 The builder implements `Pipeable` for fluent composition:
 
 ```typescript
-import { GraphQLSchemaBuilder, query, objectType, field } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, query, objectType, field } from "@effect-gql/core"
 
 const builder = GraphQLSchemaBuilder.empty.pipe(
   query("users", { ... }),
@@ -294,7 +294,7 @@ This ensures you provide all required services when executing queries.
 ## Example
 
 ```typescript
-import { GraphQLSchemaBuilder, query, mutation, objectType, field } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, query, mutation, objectType, field } from "@effect-gql/core"
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
 

@@ -29,7 +29,7 @@ Without DataLoader, if you have 100 posts, this executes 101 database queries. W
 1. **Define your loaders**
 
    ```typescript
-   import { Loader } from "@effect-graphql/core"
+   import { Loader } from "@effect-gql/core"
 
    const loaders = Loader.define({
      UserById: Loader.single<string, User>({
@@ -116,7 +116,7 @@ const loaders = Loader.define({
 ## Full Example
 
 ```typescript
-import { GraphQLSchemaBuilder, query, field, Loader } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, query, field, Loader } from "@effect-gql/core"
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
 

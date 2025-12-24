@@ -8,7 +8,7 @@
 import { Effect, Stream, Layer, Duration, Ref } from "effect"
 import * as S from "effect/Schema"
 import { printSchema, subscribe, parse } from "graphql"
-import { GraphQLSchemaBuilder } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder } from "@effect-gql/core"
 
 // =============================================================================
 // Schema Definitions

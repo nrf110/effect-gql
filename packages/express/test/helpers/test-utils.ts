@@ -1,6 +1,6 @@
 import { Effect, Layer, Stream } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchemaBuilder, makeGraphQLRouter } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, makeGraphQLRouter } from "@effect-gql/core"
 import { DirectiveLocation, GraphQLSchema } from "graphql"
 import express, { Express } from "express"
 import { createServer, Server } from "node:http"

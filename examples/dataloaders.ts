@@ -1,7 +1,7 @@
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
 import DataLoader from "dataloader"
-import { GraphQLSchemaBuilder, execute } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, execute } from "@effect-gql/core"
 
 /**
  * Example: DataLoaders with Effect

@@ -19,7 +19,7 @@ import {
   inputType,
   field,
   directive
-} from "@effect-graphql/core"
+} from "@effect-gql/core"
 ```
 
 ## Usage
@@ -27,7 +27,7 @@ import {
 All functions are designed to work with `GraphQLSchemaBuilder.pipe()`:
 
 ```typescript
-import { GraphQLSchemaBuilder, query, objectType, field } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, query, objectType, field } from "@effect-gql/core"
 
 const builder = GraphQLSchemaBuilder.empty.pipe(
   objectType({ name: "User", schema: UserSchema }),

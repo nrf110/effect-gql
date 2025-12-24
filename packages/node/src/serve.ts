@@ -3,7 +3,7 @@ import { HttpApp, HttpRouter, HttpServer } from "@effect/platform"
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import { createServer, Server } from "node:http"
 import type { GraphQLSchema } from "graphql"
-import type { GraphQLWSOptions } from "@effect-graphql/core"
+import type { GraphQLWSOptions } from "@effect-gql/core"
 
 /**
  * Configuration for WebSocket subscriptions
@@ -51,8 +51,8 @@ export interface ServeOptions<R = never> {
  *
  * @example
  * ```typescript
- * import { makeGraphQLRouter } from "@effect-graphql/core"
- * import { serve } from "@effect-graphql/node"
+ * import { makeGraphQLRouter } from "@effect-gql/core"
+ * import { serve } from "@effect-gql/node"
  *
  * const schema = GraphQLSchemaBuilder.empty
  *   .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })

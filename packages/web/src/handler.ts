@@ -30,8 +30,8 @@ export interface WebHandler {
  *
  * @example Cloudflare Workers
  * ```typescript
- * import { makeGraphQLRouter } from "@effect-graphql/core"
- * import { toHandler } from "@effect-graphql/web"
+ * import { makeGraphQLRouter } from "@effect-gql/core"
+ * import { toHandler } from "@effect-gql/web"
  * import { Layer } from "effect"
  *
  * const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
@@ -46,8 +46,8 @@ export interface WebHandler {
  *
  * @example Deno
  * ```typescript
- * import { makeGraphQLRouter } from "@effect-graphql/core"
- * import { toHandler } from "@effect-graphql/web"
+ * import { makeGraphQLRouter } from "@effect-gql/core"
+ * import { toHandler } from "@effect-gql/web"
  *
  * const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
  * const { handler } = toHandler(router, Layer.empty)

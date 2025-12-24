@@ -40,7 +40,7 @@ interface WSExtra<R> {
  *
  * @example
  * ```typescript
- * import { makeGraphQLWSHandler } from "@effect-graphql/core"
+ * import { makeGraphQLWSHandler } from "@effect-gql/core"
  *
  * const handler = makeGraphQLWSHandler(schema, serviceLayer, {
  *   onConnect: (params) => Effect.gen(function* () {

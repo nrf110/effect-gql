@@ -12,8 +12,8 @@
     "emitDecoratorMetadata": true,
     "baseUrl": ".",
     "paths": {
-      "@effect-graphql/core": ["packages/core/src/index.ts"],
-      "@effect-graphql/core/*": ["packages/core/src/*"]
+      "@effect-gql/core": ["packages/core/src/index.ts"],
+      "@effect-gql/core/*": ["packages/core/src/*"]
     }
   },
   "include": [],

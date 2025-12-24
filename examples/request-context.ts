@@ -13,7 +13,7 @@ import {
   GraphQLRequestContext,
   makeRequestContextLayer,
   execute,
-} from "@effect-graphql/core"
+} from "@effect-gql/core"
 
 // =============================================================================
 // Define a simple auth service that uses request context

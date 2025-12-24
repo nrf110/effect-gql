@@ -16,7 +16,7 @@ import type { GraphQLRouterConfigInput } from "./config"
  *
  * @example
  * ```typescript
- * import { GraphQLSchemaBuilder, query, toRouter } from "@effect-graphql/core"
+ * import { GraphQLSchemaBuilder, query, toRouter } from "@effect-gql/core"
  * import { Layer } from "effect"
  * import * as S from "effect/Schema"
  *

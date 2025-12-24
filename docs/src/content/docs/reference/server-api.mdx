@@ -3,7 +3,7 @@ title: Server API
 description: HTTP and WebSocket server integration
 ---
 
-Effect GraphQL provides server integration APIs in `@effect-graphql/core` for HTTP routing and WebSocket subscriptions.
+Effect GraphQL provides server integration APIs in `@effect-gql/core` for HTTP routing and WebSocket subscriptions.
 
 ## HTTP Router
 
@@ -12,7 +12,7 @@ Effect GraphQL provides server integration APIs in `@effect-graphql/core` for HT
 Create an HttpRouter configured for GraphQL.
 
 ```typescript
-import { makeGraphQLRouter } from "@effect-graphql/core"
+import { makeGraphQLRouter } from "@effect-gql/core"
 
 function makeGraphQLRouter<R>(
   schema: GraphQLSchema,
@@ -32,7 +32,7 @@ function makeGraphQLRouter<R>(
 **Example:**
 
 ```typescript
-import { makeGraphQLRouter } from "@effect-graphql/core"
+import { makeGraphQLRouter } from "@effect-gql/core"
 import { Layer } from "effect"
 
 const schema = builder.buildSchema()
@@ -48,7 +48,7 @@ const router = makeGraphQLRouter(schema, serviceLayer, {
 Convert a GraphQLSchemaBuilder directly to an HttpRouter.
 
 ```typescript
-import { toRouter } from "@effect-graphql/core"
+import { toRouter } from "@effect-gql/core"
 
 function toRouter<R, R2>(
   builder: GraphQLSchemaBuilder<R>,
@@ -60,7 +60,7 @@ function toRouter<R, R2>(
 **Example:**
 
 ```typescript
-import { GraphQLSchemaBuilder, query, toRouter } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, query, toRouter } from "@effect-gql/core"
 
 const builder = GraphQLSchemaBuilder.empty.pipe(
   query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
@@ -97,7 +97,7 @@ interface GraphiQLConfig {
 Load configuration from environment variables.
 
 ```typescript
-import { GraphQLRouterConfigFromEnv } from "@effect-graphql/core"
+import { GraphQLRouterConfigFromEnv } from "@effect-gql/core"
 import { Effect } from "effect"
 
 const program = Effect.gen(function* () {
@@ -122,7 +122,7 @@ const program = Effect.gen(function* () {
 Create a WebSocket handler for GraphQL subscriptions.
 
 ```typescript
-import { makeGraphQLWSHandler } from "@effect-graphql/core"
+import { makeGraphQLWSHandler } from "@effect-gql/core"
 
 function makeGraphQLWSHandler<R>(
   schema: GraphQLSchema,
@@ -142,7 +142,7 @@ function makeGraphQLWSHandler<R>(
 **Example:**
 
 ```typescript
-import { makeGraphQLWSHandler } from "@effect-graphql/core"
+import { makeGraphQLWSHandler } from "@effect-gql/core"
 
 const handler = makeGraphQLWSHandler(schema, serviceLayer, {
   onConnect: (params) => Effect.gen(function* () {
@@ -230,14 +230,14 @@ interface EffectWebSocket {
 
 ## Node.js Package
 
-The `@effect-graphql/node` package provides Node.js-specific server utilities.
+The `@effect-gql/node` package provides Node.js-specific server utilities.
 
 ### `serve(router, layer, options)`
 
 Start a Node.js HTTP server.
 
 ```typescript
-import { serve } from "@effect-graphql/node"
+import { serve } from "@effect-gql/node"
 
 function serve<E, R, RE>(
   router: HttpRouter.HttpRouter<E, R>,
@@ -275,8 +275,8 @@ interface SubscriptionsConfig<R> extends GraphQLWSOptions<R> {
 **Example:**
 
 ```typescript
-import { toRouter } from "@effect-graphql/core"
-import { serve } from "@effect-graphql/node"
+import { toRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
 
 const router = toRouter(builder, serviceLayer, { graphiql: true })
 
@@ -301,7 +301,7 @@ serve(router, serviceLayer, {
 Create a WebSocket server for manual HTTP server integration.
 
 ```typescript
-import { createGraphQLWSServer } from "@effect-graphql/node"
+import { createGraphQLWSServer } from "@effect-gql/node"
 
 function createGraphQLWSServer<R>(
   schema: GraphQLSchema,
@@ -318,7 +318,7 @@ function createGraphQLWSServer<R>(
 
 ```typescript
 import { createServer } from "node:http"
-import { createGraphQLWSServer } from "@effect-graphql/node"
+import { createGraphQLWSServer } from "@effect-gql/node"
 
 const httpServer = createServer(httpHandler)
 
@@ -335,7 +335,7 @@ httpServer.listen(4000)
 Attach WebSocket support to an existing HTTP server.
 
 ```typescript
-import { attachWebSocketToServer } from "@effect-graphql/node"
+import { attachWebSocketToServer } from "@effect-gql/node"
 
 function attachWebSocketToServer<R>(
   server: Server,
@@ -349,7 +349,7 @@ function attachWebSocketToServer<R>(
 
 ```typescript
 import { createServer } from "node:http"
-import { attachWebSocketToServer } from "@effect-graphql/node"
+import { attachWebSocketToServer } from "@effect-gql/node"
 
 const httpServer = createServer(httpHandler)
 
@@ -369,7 +369,7 @@ process.on("SIGTERM", async () => {
 Convert a `ws` WebSocket to an EffectWebSocket.
 
 ```typescript
-import { toEffectWebSocket } from "@effect-graphql/node"
+import { toEffectWebSocket } from "@effect-gql/node"
 import { WebSocket } from "ws"
 
 function toEffectWebSocket(ws: WebSocket): EffectWebSocket
@@ -379,8 +379,8 @@ function toEffectWebSocket(ws: WebSocket): EffectWebSocket
 
 ```typescript
 import { WebSocketServer } from "ws"
-import { toEffectWebSocket } from "@effect-graphql/node"
-import { makeGraphQLWSHandler } from "@effect-graphql/core"
+import { toEffectWebSocket } from "@effect-gql/node"
+import { makeGraphQLWSHandler } from "@effect-gql/core"
 
 const handler = makeGraphQLWSHandler(schema, layer)
 const wss = new WebSocketServer({ port: 4000 })
@@ -398,7 +398,7 @@ wss.on("connection", (ws) => {
 Error type for WebSocket operations.
 
 ```typescript
-import { WebSocketError } from "@effect-graphql/core"
+import { WebSocketError } from "@effect-gql/core"
 
 class WebSocketError extends Data.TaggedError("WebSocketError")<{
   readonly cause: unknown
@@ -423,7 +423,7 @@ interface CloseEvent {
 Generate HTML for GraphiQL IDE.
 
 ```typescript
-import { graphiqlHtml } from "@effect-graphql/core"
+import { graphiqlHtml } from "@effect-gql/core"
 
 function graphiqlHtml(endpoint: string): string
 ```
@@ -433,7 +433,7 @@ The generated HTML loads GraphiQL from CDN and configures it to send requests to
 **Example:**
 
 ```typescript
-import { graphiqlHtml } from "@effect-graphql/core"
+import { graphiqlHtml } from "@effect-gql/core"
 
 const html = graphiqlHtml("/graphql")
 // Returns full HTML page with GraphiQL configured

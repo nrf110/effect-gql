@@ -1,7 +1,7 @@
 import { Effect, Layer, Stream } from "effect"
 import * as S from "effect/Schema"
 import { HttpApp } from "@effect/platform"
-import { GraphQLSchemaBuilder, makeGraphQLRouter } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, makeGraphQLRouter } from "@effect-gql/core"
 import { DirectiveLocation, GraphQLSchema } from "graphql"
 import { createServer, IncomingMessage, ServerResponse, Server } from "node:http"
 import { createClient, Client } from "graphql-ws"

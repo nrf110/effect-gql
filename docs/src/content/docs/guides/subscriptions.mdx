@@ -23,7 +23,7 @@ Effect GraphQL uses Effect's `Stream` type for subscriptions, providing a natura
 Use the `subscription` function to register subscription fields:
 
 ```typescript
-import { GraphQLSchemaBuilder, subscription } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, subscription } from "@effect-gql/core"
 import { Effect, Stream } from "effect"
 import * as S from "effect/Schema"
 
@@ -67,8 +67,8 @@ subscription("messagesInChannel", {
 <Tabs>
   <TabItem label="Node.js">
 ```typescript
-import { toRouter } from "@effect-graphql/core"
-import { serve } from "@effect-graphql/node"
+import { toRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
 
 const schema = builder.buildSchema()
 const router = toRouter(builder, serviceLayer, { graphiql: true })
@@ -85,7 +85,7 @@ serve(router, serviceLayer, {
   </TabItem>
   <TabItem label="Custom Setup">
 ```typescript
-import { createGraphQLWSServer } from "@effect-graphql/node"
+import { createGraphQLWSServer } from "@effect-gql/node"
 import { createServer } from "node:http"
 
 const httpServer = createServer(httpHandler)
@@ -471,9 +471,9 @@ subscription("messages", {
 
 | Platform | Package | WebSocket Support |
 |----------|---------|-------------------|
-| Node.js | `@effect-graphql/node` | Via `ws` package |
-| Bun | `@effect-graphql/bun` | Built-in |
-| Express | `@effect-graphql/express` | Via `ws` package |
+| Node.js | `@effect-gql/node` | Via `ws` package |
+| Bun | `@effect-gql/bun` | Built-in |
+| Express | `@effect-gql/express` | Via `ws` package |
 
 All platforms use the same `graphql-ws` protocol, ensuring client compatibility.
 

@@ -10,7 +10,7 @@ import {
   type GraphQLWSOptions,
   WebSocketError,
   type CloseEvent,
-} from "@effect-graphql/core"
+} from "@effect-gql/core"
 
 /**
  * Options for Express WebSocket server
@@ -149,8 +149,8 @@ const toEffectWebSocket = (ws: WebSocket): EffectWebSocket => {
  * ```typescript
  * import express from "express"
  * import { createServer } from "node:http"
- * import { toMiddleware, attachWebSocket } from "@effect-graphql/express"
- * import { makeGraphQLRouter, GraphQLSchemaBuilder } from "@effect-graphql/core"
+ * import { toMiddleware, attachWebSocket } from "@effect-gql/express"
+ * import { makeGraphQLRouter, GraphQLSchemaBuilder } from "@effect-gql/core"
  * import { Layer, Effect, Stream } from "effect"
  * import * as S from "effect/Schema"
  *

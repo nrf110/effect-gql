@@ -1,8 +1,8 @@
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
 import { HttpRouter, HttpServerResponse } from "@effect/platform"
-import { GraphQLSchemaBuilder, query, makeGraphQLRouter } from "@effect-graphql/core"
-import { serve } from "@effect-graphql/node"
+import { GraphQLSchemaBuilder, query, makeGraphQLRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
 
 // Example schema with a simple query
 const schema = GraphQLSchemaBuilder.empty

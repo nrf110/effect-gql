@@ -11,18 +11,18 @@ Effect GraphQL provides platform-specific packages for running your GraphQL serv
 
 | Package | Platform | Install |
 |---------|----------|---------|
-| `@effect-graphql/node` | Node.js | `npm install @effect-graphql/node` |
-| `@effect-graphql/bun` | Bun | `npm install @effect-graphql/bun` |
-| `@effect-graphql/express` | Express.js | `npm install @effect-graphql/express` |
-| `@effect-graphql/web` | Web standards | `npm install @effect-graphql/web` |
+| `@effect-gql/node` | Node.js | `npm install @effect-gql/node` |
+| `@effect-gql/bun` | Bun | `npm install @effect-gql/bun` |
+| `@effect-gql/express` | Express.js | `npm install @effect-gql/express` |
+| `@effect-gql/web` | Web standards | `npm install @effect-gql/web` |
 
 ## Quick Start with Node.js
 
 The fastest way to get a GraphQL server running:
 
 ```typescript
-import { GraphQLSchemaBuilder, query, toRouter } from "@effect-graphql/core"
-import { serve } from "@effect-graphql/node"
+import { GraphQLSchemaBuilder, query, toRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
 
@@ -54,7 +54,7 @@ The `HttpRouter` from `@effect/platform` is the central abstraction for HTTP han
 Converts a `GraphQLSchemaBuilder` directly to an `HttpRouter`:
 
 ```typescript
-import { GraphQLSchemaBuilder, toRouter } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, toRouter } from "@effect-gql/core"
 import { Layer } from "effect"
 
 const builder = GraphQLSchemaBuilder.empty.pipe(
@@ -72,7 +72,7 @@ const router = toRouter(builder, serviceLayer, {
 If you already have a built `GraphQLSchema`:
 
 ```typescript
-import { makeGraphQLRouter } from "@effect-graphql/core"
+import { makeGraphQLRouter } from "@effect-gql/core"
 
 const schema = builder.buildSchema()
 
@@ -128,8 +128,8 @@ const router = toRouter(builder, layer, {
 <Tabs>
   <TabItem label="Basic Server">
 ```typescript
-import { toRouter } from "@effect-graphql/core"
-import { serve } from "@effect-graphql/node"
+import { toRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
 
 const router = toRouter(builder, serviceLayer, { graphiql: true })
 
@@ -142,8 +142,8 @@ serve(router, serviceLayer, {
   </TabItem>
   <TabItem label="With Subscriptions">
 ```typescript
-import { toRouter } from "@effect-graphql/core"
-import { serve } from "@effect-graphql/node"
+import { toRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
 
 const schema = builder.buildSchema()
 const router = toRouter(builder, serviceLayer, { graphiql: true })
@@ -167,7 +167,7 @@ serve(router, serviceLayer, {
 ```typescript
 import { HttpApp } from "@effect/platform"
 import { createServer } from "node:http"
-import { createGraphQLWSServer } from "@effect-graphql/node"
+import { createGraphQLWSServer } from "@effect-gql/node"
 
 const schema = builder.buildSchema()
 const { handler } = HttpApp.toWebHandlerLayer(router, serviceLayer)
@@ -190,8 +190,8 @@ httpServer.listen(4000)
 ### Bun
 
 ```typescript
-import { toRouter } from "@effect-graphql/core"
-import { serve } from "@effect-graphql/bun"
+import { toRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/bun"
 
 const router = toRouter(builder, serviceLayer, { graphiql: true })
 
@@ -205,7 +205,7 @@ serve(router, serviceLayer, {
 
 ```typescript
 import express from "express"
-import { graphqlMiddleware } from "@effect-graphql/express"
+import { graphqlMiddleware } from "@effect-gql/express"
 
 const app = express()
 
@@ -222,7 +222,7 @@ Load router configuration from environment variables using `GraphQLRouterConfigF
 
 ```typescript
 import { Effect, Layer } from "effect"
-import { GraphQLRouterConfigFromEnv, makeGraphQLRouter } from "@effect-graphql/core"
+import { GraphQLRouterConfigFromEnv, makeGraphQLRouter } from "@effect-gql/core"
 
 const program = Effect.gen(function* () {
   const config = yield* GraphQLRouterConfigFromEnv
@@ -254,7 +254,7 @@ The GraphQL router can be composed with other routes:
 
 ```typescript
 import { HttpRouter, HttpServerResponse } from "@effect/platform"
-import { toRouter } from "@effect-graphql/core"
+import { toRouter } from "@effect-gql/core"
 
 const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
 

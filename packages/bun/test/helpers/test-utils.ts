@@ -8,7 +8,7 @@ import {
   type EffectWebSocket,
   WebSocketError,
   type CloseEvent,
-} from "@effect-graphql/core"
+} from "@effect-gql/core"
 import { DirectiveLocation, GraphQLSchema } from "graphql"
 import { createServer, IncomingMessage, ServerResponse, Server } from "node:http"
 import { createClient } from "graphql-ws"

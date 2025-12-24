@@ -1,6 +1,6 @@
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchemaBuilder, execute, Loader } from "@effect-graphql/core"
+import { GraphQLSchemaBuilder, execute, Loader } from "@effect-gql/core"
 
 /**
  * Example: Ergonomic DataLoaders API
