@@ -1,6 +1,7 @@
 import { Effect, Runtime, Stream } from "effect"
 import * as S from "effect/Schema"
 import { DirectiveLocation } from "graphql"
+import type { FieldComplexity } from "../server/complexity"
 
 /**
  * Configuration for a query or mutation field
@@ -10,6 +11,19 @@ export interface FieldRegistration<Args = any, A = any, E = any, R = any> {
   args?: S.Schema<Args, any, any>
   description?: string
   directives?: readonly DirectiveApplication[]
+  /**
+   * Complexity cost of this field.
+   * Can be a static number or a function that receives the resolved arguments.
+   * Used for query complexity limiting.
+   *
+   * @example
+   * // Static cost
+   * complexity: 5
+   *
+   * // Dynamic cost based on pagination
+   * complexity: (args) => args.limit * 2
+   */
+  complexity?: FieldComplexity
   resolve: (args: Args) => Effect.Effect<A, E, R>
 }
 
@@ -92,6 +106,12 @@ export interface SubscriptionFieldRegistration<Args = any, A = any, E = any, R =
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
+   * Complexity cost of this subscription.
+   * Can be a static number or a function that receives the resolved arguments.
+   * Used for query complexity limiting.
+   */
+  complexity?: FieldComplexity
+  /**
    * Subscribe function returns an Effect that produces a Stream.
    * The Stream yields values that are passed to the resolve function.
    */
@@ -111,6 +131,16 @@ export interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = 
   args?: S.Schema<Args, any, any>
   description?: string
   directives?: readonly DirectiveApplication[]
+  /**
+   * Complexity cost of this field.
+   * Can be a static number or a function that receives the resolved arguments.
+   * Used for query complexity limiting.
+   *
+   * @example
+   * // Relation field with pagination
+   * complexity: (args) => (args.limit ?? 10) * 2
+   */
+  complexity?: FieldComplexity
   resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
 }
 

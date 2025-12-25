@@ -1,0 +1,454 @@
+---
+title: Query Complexity Limiting
+description: Protect your GraphQL API from expensive queries with depth, complexity, and field limits
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Query complexity limiting protects your GraphQL API from expensive or malicious queries. Effect GraphQL provides a comprehensive system for analyzing and limiting query complexity before execution.
+
+## Quick Start
+
+Enable basic complexity limiting by adding the `complexity` option to your router configuration:
+
+```typescript
+import { toRouter, GraphQLSchemaBuilder } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
+import { Effect, Layer } from "effect"
+import * as S from "effect/Schema"
+
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  query("users", {
+    type: S.Array(UserSchema),
+    resolve: () => Effect.succeed([/* ... */])
+  })
+)
+
+const router = toRouter(builder, Layer.empty, {
+  graphiql: true,
+  complexity: {
+    maxDepth: 10,           // Maximum query nesting depth
+    maxComplexity: 1000,    // Maximum total complexity score
+    maxFields: 100,         // Maximum number of fields
+    maxAliases: 10          // Maximum number of aliases
+  }
+})
+
+serve(router, Layer.empty, { port: 4000 })
+```
+
+## Complexity Metrics
+
+### Query Depth
+
+Query depth measures how deeply nested a query is. Each level of nesting adds to the depth:
+
+```graphql
+# Depth: 1
+{ users { id } }
+
+# Depth: 2
+{ users { posts { id } } }
+
+# Depth: 3
+{ users { posts { comments { id } } } }
+
+# Depth: 4 - might exceed limit!
+{ users { posts { comments { author { name } } } } }
+```
+
+Use `maxDepth` to prevent deeply nested queries that could be expensive:
+
+```typescript
+{
+  complexity: {
+    maxDepth: 5  // Reject queries nested more than 5 levels
+  }
+}
+```
+
+### Complexity Score
+
+The complexity score represents the total cost of executing a query. By default, each field costs 1 point:
+
+```graphql
+# Complexity: 4 (user + id + name + email)
+{ user(id: "1") { id name email } }
+```
+
+You can assign custom costs to expensive fields:
+
+```typescript
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  query("users", {
+    type: S.Array(UserSchema),
+    complexity: 10,  // This field costs 10 points
+    resolve: () => fetchAllUsers()
+  }),
+  query("user", {
+    type: UserSchema,
+    complexity: 1,   // This field costs 1 point
+    resolve: (args) => fetchUser(args.id)
+  })
+)
+```
+
+### Field Count
+
+Field count limits the total number of fields in a query:
+
+```graphql
+# Field count: 5 (user + id + name + email + posts)
+{ user(id: "1") { id name email posts { id } } }
+```
+
+```typescript
+{
+  complexity: {
+    maxFields: 50  // Reject queries with more than 50 fields
+  }
+}
+```
+
+### Alias Count
+
+Alias count limits how many times fields can be aliased. This prevents batch attacks:
+
+```graphql
+# Alias count: 4
+{
+  a1: expensiveQuery { id }
+  a2: expensiveQuery { id }
+  a3: expensiveQuery { id }
+  a4: expensiveQuery { id }
+}
+```
+
+```typescript
+{
+  complexity: {
+    maxAliases: 10  // Reject queries with more than 10 aliases
+  }
+}
+```
+
+## Field Complexity
+
+### Static Complexity
+
+Assign a fixed cost to fields that are consistently expensive:
+
+```typescript
+query("allUsers", {
+  type: S.Array(UserSchema),
+  complexity: 50,  // Fetching all users is expensive
+  resolve: () => db.users.findAll()
+})
+```
+
+### Dynamic Complexity
+
+Calculate complexity based on query arguments for paginated or filtered fields:
+
+```typescript
+query("users", {
+  type: S.Array(UserSchema),
+  args: S.Struct({ limit: S.optional(S.Number) }),
+  // Complexity scales with limit argument
+  complexity: (args) => (args.limit ?? 10) * 2,
+  resolve: (args) => db.users.findMany({ take: args.limit })
+})
+```
+
+This query has different costs depending on the `limit`:
+
+```graphql
+# Complexity: 20 (limit 10 * 2)
+{ users { id } }
+
+# Complexity: 200 (limit 100 * 2)
+{ users(limit: 100) { id } }
+
+# Complexity: 2000 (limit 1000 * 2) - likely rejected!
+{ users(limit: 1000) { id } }
+```
+
+### Object Field Complexity
+
+Add complexity to computed fields on types:
+
+```typescript
+GraphQLSchemaBuilder.empty.pipe(
+  objectType({ name: "User", schema: UserSchema }),
+  field("User", "recommendations", {
+    type: S.Array(ProductSchema),
+    complexity: 25,  // ML-based recommendations are expensive
+    resolve: (user) => recommendationEngine.forUser(user.id)
+  })
+)
+```
+
+## Using Field Complexities
+
+To use field complexities defined on your builder, extract them and pass to the router:
+
+```typescript
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  query("expensiveQuery", {
+    type: S.String,
+    complexity: 100,
+    resolve: () => Effect.succeed("result")
+  })
+)
+
+const schema = builder.buildSchema()
+const fieldComplexities = builder.getFieldComplexities()
+
+const router = makeGraphQLRouter(schema, Layer.empty, {
+  complexity: {
+    maxComplexity: 500
+  },
+  fieldComplexities  // Pass the extracted complexities
+})
+```
+
+Or use `toRouter` which handles this automatically:
+
+```typescript
+// toRouter automatically extracts field complexities
+const router = toRouter(builder, Layer.empty, {
+  complexity: { maxComplexity: 500 }
+})
+```
+
+## Error Responses
+
+When a query exceeds limits, clients receive a detailed error response:
+
+```json
+{
+  "errors": [{
+    "message": "Query complexity of 150 exceeds the maximum allowed complexity of 100",
+    "extensions": {
+      "code": "COMPLEXITY_LIMIT_EXCEEDED",
+      "limitType": "complexity",
+      "limit": 100,
+      "actual": 150
+    }
+  }]
+}
+```
+
+The `extensions.limitType` indicates which limit was exceeded:
+- `"depth"` - Query nesting depth
+- `"complexity"` - Total complexity score
+- `"fields"` - Field count
+- `"aliases"` - Alias count
+
+## Lifecycle Hooks
+
+### onExceeded Hook
+
+Execute custom logic when limits are exceeded (e.g., logging, metrics):
+
+```typescript
+{
+  complexity: {
+    maxComplexity: 1000,
+    onExceeded: (info) => Effect.gen(function* () {
+      yield* Effect.log("Complexity limit exceeded", {
+        limitType: info.exceededLimit,
+        limit: info.limit,
+        actual: info.actual,
+        query: info.query
+      })
+      // The query is still rejected after this runs
+    })
+  }
+}
+```
+
+## Custom Calculators
+
+For advanced use cases, implement custom complexity calculators:
+
+```typescript
+import { ComplexityCalculator, ComplexityResult } from "@effect-gql/core"
+
+const myCalculator: ComplexityCalculator = (
+  document,      // Parsed GraphQL document
+  schema,        // GraphQL schema
+  variables,     // Query variables
+  operationName, // Operation name
+  fieldComplexities // Field complexity map
+) => Effect.succeed<ComplexityResult>({
+  depth: 5,
+  complexity: 42,
+  fieldCount: 10,
+  aliasCount: 2
+})
+
+const router = toRouter(builder, Layer.empty, {
+  complexity: {
+    maxComplexity: 100,
+    calculator: myCalculator
+  }
+})
+```
+
+### Built-in Calculators
+
+```typescript
+import {
+  defaultComplexityCalculator,
+  depthOnlyCalculator,
+  combineCalculators
+} from "@effect-gql/core"
+
+// Default: calculates all metrics
+defaultComplexityCalculator(defaultFieldCost)
+
+// Depth only: faster, ignores complexity scoring
+depthOnlyCalculator
+
+// Combine multiple calculators (takes max of each metric)
+combineCalculators(calculator1, calculator2)
+```
+
+## WebSocket Subscriptions
+
+Complexity limits also apply to WebSocket subscriptions:
+
+<Tabs>
+  <TabItem label="Node.js">
+```typescript
+import { serve } from "@effect-gql/node"
+
+serve(router, Layer.empty, {
+  port: 4000,
+  subscriptions: {
+    schema,
+    complexity: {
+      maxDepth: 5,
+      maxComplexity: 500
+    },
+    onConnect: (params) => Effect.succeed({ user: params.user })
+  }
+})
+```
+  </TabItem>
+  <TabItem label="Bun">
+```typescript
+import { serve } from "@effect-gql/bun"
+
+serve(router, Layer.empty, {
+  port: 4000,
+  subscriptions: {
+    schema,
+    complexity: {
+      maxDepth: 5,
+      maxComplexity: 500
+    }
+  }
+})
+```
+  </TabItem>
+</Tabs>
+
+## Environment Configuration
+
+Configure limits via environment variables:
+
+```bash
+# Complexity limits
+GRAPHQL_MAX_DEPTH=10
+GRAPHQL_MAX_COMPLEXITY=1000
+GRAPHQL_MAX_ALIASES=10
+GRAPHQL_MAX_FIELDS=100
+GRAPHQL_DEFAULT_FIELD_COMPLEXITY=1
+```
+
+Load with `GraphQLRouterConfigFromEnv`:
+
+```typescript
+import { Effect } from "effect"
+import { GraphQLRouterConfigFromEnv, makeGraphQLRouter } from "@effect-gql/core"
+
+const program = Effect.gen(function* () {
+  const config = yield* GraphQLRouterConfigFromEnv
+  // config.complexity contains the loaded limits
+  const router = makeGraphQLRouter(schema, layer, config)
+})
+```
+
+## Best Practices
+
+### Start Conservative
+
+Begin with strict limits and relax as needed based on real usage patterns:
+
+```typescript
+{
+  complexity: {
+    maxDepth: 5,
+    maxComplexity: 100,
+    maxFields: 50,
+    maxAliases: 5
+  }
+}
+```
+
+### Use Dynamic Complexity for Pagination
+
+Always scale complexity with pagination arguments:
+
+```typescript
+query("posts", {
+  args: S.Struct({
+    first: S.optional(S.Number),
+    last: S.optional(S.Number)
+  }),
+  complexity: (args) => {
+    const count = args.first ?? args.last ?? 10
+    return count * 2  // Each post costs 2 points
+  },
+  resolve: (args) => fetchPosts(args)
+})
+```
+
+### Combine with Rate Limiting
+
+Complexity limiting protects against expensive single queries. Combine with rate limiting to protect against many cheap queries:
+
+```typescript
+// Example: 100 requests per minute per IP
+app.use(rateLimiter({ max: 100, windowMs: 60000 }))
+
+// Plus complexity limiting for expensive queries
+const router = toRouter(builder, layer, {
+  complexity: { maxComplexity: 1000 }
+})
+```
+
+### Monitor Exceeded Limits
+
+Use the `onExceeded` hook to track blocked queries:
+
+```typescript
+{
+  complexity: {
+    maxComplexity: 1000,
+    onExceeded: (info) =>
+      MetricsService.increment("graphql.complexity.exceeded", {
+        limitType: info.exceededLimit,
+        query: info.query.substring(0, 100)
+      })
+  }
+}
+```
+
+## Next Steps
+
+- [Error Handling](/effect-graphql/guides/error-handling) - Custom error responses
+- [Subscriptions](/effect-graphql/guides/subscriptions) - Real-time data with WebSockets
+- [Server Integration](/effect-graphql/guides/server-integration) - Platform-specific setup

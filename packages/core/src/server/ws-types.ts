@@ -1,4 +1,5 @@
 import { Data, Effect, Runtime, Stream } from "effect"
+import type { ComplexityConfig, FieldComplexityMap } from "./complexity"
 
 /**
  * Error type for WebSocket operations
@@ -85,6 +86,20 @@ export interface ConnectionContext<R> {
  */
 export interface GraphQLWSOptions<R> {
   /**
+   * Query complexity limiting configuration.
+   * When provided, subscriptions are validated against complexity limits
+   * before execution begins.
+   */
+  readonly complexity?: ComplexityConfig
+
+  /**
+   * Field complexity definitions from the schema builder.
+   * If using the platform serve() functions with subscriptions config,
+   * this is typically passed automatically.
+   */
+  readonly fieldComplexities?: FieldComplexityMap
+
+  /**
    * Called when a client initiates a connection (CONNECTION_INIT message).
    *
    * Use this for authentication. Return:
@@ -119,6 +134,7 @@ export interface GraphQLWSOptions<R> {
    * Called when a client starts a subscription (SUBSCRIBE message).
    * Use this for per-subscription authorization or logging.
    *
+   * Note: If complexity validation is enabled, it runs before this hook.
    * Throw an error to reject the subscription.
    */
   readonly onSubscribe?: (

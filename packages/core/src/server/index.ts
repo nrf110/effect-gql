@@ -15,10 +15,31 @@ export {
 export { graphiqlHtml } from "./graphiql"
 
 // Router factory
-export { makeGraphQLRouter } from "./router"
+export { makeGraphQLRouter, type MakeGraphQLRouterOptions } from "./router"
 
 // Schema builder extension
 export { toRouter } from "./schema-builder-extensions"
+
+// Complexity limiting
+export type {
+  ComplexityConfig,
+  ComplexityResult,
+  ComplexityAnalysisInfo,
+  ComplexityExceededInfo,
+  ComplexityCalculator,
+  FieldComplexity,
+  FieldComplexityMap,
+} from "./complexity"
+
+export {
+  ComplexityLimitExceededError,
+  ComplexityAnalysisError,
+  validateComplexity,
+  defaultComplexityCalculator,
+  depthOnlyCalculator,
+  combineCalculators,
+  ComplexityConfigFromEnv,
+} from "./complexity"
 
 // WebSocket subscription support
 export type {

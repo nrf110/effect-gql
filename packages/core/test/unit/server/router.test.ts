@@ -4,6 +4,7 @@ import * as S from "effect/Schema"
 import { HttpApp } from "@effect/platform"
 import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
 import { makeGraphQLRouter } from "../../../src/server/router"
+import type { ComplexityConfig } from "../../../src/server/complexity"
 
 // Test service
 interface TestService {
@@ -355,6 +356,336 @@ describe("router.ts", () => {
         { path: "/api/v1/graphql" },
         "{ hello }"
       )
+
+      expect(result).toEqual({ data: { hello: "world" } })
+    })
+  })
+
+  // ==========================================================================
+  // makeGraphQLRouter - Complexity limiting
+  // ==========================================================================
+  describe("makeGraphQLRouter - Complexity limiting", () => {
+    // Schema with nested types for complexity testing
+    const Post = S.Struct({
+      id: S.String,
+      title: S.String,
+      content: S.String,
+    })
+
+    const User = S.Struct({
+      id: S.String,
+      name: S.String,
+      email: S.String,
+    })
+
+    it("should allow queries within complexity limits", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("user", {
+          type: User,
+          args: S.Struct({ id: S.String }),
+          resolve: (args) =>
+            Effect.succeed({ id: args.id, name: "John", email: "john@example.com" }),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        {
+          complexity: {
+            maxDepth: 10,
+            maxComplexity: 100,
+          },
+        },
+        '{ user(id: "1") { id name } }'
+      )
+
+      expect(result).toEqual({
+        data: { user: { id: "1", name: "John" } },
+      })
+    })
+
+    it("should reject queries exceeding maxDepth", async () => {
+      // Create a schema with nested object types
+      const Comment = S.Struct({ id: S.String, text: S.String })
+      const CommentName = "Comment"
+
+      const PostWithComments = S.Struct({
+        id: S.String,
+        title: S.String,
+        comments: S.Array(Comment),
+      })
+      const PostName = "Post"
+
+      const UserWithPosts = S.Struct({
+        id: S.String,
+        name: S.String,
+        posts: S.Array(PostWithComments),
+      })
+      const UserName = "UserWithPosts"
+
+      const schema = GraphQLSchemaBuilder.empty
+        .objectType({ name: CommentName, schema: Comment })
+        .objectType({ name: PostName, schema: PostWithComments })
+        .objectType({ name: UserName, schema: UserWithPosts })
+        .query("user", {
+          type: UserWithPosts,
+          args: S.Struct({ id: S.String }),
+          resolve: (args) =>
+            Effect.succeed({
+              id: args.id,
+              name: "John",
+              posts: [{ id: "1", title: "Post", comments: [{ id: "c1", text: "Comment" }] }],
+            }),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        {
+          complexity: {
+            maxDepth: 2,
+          },
+        },
+        '{ user(id: "1") { posts { comments { text } } } }'
+      )
+
+      expect(result.errors).toBeDefined()
+      expect(result.errors[0].message).toContain("depth")
+      expect(result.errors[0].extensions?.code).toBe("COMPLEXITY_LIMIT_EXCEEDED")
+    })
+
+    it("should reject queries exceeding maxComplexity", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("users", {
+          type: S.Array(User),
+          resolve: () =>
+            Effect.succeed([
+              { id: "1", name: "John", email: "john@example.com" },
+              { id: "2", name: "Jane", email: "jane@example.com" },
+            ]),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        {
+          complexity: {
+            maxComplexity: 3,
+          },
+        },
+        "{ users { id name email } }"
+      )
+
+      expect(result.errors).toBeDefined()
+      expect(result.errors[0].message).toContain("complexity")
+      expect(result.errors[0].extensions?.code).toBe("COMPLEXITY_LIMIT_EXCEEDED")
+    })
+
+    it("should reject queries exceeding maxAliases", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        {
+          complexity: {
+            maxAliases: 2,
+          },
+        },
+        "{ a1: hello a2: hello a3: hello a4: hello }"
+      )
+
+      expect(result.errors).toBeDefined()
+      expect(result.errors[0].message).toContain("aliases")
+      expect(result.errors[0].extensions?.code).toBe("COMPLEXITY_LIMIT_EXCEEDED")
+    })
+
+    it("should reject queries exceeding maxFields", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("user", {
+          type: User,
+          args: S.Struct({ id: S.String }),
+          resolve: (args) =>
+            Effect.succeed({ id: args.id, name: "John", email: "john@example.com" }),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        {
+          complexity: {
+            maxFields: 2,
+          },
+        },
+        '{ user(id: "1") { id name email } }'
+      )
+
+      expect(result.errors).toBeDefined()
+      expect(result.errors[0].message).toContain("fields")
+      expect(result.errors[0].extensions?.code).toBe("COMPLEXITY_LIMIT_EXCEEDED")
+    })
+
+    it("should use field complexity from builder", async () => {
+      const builder = GraphQLSchemaBuilder.empty
+        .query("expensiveQuery", {
+          type: S.String,
+          complexity: 50, // High complexity cost
+          resolve: () => Effect.succeed("result"),
+        })
+
+      const schema = builder.buildSchema()
+      const fieldComplexities = builder.getFieldComplexities()
+
+      const router = makeGraphQLRouter(schema, Layer.empty, {
+        complexity: {
+          maxComplexity: 30,
+        },
+        fieldComplexities,
+      })
+      const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+
+      try {
+        const response = await handler(
+          new Request("http://localhost/graphql", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ query: "{ expensiveQuery }" }),
+          })
+        )
+        const result = await response.json()
+
+        expect(result.errors).toBeDefined()
+        expect(result.errors[0].message).toContain("complexity")
+      } finally {
+        await dispose()
+      }
+    })
+
+    it("should use dynamic field complexity based on arguments", async () => {
+      const builder = GraphQLSchemaBuilder.empty
+        .query("users", {
+          type: S.Array(User),
+          args: S.Struct({ limit: S.optional(S.Number) }),
+          // Complexity = limit * 2
+          complexity: (args: Record<string, unknown>) => ((args.limit as number) ?? 10) * 2,
+          resolve: (args) =>
+            Effect.succeed(
+              Array.from({ length: args.limit ?? 10 }, (_, i) => ({
+                id: String(i),
+                name: `User ${i}`,
+                email: `user${i}@example.com`,
+              }))
+            ),
+        })
+
+      const schema = builder.buildSchema()
+      const fieldComplexities = builder.getFieldComplexities()
+
+      const router = makeGraphQLRouter(schema, Layer.empty, {
+        complexity: {
+          maxComplexity: 50,
+        },
+        fieldComplexities,
+      })
+      const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+
+      try {
+        // limit: 100 would give complexity 200, exceeding limit of 50
+        const response = await handler(
+          new Request("http://localhost/graphql", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ query: "{ users(limit: 100) { id } }" }),
+          })
+        )
+        const result = await response.json()
+
+        expect(result.errors).toBeDefined()
+        expect(result.errors[0].message).toContain("complexity")
+      } finally {
+        await dispose()
+      }
+    })
+
+    it("should call onExceeded hook when limits are exceeded", async () => {
+      let hookCalled = false
+      let exceededInfo: any = null
+
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        {
+          complexity: {
+            maxDepth: 0,
+            onExceeded: (info) =>
+              Effect.sync(() => {
+                hookCalled = true
+                exceededInfo = info
+              }),
+          },
+        },
+        "{ hello }"
+      )
+
+      expect(hookCalled).toBe(true)
+      expect(exceededInfo?.exceededLimit).toBe("depth")
+      expect(result.errors).toBeDefined()
+    })
+
+    it("should include complexity info in error extensions", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        {
+          complexity: {
+            maxDepth: 0,
+          },
+        },
+        "{ hello }"
+      )
+
+      expect(result.errors).toBeDefined()
+      expect(result.errors[0].extensions).toMatchObject({
+        code: "COMPLEXITY_LIMIT_EXCEEDED",
+        limitType: "depth",
+        limit: 0,
+      })
+      expect(result.errors[0].extensions.actual).toBeGreaterThan(0)
+    })
+
+    it("should allow queries when no complexity config is provided", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      // No complexity config
+      const result = await executeQuery(schema, Layer.empty, {}, "{ hello }")
 
       expect(result).toEqual({ data: { hello: "world" } })
     })

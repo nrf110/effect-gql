@@ -99,6 +99,14 @@ interface GraphQLRouterConfigInput {
     path?: string      // Path for GraphiQL UI (default: "/graphiql")
     endpoint?: string  // GraphQL endpoint URL (default: same as path)
   }
+
+  // Query complexity limiting (see Complexity Limiting guide)
+  complexity?: {
+    maxDepth?: number      // Maximum query nesting depth
+    maxComplexity?: number // Maximum total complexity score
+    maxFields?: number     // Maximum number of fields
+    maxAliases?: number    // Maximum number of aliases
+  }
 }
 ```
 
@@ -239,6 +247,10 @@ const program = Effect.gen(function* () {
 | `GRAPHIQL_ENABLED` | Enable GraphiQL UI | `false` |
 | `GRAPHIQL_PATH` | GraphiQL UI path | `/graphiql` |
 | `GRAPHIQL_ENDPOINT` | GraphQL URL for GraphiQL | Same as `GRAPHQL_PATH` |
+| `GRAPHQL_MAX_DEPTH` | Maximum query depth | (unlimited) |
+| `GRAPHQL_MAX_COMPLEXITY` | Maximum complexity score | (unlimited) |
+| `GRAPHQL_MAX_FIELDS` | Maximum field count | (unlimited) |
+| `GRAPHQL_MAX_ALIASES` | Maximum alias count | (unlimited) |
 
 **Example:**
 
@@ -246,6 +258,8 @@ const program = Effect.gen(function* () {
 GRAPHQL_PATH=/api/graphql
 GRAPHIQL_ENABLED=true
 GRAPHIQL_PATH=/playground
+GRAPHQL_MAX_DEPTH=10
+GRAPHQL_MAX_COMPLEXITY=1000
 ```
 
 ## Composing Routes
@@ -343,5 +357,6 @@ For application-level errors, see the [Error Handling guide](/effect-graphql/gui
 ## Next Steps
 
 - [WebSocket Subscriptions](/effect-graphql/guides/subscriptions) - Real-time data with graphql-ws
+- [Query Complexity Limiting](/effect-graphql/guides/complexity-limiting) - Protect against expensive queries
 - [DataLoader Integration](/effect-graphql/guides/dataloader) - Batch and cache database queries
 - [Error Handling](/effect-graphql/guides/error-handling) - Structured error responses

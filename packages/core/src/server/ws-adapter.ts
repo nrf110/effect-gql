@@ -9,6 +9,11 @@ import type {
   CloseEvent,
   WebSocketError,
 } from "./ws-types"
+import {
+  validateComplexity,
+  ComplexityLimitExceededError,
+  type FieldComplexityMap,
+} from "./complexity"
 
 /**
  * Extra context passed through graphql-ws.
@@ -59,6 +64,10 @@ export const makeGraphQLWSHandler = <R>(
   layer: Layer.Layer<R>,
   options?: GraphQLWSOptions<R>
 ): (socket: EffectWebSocket) => Effect.Effect<void, never, never> => {
+  // Extract complexity config
+  const complexityConfig = options?.complexity
+  const fieldComplexities: FieldComplexityMap = options?.fieldComplexities ?? new Map()
+
   // Create the graphql-ws server options
   const serverOptions: ServerOptions<Record<string, unknown>, WSExtra<R>> = {
     schema,
@@ -114,28 +123,60 @@ export const makeGraphQLWSHandler = <R>(
         }
       : undefined,
 
-    // Subscribe handler (per-subscription)
-    onSubscribe: options?.onSubscribe
-      ? async (ctx, msg) => {
-          const extra = ctx.extra as WSExtra<R>
-          const connectionCtx: ConnectionContext<R> = {
-            runtime: extra.runtime,
-            connectionParams: extra.connectionParams,
-            socket: extra.socket,
-          }
-          await Runtime.runPromise(extra.runtime)(
-            options.onSubscribe!(connectionCtx, {
-              id: msg.id,
-              payload: {
-                query: msg.payload.query,
-                variables: msg.payload.variables ?? undefined,
-                operationName: msg.payload.operationName ?? undefined,
-                extensions: msg.payload.extensions ?? undefined,
-              },
-            })
-          )
-        }
-      : undefined,
+    // Subscribe handler (per-subscription) - includes complexity validation
+    onSubscribe: async (ctx, msg) => {
+      const extra = ctx.extra as WSExtra<R>
+      const connectionCtx: ConnectionContext<R> = {
+        runtime: extra.runtime,
+        connectionParams: extra.connectionParams,
+        socket: extra.socket,
+      }
+
+      // Validate complexity if configured
+      if (complexityConfig) {
+        const validationEffect = validateComplexity(
+          msg.payload.query,
+          msg.payload.operationName ?? undefined,
+          msg.payload.variables ?? undefined,
+          schema,
+          fieldComplexities,
+          complexityConfig
+        ).pipe(
+          Effect.catchAll((error) => {
+            if (error._tag === "ComplexityLimitExceededError") {
+              // Convert to a GraphQL error that graphql-ws will send to client
+              throw new GraphQLError(error.message, {
+                extensions: {
+                  code: "COMPLEXITY_LIMIT_EXCEEDED",
+                  limitType: error.limitType,
+                  limit: error.limit,
+                  actual: error.actual,
+                },
+              })
+            }
+            // Log analysis errors but don't block (fail open)
+            return Effect.logWarning("Complexity analysis failed for subscription", error)
+          })
+        )
+
+        await Effect.runPromise(validationEffect)
+      }
+
+      // Call user's onSubscribe hook if provided
+      if (options?.onSubscribe) {
+        await Runtime.runPromise(extra.runtime)(
+          options.onSubscribe(connectionCtx, {
+            id: msg.id,
+            payload: {
+              query: msg.payload.query,
+              variables: msg.payload.variables ?? undefined,
+              operationName: msg.payload.operationName ?? undefined,
+              extensions: msg.payload.extensions ?? undefined,
+            },
+          })
+        )
+      }
+    },
 
     // Complete handler
     onComplete: options?.onComplete

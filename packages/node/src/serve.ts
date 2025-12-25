@@ -189,6 +189,8 @@ function serveWithSubscriptions<E, R, RE>(
       layer as Layer.Layer<R>,
       {
         path: subscriptions.path,
+        complexity: subscriptions.complexity,
+        fieldComplexities: subscriptions.fieldComplexities,
         onConnect: subscriptions.onConnect,
         onDisconnect: subscriptions.onDisconnect,
         onSubscribe: subscriptions.onSubscribe,

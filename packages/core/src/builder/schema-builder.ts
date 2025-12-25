@@ -23,6 +23,7 @@ import type {
   SubscriptionFieldRegistration,
   ObjectFieldRegistration,
 } from "./types"
+import type { FieldComplexity, FieldComplexityMap } from "../server/complexity"
 import {
   getSchemaName,
   schemaToFields,
@@ -128,6 +129,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       args?: S.Schema<Args, any, any>
       description?: string
       directives?: readonly DirectiveApplication[]
+      /**
+       * Complexity cost of this field for query complexity limiting.
+       * Can be a static number or a function that receives the resolved arguments.
+       */
+      complexity?: FieldComplexity
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
   ): GraphQLSchemaBuilder<R | R2> {
@@ -146,6 +152,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       args?: S.Schema<Args, any, any>
       description?: string
       directives?: readonly DirectiveApplication[]
+      /**
+       * Complexity cost of this field for query complexity limiting.
+       * Can be a static number or a function that receives the resolved arguments.
+       */
+      complexity?: FieldComplexity
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
   ): GraphQLSchemaBuilder<R | R2> {
@@ -178,6 +189,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       args?: S.Schema<Args, any, any>
       description?: string
       directives?: readonly DirectiveApplication[]
+      /**
+       * Complexity cost of this subscription for query complexity limiting.
+       * Can be a static number or a function that receives the resolved arguments.
+       */
+      complexity?: FieldComplexity
       subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R2>, E, R2>
       resolve?: (value: A, args: Args) => Effect.Effect<A, E, R2>
     }
@@ -200,6 +216,10 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       args?: S.Schema<any, any, any>
       description?: string
       directives?: readonly DirectiveApplication[]
+      /**
+       * Complexity cost of this field for query complexity limiting.
+       */
+      complexity?: FieldComplexity
       resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
     }>
   }): GraphQLSchemaBuilder<R | R2> {
@@ -330,6 +350,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       args?: S.Schema<Args, any, any>
       description?: string
       directives?: readonly DirectiveApplication[]
+      /**
+       * Complexity cost of this field for query complexity limiting.
+       * Can be a static number or a function that receives the resolved arguments.
+       */
+      complexity?: FieldComplexity
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>
     }
   ): GraphQLSchemaBuilder<R | R2> {
@@ -343,6 +368,46 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   // ============================================================================
   // Schema Building
   // ============================================================================
+
+  /**
+   * Get the field complexity map for use in complexity validation.
+   * Maps "TypeName.fieldName" to the complexity value or function.
+   */
+  getFieldComplexities(): FieldComplexityMap {
+    const complexities: FieldComplexityMap = new Map()
+
+    // Query fields
+    for (const [name, config] of this.state.queries) {
+      if (config.complexity !== undefined) {
+        complexities.set(`Query.${name}`, config.complexity)
+      }
+    }
+
+    // Mutation fields
+    for (const [name, config] of this.state.mutations) {
+      if (config.complexity !== undefined) {
+        complexities.set(`Mutation.${name}`, config.complexity)
+      }
+    }
+
+    // Subscription fields
+    for (const [name, config] of this.state.subscriptions) {
+      if (config.complexity !== undefined) {
+        complexities.set(`Subscription.${name}`, config.complexity)
+      }
+    }
+
+    // Object type fields
+    for (const [typeName, fields] of this.state.objectFields) {
+      for (const [fieldName, config] of fields) {
+        if (config.complexity !== undefined) {
+          complexities.set(`${typeName}.${fieldName}`, config.complexity)
+        }
+      }
+    }
+
+    return complexities
+  }
 
   /**
    * Build the GraphQL schema (no services required)
