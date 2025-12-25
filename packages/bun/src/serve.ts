@@ -116,7 +116,21 @@ function serveWithSubscriptions<E, R, RE>(
   onStart?: (url: string) => void
 ): void {
   // Dynamically import ws module to keep it optional
-  import("./ws").then(({ createBunWSHandlers }) => {
+  const importWs = Effect.tryPromise({
+    try: () => import("./ws"),
+    catch: (error) => error as Error
+  })
+
+  Effect.runPromise(
+    importWs.pipe(
+      Effect.catchAll((error) =>
+        Effect.logError("Failed to load WebSocket support", error).pipe(
+          Effect.andThen(Effect.sync(() => process.exit(1))),
+          Effect.andThen(Effect.fail(error))
+        )
+      )
+    )
+  ).then(({ createBunWSHandlers }) => {
     // Create the web handler from the Effect router
     const { handler } = HttpApp.toWebHandlerLayer(router, layer)
 
@@ -164,8 +178,5 @@ function serveWithSubscriptions<E, R, RE>(
       server.stop()
       process.exit(0)
     })
-  }).catch((error) => {
-    console.error("Failed to load WebSocket support:", error)
-    process.exit(1)
   })
 }

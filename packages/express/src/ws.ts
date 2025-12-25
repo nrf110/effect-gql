@@ -208,13 +208,13 @@ export const attachWebSocket = <R>(
     const effectSocket = toEffectWebSocket(ws)
 
     // Run the handler
-    Effect.runPromise(handler(effectSocket))
-      .catch((error) => {
-        console.error("GraphQL WebSocket handler error:", error)
-      })
-      .finally(() => {
-        activeConnections.delete(ws)
-      })
+    Effect.runPromise(
+      handler(effectSocket).pipe(
+        Effect.catchAll((error) => Effect.logError("GraphQL WebSocket handler error", error))
+      )
+    ).finally(() => {
+      activeConnections.delete(ws)
+    })
   })
 
   const handleUpgrade = (

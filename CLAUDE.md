@@ -205,6 +205,53 @@ The core package provides platform-agnostic HTTP utilities, while platform-speci
 5. **Layer-per-Request**: Build schema once, execute each request with its own service Layer
 6. **Lazy Type Resolution**: Object type fields use thunks to support circular references
 
+## Coding Conventions
+
+### Logging
+
+Use Effect's logger instead of `console.log`/`console.error`. This ensures logs integrate with Effect's structured logging infrastructure.
+
+**Within Effect context:**
+```typescript
+Effect.logError("Something went wrong", error)
+Effect.logWarning("Deprecation notice")
+Effect.logInfo("Processing request")
+Effect.logDebug("Debug details", { key: value })
+```
+
+**When handling errors in Effect pipelines:**
+```typescript
+// Preferred: Handle errors inside the Effect before running
+Effect.runPromise(
+  myEffect.pipe(
+    Effect.catchAll((error) => Effect.logError("Operation failed", error))
+  )
+)
+
+// Avoid: Breaking out of Effect context
+Effect.runPromise(myEffect).catch((error) => {
+  console.error("Operation failed:", error)  // ❌
+})
+```
+
+**For dynamic imports or async operations:**
+```typescript
+const importModule = Effect.tryPromise({
+  try: () => import("./module"),
+  catch: (error) => error as Error
+})
+
+Effect.runPromise(
+  importModule.pipe(
+    Effect.catchAll((error) =>
+      Effect.logError("Failed to load module", error).pipe(
+        Effect.andThen(Effect.sync(() => process.exit(1)))
+      )
+    )
+  )
+)
+```
+
 ## TypeScript Configuration
 
 - Target: ES2022, Module: CommonJS

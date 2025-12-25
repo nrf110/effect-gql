@@ -117,7 +117,22 @@ function serveWithSubscriptions<E, R, RE>(
   onStart?: (url: string) => void
 ): void {
   // Dynamically import ws module to keep it optional
-  import("./ws").then(({ createGraphQLWSServer }) => {
+  const importWs = Effect.tryPromise({
+    try: () => import("./ws"),
+    catch: (error) => error as Error
+  })
+
+  Effect.runPromise(
+    importWs.pipe(
+      Effect.catchAll((error) =>
+        Effect.logError("Failed to load WebSocket support", error).pipe(
+          Effect.andThen(Effect.logError("Make sure 'ws' package is installed: npm install ws")),
+          Effect.andThen(Effect.sync(() => process.exit(1))),
+          Effect.andThen(Effect.fail(error))
+        )
+      )
+    )
+  ).then(({ createGraphQLWSServer }) => {
     // Create the web handler from the Effect router
     const { handler } = HttpApp.toWebHandlerLayer(router, layer)
 
@@ -206,9 +221,5 @@ function serveWithSubscriptions<E, R, RE>(
         onStart(`http://${host === "0.0.0.0" ? "localhost" : host}:${port}`)
       }
     })
-  }).catch((error) => {
-    console.error("Failed to load WebSocket support:", error)
-    console.error("Make sure 'ws' package is installed: npm install ws")
-    process.exit(1)
   })
 }

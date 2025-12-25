@@ -67,23 +67,27 @@ export const makeGraphQLRouter = <R>(
     return yield* HttpServerResponse.json(result)
   }).pipe(
     Effect.provide(layer),
-    Effect.catchAllCause((cause) => {
+    Effect.catchAllCause((cause) =>
       // Log the full error for debugging (server-side only)
-      if (process.env.NODE_ENV !== "production") {
-        console.error("GraphQL error:", cause)
-      }
-      // Return sanitized error message to client
-      return HttpServerResponse.json(
-        {
-          errors: [
+      (process.env.NODE_ENV !== "production"
+        ? Effect.logError("GraphQL error", cause)
+        : Effect.void
+      ).pipe(
+        // Return sanitized error message to client
+        Effect.andThen(
+          HttpServerResponse.json(
             {
-              message: "An error occurred processing your request",
+              errors: [
+                {
+                  message: "An error occurred processing your request",
+                },
+              ],
             },
-          ],
-        },
-        { status: 400 }
-      ).pipe(Effect.orDie)
-    })
+            { status: 400 }
+          ).pipe(Effect.orDie)
+        )
+      )
+    )
   )
 
   // Build router with GraphQL endpoint

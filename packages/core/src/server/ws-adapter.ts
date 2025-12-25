@@ -213,9 +213,11 @@ export const makeGraphQLWSHandler = <R>(
         protocol: socket.protocol,
 
         send: (data: string) =>
-          Runtime.runPromise(runtime)(socket.send(data)).catch((error) => {
-            console.error("WebSocket send error:", error)
-          }),
+          Runtime.runPromise(runtime)(
+            socket.send(data).pipe(
+              Effect.catchAll((error) => Effect.logError("WebSocket send error", error))
+            )
+          ),
 
         close: (code?: number, reason?: string) => {
           Runtime.runPromise(runtime)(socket.close(code, reason)).catch(() => {
