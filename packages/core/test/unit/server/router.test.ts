@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Layer, Context } from "effect"
+import { Cause, Effect, Layer, Context } from "effect"
 import * as S from "effect/Schema"
-import { HttpApp } from "@effect/platform"
+import { HttpApp, HttpServerResponse } from "@effect/platform"
 import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
-import { makeGraphQLRouter } from "../../../src/server/router"
+import { makeGraphQLRouter, defaultErrorHandler, type ErrorHandler } from "../../../src/server/router"
 import type { ComplexityConfig } from "../../../src/server/complexity"
 
 // Test service
@@ -38,6 +38,63 @@ const executeQuery = async <R>(
       })
     )
     return await response.json()
+  } finally {
+    await dispose()
+  }
+}
+
+// Helper to execute a query and return the full response including status
+const executeQueryWithResponse = async <R>(
+  schema: ReturnType<GraphQLSchemaBuilder<never>["buildSchema"]>,
+  layer: Layer.Layer<R>,
+  config: Parameters<typeof makeGraphQLRouter>[2],
+  query: string,
+  variables?: Record<string, unknown>,
+  operationName?: string
+) => {
+  const router = makeGraphQLRouter(schema, layer, config)
+  const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+
+  try {
+    const response = await handler(
+      new Request(`http://localhost${config?.path ?? "/graphql"}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query, variables, operationName }),
+      })
+    )
+    return {
+      status: response.status,
+      body: await response.json(),
+    }
+  } finally {
+    await dispose()
+  }
+}
+
+// Helper to send a raw body and get response (for testing malformed requests)
+const executeRawRequest = async <R>(
+  schema: ReturnType<GraphQLSchemaBuilder<never>["buildSchema"]>,
+  layer: Layer.Layer<R>,
+  config: Parameters<typeof makeGraphQLRouter>[2],
+  body: string,
+  contentType = "application/json"
+) => {
+  const router = makeGraphQLRouter(schema, layer, config)
+  const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+
+  try {
+    const response = await handler(
+      new Request(`http://localhost${config?.path ?? "/graphql"}`, {
+        method: "POST",
+        headers: { "content-type": contentType },
+        body,
+      })
+    )
+    return {
+      status: response.status,
+      body: await response.json(),
+    }
   } finally {
     await dispose()
   }
@@ -688,6 +745,104 @@ describe("router.ts", () => {
       const result = await executeQuery(schema, Layer.empty, {}, "{ hello }")
 
       expect(result).toEqual({ data: { hello: "world" } })
+    })
+  })
+
+  // ==========================================================================
+  // makeGraphQLRouter - Error handler configuration
+  // ==========================================================================
+  describe("makeGraphQLRouter - Error handler configuration", () => {
+    it("should use default error handler returning 500 for malformed JSON", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      // Send malformed JSON to trigger an error during body parsing
+      const result = await executeRawRequest(schema, Layer.empty, {}, "{ invalid json")
+
+      expect(result.status).toBe(500)
+      expect(result.body.errors).toBeDefined()
+      expect(result.body.errors[0].message).toBe("An error occurred processing your request")
+    })
+
+    it("should use custom error handler when provided", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const customErrorHandler: ErrorHandler = () =>
+        HttpServerResponse.json(
+          {
+            errors: [{ message: "Custom error response" }],
+          },
+          { status: 503 }
+        ).pipe(Effect.orDie)
+
+      // Send malformed JSON to trigger the custom error handler
+      const result = await executeRawRequest(
+        schema,
+        Layer.empty,
+        { errorHandler: customErrorHandler },
+        "{ invalid json"
+      )
+
+      expect(result.status).toBe(503)
+      expect(result.body.errors[0].message).toBe("Custom error response")
+    })
+
+    it("should pass error cause to custom error handler", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      let capturedCause: Cause.Cause<unknown> | null = null
+
+      const customErrorHandler: ErrorHandler = (cause) => {
+        capturedCause = cause
+        return HttpServerResponse.json(
+          {
+            errors: [{ message: "Error captured" }],
+          },
+          { status: 500 }
+        ).pipe(Effect.orDie)
+      }
+
+      // Send malformed JSON to trigger the custom error handler
+      await executeRawRequest(
+        schema,
+        Layer.empty,
+        { errorHandler: customErrorHandler },
+        "{ invalid json"
+      )
+
+      expect(capturedCause).not.toBeNull()
+      // The cause should contain an error about decoding/parsing
+      const causeString = Cause.pretty(capturedCause!)
+      expect(causeString.toLowerCase()).toContain("decode")
+    })
+
+    it("should return 500 for empty request body", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      // Send empty body to trigger an error
+      const result = await executeRawRequest(schema, Layer.empty, {}, "")
+
+      expect(result.status).toBe(500)
+      expect(result.body.errors).toBeDefined()
     })
   })
 })

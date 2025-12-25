@@ -1,5 +1,5 @@
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Layer } from "effect"
 import {
   GraphQLSchema,
   parse,
@@ -26,6 +26,37 @@ import {
 } from "../extensions"
 
 /**
+ * Error handler function type for handling uncaught errors during GraphQL execution.
+ * Receives the error cause and should return an HTTP response.
+ */
+export type ErrorHandler = (
+  cause: Cause.Cause<unknown>
+) => Effect.Effect<HttpServerResponse.HttpServerResponse, never, never>
+
+/**
+ * Default error handler that returns a 500 Internal Server Error.
+ * In non-production environments, it logs the full error for debugging.
+ */
+export const defaultErrorHandler: ErrorHandler = (cause) =>
+  (process.env.NODE_ENV !== "production"
+    ? Effect.logError("GraphQL error", cause)
+    : Effect.void
+  ).pipe(
+    Effect.andThen(
+      HttpServerResponse.json(
+        {
+          errors: [
+            {
+              message: "An error occurred processing your request",
+            },
+          ],
+        },
+        { status: 500 }
+      ).pipe(Effect.orDie)
+    )
+  )
+
+/**
  * Options for makeGraphQLRouter
  */
 export interface MakeGraphQLRouterOptions extends GraphQLRouterConfigInput {
@@ -42,6 +73,13 @@ export interface MakeGraphQLRouterOptions extends GraphQLRouterConfigInput {
    * If using makeGraphQLRouter() directly, call builder.getExtensions().
    */
   readonly extensions?: readonly GraphQLExtension<any>[]
+
+  /**
+   * Custom error handler for uncaught errors during GraphQL execution.
+   * Receives the error cause and should return an HTTP response.
+   * Defaults to returning a 500 Internal Server Error with a generic message.
+   */
+  readonly errorHandler?: ErrorHandler
 }
 
 /**
@@ -83,6 +121,7 @@ export const makeGraphQLRouter = <R>(
   const resolvedConfig = normalizeConfig(options)
   const fieldComplexities = options.fieldComplexities ?? new Map()
   const extensions = options.extensions ?? []
+  const errorHandler = options.errorHandler ?? defaultErrorHandler
 
   // GraphQL POST handler
   const graphqlHandler = Effect.gen(function* () {
@@ -238,27 +277,7 @@ export const makeGraphQLRouter = <R>(
       // Re-throw other errors to be caught by catchAllCause
       return Effect.fail(error)
     }),
-    Effect.catchAllCause((cause) =>
-      // Log the full error for debugging (server-side only)
-      (process.env.NODE_ENV !== "production"
-        ? Effect.logError("GraphQL error", cause)
-        : Effect.void
-      ).pipe(
-        // Return sanitized error message to client
-        Effect.andThen(
-          HttpServerResponse.json(
-            {
-              errors: [
-                {
-                  message: "An error occurred processing your request",
-                },
-              ],
-            },
-            { status: 400 }
-          ).pipe(Effect.orDie)
-        )
-      )
-    )
+    Effect.catchAllCause(errorHandler)
   )
 
   // Build router with GraphQL endpoint

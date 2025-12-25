@@ -15,7 +15,12 @@ export {
 export { graphiqlHtml } from "./graphiql"
 
 // Router factory
-export { makeGraphQLRouter, type MakeGraphQLRouterOptions } from "./router"
+export {
+  makeGraphQLRouter,
+  defaultErrorHandler,
+  type MakeGraphQLRouterOptions,
+  type ErrorHandler,
+} from "./router"
 
 // Schema builder extension
 export { toRouter } from "./schema-builder-extensions"
