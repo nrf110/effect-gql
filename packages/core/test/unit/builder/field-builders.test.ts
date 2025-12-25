@@ -32,6 +32,7 @@ const createFieldBuilderContext = (): FieldBuilderContext => ({
   unionRegistry: new Map(),
   inputRegistry: new Map(),
   directiveRegistrations: new Map(),
+  middlewares: [],
 })
 
 // Helper to create test runtime context
@@ -630,6 +631,213 @@ describe("field-builders.ts", () => {
         : config.args?.filter.type
 
       expect(filterArgType).toBe(filterInputType)
+    })
+  })
+
+  // ==========================================================================
+  // buildField - Middleware
+  // ==========================================================================
+  describe("buildField - Middleware", () => {
+    it("should apply middleware to resolver", async () => {
+      const ctx = createFieldBuilderContext()
+
+      // Register a middleware that transforms the result
+      ctx.middlewares = [{
+        name: "uppercase",
+        apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.map(effect, (value) => String(value).toUpperCase() as unknown as A),
+      }]
+
+      const config = buildField(
+        {
+          type: S.String,
+          resolve: () => Effect.succeed("hello"),
+        },
+        ctx
+      )
+
+      const testContext = createSimpleContext()
+      const mockInfo = { fieldName: "test", parentType: { name: "Query" } } as any
+      const result = await config.resolve!(null, {}, testContext, mockInfo)
+      expect(result).toBe("HELLO")
+    })
+
+    it("should apply multiple middleware in onion order", async () => {
+      const ctx = createFieldBuilderContext()
+
+      // First registered = outermost (executes first before, last after)
+      ctx.middlewares = [
+        {
+          name: "outer",
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => `[outer:${value}]` as unknown as A),
+        },
+        {
+          name: "inner",
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => `[inner:${value}]` as unknown as A),
+        },
+      ]
+
+      const config = buildField(
+        {
+          type: S.String,
+          resolve: () => Effect.succeed("value"),
+        },
+        ctx
+      )
+
+      const testContext = createSimpleContext()
+      const mockInfo = { fieldName: "test", parentType: { name: "Query" } } as any
+      const result = await config.resolve!(null, {}, testContext, mockInfo)
+      // Outer wraps inner wraps value: outer sees inner's output
+      expect(result).toBe("[outer:[inner:value]]")
+    })
+
+    it("should apply middleware only to matching fields when match is provided", async () => {
+      const ctx = createFieldBuilderContext()
+
+      ctx.middlewares = [{
+        name: "adminOnly",
+        match: (info) => info.fieldName.startsWith("admin"),
+        apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.map(effect, (value) => `ADMIN:${value}` as unknown as A),
+      }]
+
+      const config = buildField(
+        {
+          type: S.String,
+          resolve: () => Effect.succeed("data"),
+        },
+        ctx
+      )
+
+      const testContext = createSimpleContext()
+
+      // Field that matches - middleware applies
+      const adminInfo = { fieldName: "adminUsers", parentType: { name: "Query" } } as any
+      const adminResult = await config.resolve!(null, {}, testContext, adminInfo)
+      expect(adminResult).toBe("ADMIN:data")
+
+      // Field that doesn't match - middleware skipped
+      const userInfo = { fieldName: "users", parentType: { name: "Query" } } as any
+      const userResult = await config.resolve!(null, {}, testContext, userInfo)
+      expect(userResult).toBe("data")
+    })
+
+    it("should receive context with parent, args, and info", async () => {
+      const ctx = createFieldBuilderContext()
+
+      let capturedContext: any = null
+      ctx.middlewares = [{
+        name: "capture",
+        apply: <A, E, R>(effect: Effect.Effect<A, E, R>, context: any) => {
+          capturedContext = context
+          return effect
+        },
+      }]
+
+      const config = buildField(
+        {
+          type: S.String,
+          args: S.Struct({ name: S.String }),
+          resolve: () => Effect.succeed("result"),
+        },
+        ctx
+      )
+
+      const testContext = createSimpleContext()
+      const mockInfo = { fieldName: "greeting", parentType: { name: "Query" } } as any
+      await config.resolve!(null, { name: "World" }, testContext, mockInfo)
+
+      expect(capturedContext).not.toBeNull()
+      expect(capturedContext.parent).toBeNull()
+      expect(capturedContext.args).toEqual({ name: "World" })
+      expect(capturedContext.info.fieldName).toBe("greeting")
+    })
+
+    it("should compose with directives correctly", async () => {
+      const ctx = createFieldBuilderContext()
+
+      // Directive wraps first (innermost)
+      ctx.directiveRegistrations.set("prefix", {
+        name: "prefix",
+        locations: [],
+        apply: (args: { text: string }) => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.map(effect, (value) => `${args.text}${value}` as unknown as A),
+      })
+
+      // Middleware wraps second (outermost)
+      ctx.middlewares = [{
+        name: "wrap",
+        apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.map(effect, (value) => `[${value}]` as unknown as A),
+      }]
+
+      const config = buildField(
+        {
+          type: S.String,
+          directives: [{ name: "prefix", args: { text: "DIR:" } }],
+          resolve: () => Effect.succeed("value"),
+        },
+        ctx
+      )
+
+      const testContext = createSimpleContext()
+      const mockInfo = { fieldName: "test", parentType: { name: "Query" } } as any
+      const result = await config.resolve!(null, {}, testContext, mockInfo)
+      // Directive applied first, then middleware wraps the result
+      expect(result).toBe("[DIR:value]")
+    })
+
+    it("should work with no middleware registered", async () => {
+      const ctx = createFieldBuilderContext()
+      // middlewares is empty by default
+
+      const config = buildField(
+        {
+          type: S.String,
+          resolve: () => Effect.succeed("value"),
+        },
+        ctx
+      )
+
+      const testContext = createSimpleContext()
+      const mockInfo = { fieldName: "test", parentType: { name: "Query" } } as any
+      const result = await config.resolve!(null, {}, testContext, mockInfo)
+      expect(result).toBe("value")
+    })
+  })
+
+  // ==========================================================================
+  // buildObjectField - Middleware
+  // ==========================================================================
+  describe("buildObjectField - Middleware", () => {
+    it("should apply middleware with correct parent", async () => {
+      const ctx = createFieldBuilderContext()
+
+      let capturedParent: any = null
+      ctx.middlewares = [{
+        name: "captureParent",
+        apply: <A, E, R>(effect: Effect.Effect<A, E, R>, context: any) => {
+          capturedParent = context.parent
+          return effect
+        },
+      }]
+
+      const config = buildObjectField(
+        {
+          type: S.String,
+          resolve: (parent: { name: string }) => Effect.succeed(parent.name),
+        },
+        ctx
+      )
+
+      const testContext = createSimpleContext()
+      const mockInfo = { fieldName: "name", parentType: { name: "User" } } as any
+      await config.resolve!({ name: "Alice" }, {}, testContext, mockInfo)
+
+      expect(capturedParent).toEqual({ name: "Alice" })
     })
   })
 })

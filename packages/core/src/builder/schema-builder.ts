@@ -22,7 +22,11 @@ import type {
   DirectiveApplication,
   SubscriptionFieldRegistration,
   ObjectFieldRegistration,
+  MiddlewareRegistration,
+  MiddlewareContext,
 } from "./types"
+import type { GraphQLExtension, ExecutionArgs } from "../extensions"
+import type { GraphQLResolveInfo, DocumentNode, ExecutionResult, GraphQLError as GQLError } from "graphql"
 import type { FieldComplexity, FieldComplexityMap } from "../server/complexity"
 import {
   getSchemaName,
@@ -49,6 +53,8 @@ interface BuilderState {
   unions: Map<string, UnionRegistration>
   inputs: Map<string, InputTypeRegistration>
   directives: Map<string, DirectiveRegistration>
+  middlewares: readonly MiddlewareRegistration[]  // Array to preserve registration order
+  extensions: readonly GraphQLExtension<any>[]    // Array to preserve registration order
   queries: Map<string, FieldRegistration>
   mutations: Map<string, FieldRegistration>
   subscriptions: Map<string, SubscriptionFieldRegistration>
@@ -102,6 +108,8 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     unions: new Map(),
     inputs: new Map(),
     directives: new Map(),
+    middlewares: [],
+    extensions: [],
     queries: new Map(),
     mutations: new Map(),
     subscriptions: new Map(),
@@ -337,6 +345,91 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     const newDirectives = new Map(this.state.directives)
     newDirectives.set(config.name, config as DirectiveRegistration)
     return this.with(updateState(this.state, "directives", newDirectives))
+  }
+
+  /**
+   * Register a middleware
+   *
+   * Middleware wraps all resolvers (or those matching a pattern) and executes
+   * in an "onion" model - first registered middleware is the outermost layer.
+   *
+   * @param config.name - Middleware name (for debugging/logging)
+   * @param config.description - Optional description
+   * @param config.match - Optional predicate to filter which fields this applies to
+   * @param config.apply - Function that transforms the resolver Effect
+   *
+   * @example
+   * ```typescript
+   * builder.middleware({
+   *   name: "logging",
+   *   apply: (effect, ctx) => Effect.gen(function*() {
+   *     yield* Effect.logInfo(`Resolving ${ctx.info.fieldName}`)
+   *     const start = Date.now()
+   *     const result = yield* effect
+   *     yield* Effect.logInfo(`Resolved in ${Date.now() - start}ms`)
+   *     return result
+   *   })
+   * })
+   * ```
+   */
+  middleware<R2 = never>(config: {
+    name: string
+    description?: string
+    match?: (info: GraphQLResolveInfo) => boolean
+    apply: <A, E, R3>(
+      effect: Effect.Effect<A, E, R3>,
+      context: MiddlewareContext
+    ) => Effect.Effect<A, E, R2 | R3>
+  }): GraphQLSchemaBuilder<R | R2> {
+    const newMiddlewares = [...this.state.middlewares, config as MiddlewareRegistration]
+    return this.with({ ...this.state, middlewares: newMiddlewares })
+  }
+
+  /**
+   * Register an extension
+   *
+   * Extensions provide lifecycle hooks that run at each phase of request processing
+   * (parse, validate, execute) and can contribute data to the response's extensions field.
+   *
+   * @param config.name - Extension name (for debugging/logging)
+   * @param config.description - Optional description
+   * @param config.onParse - Called after query parsing
+   * @param config.onValidate - Called after validation
+   * @param config.onExecuteStart - Called before execution begins
+   * @param config.onExecuteEnd - Called after execution completes
+   *
+   * @example
+   * ```typescript
+   * builder.extension({
+   *   name: "tracing",
+   *   onExecuteStart: () => Effect.gen(function*() {
+   *     const ext = yield* ExtensionsService
+   *     yield* ext.set("tracing", { startTime: Date.now() })
+   *   }),
+   *   onExecuteEnd: () => Effect.gen(function*() {
+   *     const ext = yield* ExtensionsService
+   *     yield* ext.merge("tracing", { endTime: Date.now() })
+   *   }),
+   * })
+   * ```
+   */
+  extension<R2 = never>(config: {
+    name: string
+    description?: string
+    onParse?: (source: string, document: DocumentNode) => Effect.Effect<void, never, R2>
+    onValidate?: (document: DocumentNode, errors: readonly GQLError[]) => Effect.Effect<void, never, R2>
+    onExecuteStart?: (args: ExecutionArgs) => Effect.Effect<void, never, R2>
+    onExecuteEnd?: (result: ExecutionResult) => Effect.Effect<void, never, R2>
+  }): GraphQLSchemaBuilder<R | R2> {
+    const newExtensions = [...this.state.extensions, config as GraphQLExtension<R2>]
+    return this.with({ ...this.state, extensions: newExtensions })
+  }
+
+  /**
+   * Get the registered extensions for use by the execution layer
+   */
+  getExtensions(): readonly GraphQLExtension<any>[] {
+    return this.state.extensions
   }
 
   /**
@@ -645,6 +738,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       unionRegistry,
       inputRegistry,
       directiveRegistrations: this.state.directives,
+      middlewares: this.state.middlewares,
     }
   }
 

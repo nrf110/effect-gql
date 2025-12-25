@@ -1,12 +1,15 @@
 import { Effect, Runtime, Stream, Queue, Fiber, Option } from "effect"
 import {
   GraphQLFieldConfig,
+  GraphQLResolveInfo,
 } from "graphql"
 import type {
   FieldRegistration,
   SubscriptionFieldRegistration,
   ObjectFieldRegistration,
   DirectiveRegistration,
+  MiddlewareRegistration,
+  MiddlewareContext,
   GraphQLEffectContext,
 } from "./types"
 import {
@@ -20,6 +23,7 @@ import {
  */
 export interface FieldBuilderContext extends TypeConversionContext {
   directiveRegistrations: Map<string, DirectiveRegistration>
+  middlewares: readonly MiddlewareRegistration[]
 }
 
 /**
@@ -43,6 +47,40 @@ function applyDirectives<A, E, R>(
 }
 
 /**
+ * Apply middleware to an Effect by wrapping it with middleware transformers.
+ *
+ * Middleware executes in "onion" order - first registered middleware is the
+ * outermost layer, meaning it runs first before and last after the resolver.
+ *
+ * Each middleware can optionally specify a `match` predicate to filter which
+ * fields it applies to.
+ */
+function applyMiddleware<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  context: MiddlewareContext,
+  middlewares: readonly MiddlewareRegistration[]
+): Effect.Effect<A, E, any> {
+  if (middlewares.length === 0) return effect
+
+  let wrapped = effect
+
+  // Apply in reverse order so first registered is outermost
+  // (executes first before, last after)
+  for (let i = middlewares.length - 1; i >= 0; i--) {
+    const middleware = middlewares[i]
+
+    // Check if middleware should apply to this field
+    if (middleware.match && !middleware.match(context.info)) {
+      continue
+    }
+
+    wrapped = middleware.apply(wrapped, context)
+  }
+
+  return wrapped
+}
+
+/**
  * Build a GraphQL field config from a field registration (for queries/mutations)
  */
 export function buildField(
@@ -51,12 +89,18 @@ export function buildField(
 ): GraphQLFieldConfig<any, any> {
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
-    resolve: async (_parent, args, context: GraphQLEffectContext<any>) => {
-      const effect = applyDirectives(
+    resolve: async (_parent, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
+      // Apply directives first (per-field, explicit)
+      let effect = applyDirectives(
         config.resolve(args),
         config.directives,
         ctx.directiveRegistrations
       )
+
+      // Apply middleware (global/pattern-matched)
+      const middlewareContext: MiddlewareContext = { parent: _parent, args, info }
+      effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
+
       return await Runtime.runPromise(context.runtime)(effect)
     }
   }
@@ -86,12 +130,18 @@ export function buildObjectField(
 ): GraphQLFieldConfig<any, any> {
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
-    resolve: async (parent, args, context: GraphQLEffectContext<any>) => {
-      const effect = applyDirectives(
+    resolve: async (parent, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
+      // Apply directives first (per-field, explicit)
+      let effect = applyDirectives(
         config.resolve(parent, args),
         config.directives,
         ctx.directiveRegistrations
       )
+
+      // Apply middleware (global/pattern-matched)
+      const middlewareContext: MiddlewareContext = { parent, args, info }
+      effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
+
       return await Runtime.runPromise(context.runtime)(effect)
     }
   }
@@ -129,7 +179,7 @@ export function buildSubscriptionField(
     type: toGraphQLTypeWithRegistry(config.type, ctx),
 
     // The subscribe function returns an AsyncIterator
-    subscribe: async (_parent, args, context: GraphQLEffectContext<any>) => {
+    subscribe: async (_parent, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
       // Get the Stream from the subscribe Effect
       let subscribeEffect = config.subscribe(args)
 
@@ -140,6 +190,10 @@ export function buildSubscriptionField(
         ctx.directiveRegistrations
       ) as any
 
+      // Apply middleware to the subscribe effect
+      const middlewareContext: MiddlewareContext = { parent: _parent, args, info }
+      subscribeEffect = applyMiddleware(subscribeEffect, middlewareContext, ctx.middlewares) as any
+
       const stream = await Runtime.runPromise(context.runtime)(subscribeEffect)
 
       // Convert Stream to AsyncIterator using queue-based approach
@@ -149,8 +203,13 @@ export function buildSubscriptionField(
     // The resolve function transforms each yielded value
     // If no custom resolve is provided, return the payload directly
     resolve: config.resolve
-      ? async (value, args, context: GraphQLEffectContext<any>) => {
-          const effect = config.resolve!(value, args)
+      ? async (value, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
+          let effect = config.resolve!(value, args)
+
+          // Apply middleware to the resolve effect
+          const middlewareContext: MiddlewareContext = { parent: value, args, info }
+          effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
+
           return await Runtime.runPromise(context.runtime)(effect)
         }
       : (value) => value,

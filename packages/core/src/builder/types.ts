@@ -1,6 +1,6 @@
 import { Effect, Runtime, Stream } from "effect"
 import * as S from "effect/Schema"
-import { DirectiveLocation } from "graphql"
+import { DirectiveLocation, GraphQLResolveInfo } from "graphql"
 import type { FieldComplexity } from "../server/complexity"
 
 /**
@@ -94,6 +94,72 @@ export interface DirectiveRegistration<Args = any, R = never> {
    * Called with directive args, returns an Effect transformer.
    */
   apply?: (args: Args) => <A, E, R2>(effect: Effect.Effect<A, E, R2>) => Effect.Effect<A, E, R | R2>
+}
+
+/**
+ * Context passed to middleware apply functions
+ * Contains the resolver's parent value, arguments, and GraphQL resolve info
+ */
+export interface MiddlewareContext<Parent = any, Args = any> {
+  readonly parent: Parent
+  readonly args: Args
+  readonly info: GraphQLResolveInfo
+}
+
+/**
+ * Configuration for middleware registration
+ *
+ * Middleware wraps all resolvers (or those matching a pattern) and executes
+ * in an "onion" model - first registered middleware is the outermost layer.
+ *
+ * Unlike directives which are applied per-field explicitly, middleware is
+ * applied globally or via pattern matching.
+ *
+ * @example
+ * ```typescript
+ * // Logging middleware - applies to all fields
+ * middleware({
+ *   name: "logging",
+ *   apply: (effect, ctx) => Effect.gen(function*() {
+ *     yield* Effect.logInfo(`Resolving ${ctx.info.fieldName}`)
+ *     return yield* effect
+ *   })
+ * })
+ *
+ * // Admin-only middleware - pattern matched
+ * middleware({
+ *   name: "adminOnly",
+ *   match: (info) => info.fieldName.startsWith("admin"),
+ *   apply: (effect) => Effect.gen(function*() {
+ *     const auth = yield* AuthService
+ *     yield* auth.requireAdmin()
+ *     return yield* effect
+ *   })
+ * })
+ * ```
+ */
+export interface MiddlewareRegistration<R = never> {
+  readonly name: string
+  readonly description?: string
+
+  /**
+   * Optional predicate to filter which fields this middleware applies to.
+   * If undefined, middleware applies to all fields.
+   * Receives the GraphQL resolve info for the field being resolved.
+   */
+  readonly match?: (info: GraphQLResolveInfo) => boolean
+
+  /**
+   * Transform the resolver Effect.
+   * Receives the resolver effect and full context (parent, args, info).
+   * Returns the transformed effect.
+   *
+   * Middleware executes in "onion" order - first registered is outermost.
+   */
+  readonly apply: <A, E, R2>(
+    effect: Effect.Effect<A, E, R2>,
+    context: MiddlewareContext
+  ) => Effect.Effect<A, E, R | R2>
 }
 
 /**

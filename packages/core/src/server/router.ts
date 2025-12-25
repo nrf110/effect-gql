@@ -1,6 +1,12 @@
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Effect, Layer } from "effect"
-import { GraphQLSchema, graphql } from "graphql"
+import {
+  GraphQLSchema,
+  parse,
+  validate,
+  execute as graphqlExecute,
+  type DocumentNode,
+} from "graphql"
 import type { GraphQLEffectContext } from "../builder/types"
 import { graphiqlHtml } from "./graphiql"
 import { normalizeConfig, type GraphQLRouterConfigInput } from "./config"
@@ -9,6 +15,15 @@ import {
   ComplexityLimitExceededError,
   type FieldComplexityMap,
 } from "./complexity"
+import {
+  type GraphQLExtension,
+  ExtensionsService,
+  makeExtensionsService,
+  runParseHooks,
+  runValidateHooks,
+  runExecuteStartHooks,
+  runExecuteEndHooks,
+} from "../extensions"
 
 /**
  * Options for makeGraphQLRouter
@@ -20,6 +35,13 @@ export interface MakeGraphQLRouterOptions extends GraphQLRouterConfigInput {
    * If using makeGraphQLRouter() directly, call builder.getFieldComplexities().
    */
   readonly fieldComplexities?: FieldComplexityMap
+
+  /**
+   * GraphQL extensions for lifecycle hooks.
+   * If using toRouter(), this is automatically extracted from the builder.
+   * If using makeGraphQLRouter() directly, call builder.getExtensions().
+   */
+  readonly extensions?: readonly GraphQLExtension<any>[]
 }
 
 /**
@@ -29,10 +51,11 @@ export interface MakeGraphQLRouterOptions extends GraphQLRouterConfigInput {
  * - POST requests to the GraphQL endpoint
  * - GET requests to the GraphiQL UI (if enabled)
  * - Query complexity validation (if configured)
+ * - Extension lifecycle hooks (onParse, onValidate, onExecuteStart, onExecuteEnd)
  *
  * @param schema - The GraphQL schema
  * @param layer - Effect layer providing services required by resolvers
- * @param options - Optional configuration for paths, GraphiQL, and complexity
+ * @param options - Optional configuration for paths, GraphiQL, complexity, and extensions
  * @returns An HttpRouter that can be composed with other routes
  *
  * @example
@@ -41,7 +64,8 @@ export interface MakeGraphQLRouterOptions extends GraphQLRouterConfigInput {
  *   path: "/graphql",
  *   graphiql: { path: "/graphiql" },
  *   complexity: { maxDepth: 10, maxComplexity: 1000 },
- *   fieldComplexities: builder.getFieldComplexities()
+ *   fieldComplexities: builder.getFieldComplexities(),
+ *   extensions: builder.getExtensions()
  * })
  *
  * // Compose with other routes
@@ -58,9 +82,13 @@ export const makeGraphQLRouter = <R>(
 ): HttpRouter.HttpRouter<never, never> => {
   const resolvedConfig = normalizeConfig(options)
   const fieldComplexities = options.fieldComplexities ?? new Map()
+  const extensions = options.extensions ?? []
 
   // GraphQL POST handler
   const graphqlHandler = Effect.gen(function* () {
+    // Create the ExtensionsService for this request
+    const extensionsService = yield* makeExtensionsService()
+
     // Get the runtime from the layer
     const runtime = yield* Effect.runtime<R>()
 
@@ -71,6 +99,48 @@ export const makeGraphQLRouter = <R>(
       variables?: Record<string, unknown>
       operationName?: string
     }>
+
+    // Phase 1: Parse
+    let document: DocumentNode
+    try {
+      document = parse(body.query)
+    } catch (parseError) {
+      // Parse errors are returned as GraphQL errors
+      const extensionData = yield* extensionsService.get()
+      return yield* HttpServerResponse.json({
+        errors: [{ message: String(parseError) }],
+        extensions: Object.keys(extensionData).length > 0 ? extensionData : undefined,
+      })
+    }
+
+    // Run onParse hooks
+    yield* runParseHooks(extensions, body.query, document).pipe(
+      Effect.provideService(ExtensionsService, extensionsService)
+    )
+
+    // Phase 2: Validate
+    const validationErrors = validate(schema, document)
+
+    // Run onValidate hooks
+    yield* runValidateHooks(extensions, document, validationErrors).pipe(
+      Effect.provideService(ExtensionsService, extensionsService)
+    )
+
+    // If validation failed, return errors without executing
+    if (validationErrors.length > 0) {
+      const extensionData = yield* extensionsService.get()
+      return yield* HttpServerResponse.json(
+        {
+          errors: validationErrors.map((e) => ({
+            message: e.message,
+            locations: e.locations,
+            path: e.path,
+          })),
+          extensions: Object.keys(extensionData).length > 0 ? extensionData : undefined,
+        },
+        { status: 400 }
+      )
+    }
 
     // Validate query complexity if configured
     if (resolvedConfig.complexity) {
@@ -92,12 +162,25 @@ export const makeGraphQLRouter = <R>(
       )
     }
 
+    // Phase 3: Execute
+    const executionArgs = {
+      source: body.query,
+      document,
+      variableValues: body.variables,
+      operationName: body.operationName,
+    }
+
+    // Run onExecuteStart hooks
+    yield* runExecuteStartHooks(extensions, executionArgs).pipe(
+      Effect.provideService(ExtensionsService, extensionsService)
+    )
+
     // Execute GraphQL query
-    const result = yield* Effect.tryPromise({
+    const executeResult = yield* Effect.try({
       try: () =>
-        graphql({
+        graphqlExecute({
           schema,
-          source: body.query,
+          document,
           variableValues: body.variables,
           operationName: body.operationName,
           contextValue: { runtime } satisfies GraphQLEffectContext<R>,
@@ -105,7 +188,31 @@ export const makeGraphQLRouter = <R>(
       catch: (error) => new Error(String(error)),
     })
 
-    return yield* HttpServerResponse.json(result)
+    // Await result if it's a promise (shouldn't be for queries/mutations, but handle it)
+    const resolvedResult: Awaited<typeof executeResult> =
+      executeResult && typeof executeResult === "object" && "then" in executeResult
+        ? yield* Effect.promise(() => executeResult)
+        : executeResult
+
+    // Run onExecuteEnd hooks
+    yield* runExecuteEndHooks(extensions, resolvedResult).pipe(
+      Effect.provideService(ExtensionsService, extensionsService)
+    )
+
+    // Merge extension data into result
+    const extensionData = yield* extensionsService.get()
+    const finalResult =
+      Object.keys(extensionData).length > 0
+        ? {
+            ...resolvedResult,
+            extensions: {
+              ...resolvedResult.extensions,
+              ...extensionData,
+            },
+          }
+        : resolvedResult
+
+    return yield* HttpServerResponse.json(finalResult)
   }).pipe(
     Effect.provide(layer),
     Effect.catchAll((error) => {
