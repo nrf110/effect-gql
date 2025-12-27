@@ -14,7 +14,7 @@ A GraphQL framework for Effect-TS that brings full type safety, composability, a
 ## Installation
 
 ```bash
-npm install effect-graphql effect graphql
+npm install @effect-gql/core effect graphql
 ```
 
 ## Quick Start
@@ -22,7 +22,7 @@ npm install effect-graphql effect graphql
 ```typescript
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchemaBuilder, execute } from "effect-graphql"
+import { GraphQLSchemaBuilder, execute } from "@effect-gql/core"
 
 // Define your schema with Effect Schema
 const UserSchema = S.Struct({
@@ -64,7 +64,7 @@ const result = await Effect.runPromise(
 
 ## Documentation
 
-For full documentation, guides, and API reference, visit the [documentation site](https://nrf110.github.io/effect-graphql/).
+For full documentation, guides, and API reference, visit the [documentation site](https://nrf110.github.io/effect-gql/).
 
 ## Development
 

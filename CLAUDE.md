@@ -11,7 +11,7 @@ A GraphQL framework for Effect-TS that brings full type safety, composability, a
 This is a multi-package monorepo using npm workspaces:
 
 ```
-effect-graphql/
+effect-gql/
 ├── packages/
 │   ├── core/           # @effect-gql/core - Core library
 │   │   ├── src/

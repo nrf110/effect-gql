@@ -1,5 +1,5 @@
 {
-  "name": "effect-graphql-monorepo",
+  "name": "effect-gql-monorepo",
   "private": true,
   "workspaces": [
     "packages/*"

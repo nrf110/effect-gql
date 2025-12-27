@@ -63,7 +63,7 @@ export interface ResolverContextStore {
 }
 
 export const ResolverContextStore = Context.GenericTag<ResolverContextStore>(
-  "effect-graphql/ResolverContextStore"
+  "effect-gql/ResolverContextStore"
 )
 
 /**

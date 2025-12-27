@@ -9,7 +9,7 @@ const schema = GraphQLSchemaBuilder.empty
   .pipe(
     query("hello", {
       type: S.String,
-      resolve: () => Effect.succeed("Hello from effect-graphql!"),
+      resolve: () => Effect.succeed("Hello from effect-gql!"),
     }),
     query("echo", {
       args: S.Struct({ message: S.String }),
