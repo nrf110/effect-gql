@@ -33,6 +33,7 @@ export default defineConfig({
 						{ label: 'Error Handling', slug: 'guides/error-handling' },
 						{ label: 'Server Integration', slug: 'guides/server-integration' },
 						{ label: 'Subscriptions', slug: 'guides/subscriptions' },
+						{ label: 'SSE Subscriptions', slug: 'guides/sse-subscriptions' },
 						{ label: 'DataLoader', slug: 'guides/dataloader' },
 						{ label: 'Complexity Limiting', slug: 'guides/complexity-limiting' },
 						{ label: 'Response Caching', slug: 'guides/response-caching' },

@@ -1,0 +1,550 @@
+---
+title: SSE Subscriptions
+description: Use Server-Sent Events for GraphQL subscriptions
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Effect GQL supports GraphQL subscriptions over Server-Sent Events (SSE) as an alternative to WebSockets. SSE subscriptions are simpler to set up, work through HTTP proxies and CDNs, and have native browser support via the `EventSource` API.
+
+## When to Use SSE vs WebSocket
+
+| Feature | SSE | WebSocket |
+|---------|-----|-----------|
+| Direction | Server → Client (unidirectional) | Bidirectional |
+| Protocol | HTTP/1.1+ | Dedicated protocol |
+| Proxy support | Excellent | Requires configuration |
+| Browser support | Native (`EventSource`) | Native (`WebSocket`) |
+| Connection limits | 6 per domain (HTTP/1.1) | Unlimited |
+| Reconnection | Built-in | Manual |
+
+**Use SSE when:**
+- You only need server-to-client updates
+- You're behind strict proxies/firewalls
+- You want simpler infrastructure
+- You prefer HTTP-based solutions
+
+**Use WebSocket when:**
+- You need bidirectional communication
+- You have many concurrent subscriptions
+- You need maximum performance
+
+## Quick Start
+
+<Tabs>
+  <TabItem label="Node.js">
+```typescript
+import { createServer } from "node:http"
+import { makeGraphQLRouter, GraphQLSchemaBuilder, toRouter } from "@effect-gql/core"
+import { createSSEHandler } from "@effect-gql/node"
+import { Effect, Stream, Layer } from "effect"
+import * as S from "effect/Schema"
+
+// Define subscription type
+const Tick = S.Struct({
+  count: S.Number,
+  timestamp: S.Number,
+})
+
+// Build schema with subscription
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  query("hello", {
+    type: S.String,
+    resolve: () => Effect.succeed("world"),
+  }),
+  subscription("tick", {
+    type: Tick,
+    subscribe: () =>
+      Effect.succeed(
+        Stream.range(1, 100).pipe(
+          Stream.map((count) => ({
+            count,
+            timestamp: Date.now(),
+          })),
+          Stream.tap(() => Effect.sleep("1 second"))
+        )
+      ),
+  })
+)
+
+const schema = builder.buildSchema()
+
+// Create handlers
+const router = toRouter(builder, Layer.empty, { graphiql: true })
+const sseHandler = createSSEHandler(schema, Layer.empty)
+
+// Create HTTP server
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`)
+
+  // Handle SSE subscriptions
+  if (url.pathname === "/graphql/stream" && req.method === "POST") {
+    await sseHandler(req, res)
+    return
+  }
+
+  // Handle regular GraphQL (using router...)
+})
+
+server.listen(4000, () => {
+  console.log("Server running on http://localhost:4000")
+  console.log("SSE subscriptions at http://localhost:4000/graphql/stream")
+})
+```
+  </TabItem>
+  <TabItem label="Bun">
+```typescript
+import { makeGraphQLRouter } from "@effect-gql/core"
+import { createBunSSEHandlers, createBunWSHandlers } from "@effect-gql/bun"
+import { Layer } from "effect"
+
+// Create handlers
+const sse = createBunSSEHandlers(schema, Layer.empty)
+const ws = createBunWSHandlers(schema, Layer.empty)
+
+Bun.serve({
+  port: 4000,
+  fetch(req, server) {
+    // Try WebSocket upgrade first
+    if (ws.upgrade(req, server)) {
+      return // Upgraded to WebSocket
+    }
+
+    // Try SSE subscriptions
+    if (sse.shouldHandle(req)) {
+      return sse.handle(req)
+    }
+
+    // Handle other requests...
+  },
+  websocket: ws.websocket,
+})
+```
+  </TabItem>
+  <TabItem label="Express">
+```typescript
+import express from "express"
+import { createServer } from "node:http"
+import { toMiddleware, sseMiddleware, attachWebSocket } from "@effect-gql/express"
+import { Layer } from "effect"
+
+const app = express()
+app.use(express.json())
+
+// Regular GraphQL endpoint
+app.use(toMiddleware(router, Layer.empty))
+
+// SSE subscriptions endpoint
+app.use(sseMiddleware(schema, Layer.empty, {
+  path: "/graphql/stream",
+}))
+
+const server = createServer(app)
+server.listen(4000)
+```
+  </TabItem>
+  <TabItem label="Cloudflare Workers">
+```typescript
+import { toHandler, createSSEHandler } from "@effect-gql/web"
+import { Layer } from "effect"
+
+const graphqlHandler = toHandler(router, Layer.empty)
+const sseHandler = createSSEHandler(schema, Layer.empty)
+
+export default {
+  async fetch(request: Request) {
+    const url = new URL(request.url)
+
+    // Handle SSE subscriptions
+    if (url.pathname === "/graphql/stream" && request.method === "POST") {
+      return await sseHandler(request)
+    }
+
+    // Handle regular GraphQL
+    return await graphqlHandler.handler(request)
+  }
+}
+```
+  </TabItem>
+</Tabs>
+
+## Protocol
+
+Effect GQL implements the [graphql-sse protocol](https://github.com/enisdenjo/graphql-sse) in "distinct connections mode":
+
+1. Client sends a POST request with the subscription query
+2. Server responds with `Content-Type: text/event-stream`
+3. Server streams events as the subscription produces values
+4. Connection closes when subscription completes or client disconnects
+
+### Event Format
+
+```
+event: next
+data: {"data":{"tick":{"count":1,"timestamp":1703...}}}
+
+event: next
+data: {"data":{"tick":{"count":2,"timestamp":1703...}}}
+
+event: complete
+data:
+```
+
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `next` | Subscription data (same format as GraphQL response) |
+| `error` | Subscription error (contains `errors` array) |
+| `complete` | Subscription ended normally |
+
+## Client Usage
+
+### Using EventSource (GET)
+
+For simple subscriptions without variables, you can use the native `EventSource` API:
+
+```typescript
+const eventSource = new EventSource("/graphql/stream?query=subscription{tick{count}}")
+
+eventSource.addEventListener("next", (event) => {
+  const { data } = JSON.parse(event.data)
+  console.log("Tick:", data.tick.count)
+})
+
+eventSource.addEventListener("complete", () => {
+  console.log("Subscription complete")
+  eventSource.close()
+})
+
+eventSource.addEventListener("error", (event) => {
+  console.error("Subscription error:", event.data)
+  eventSource.close()
+})
+```
+
+### Using Fetch API (POST)
+
+For subscriptions with variables, use the Fetch API with a streaming response:
+
+```typescript
+const response = await fetch("/graphql/stream", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream",
+  },
+  body: JSON.stringify({
+    query: "subscription($from: Int!) { countdown(from: $from) }",
+    variables: { from: 10 },
+  }),
+})
+
+const reader = response.body.getReader()
+const decoder = new TextDecoder()
+
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+
+  const text = decoder.decode(value)
+  // Parse SSE events from text...
+}
+```
+
+### Using graphql-sse Client
+
+For a full-featured client, use the [graphql-sse](https://github.com/enisdenjo/graphql-sse) package:
+
+```typescript
+import { createClient } from "graphql-sse"
+
+const client = createClient({
+  url: "/graphql/stream",
+})
+
+const subscription = client.iterate({
+  query: "subscription { tick { count timestamp } }",
+})
+
+for await (const result of subscription) {
+  console.log("Tick:", result.data?.tick)
+}
+```
+
+## Authentication
+
+Use the `onConnect` hook to authenticate subscription requests:
+
+```typescript
+const sseHandler = createSSEHandler(schema, Layer.empty, {
+  onConnect: (request, headers) => Effect.gen(function* () {
+    const token = headers.get("authorization")?.replace("Bearer ", "")
+
+    if (!token) {
+      return yield* Effect.fail(new Error("Unauthorized"))
+    }
+
+    const user = yield* AuthService.validateToken(token)
+    return { user }
+  }),
+})
+```
+
+The context returned from `onConnect` is available in your subscription resolvers.
+
+## Lifecycle Hooks
+
+```typescript
+const sseHandler = createSSEHandler(schema, Layer.empty, {
+  // Called before subscription starts (for auth)
+  onConnect: (request, headers) =>
+    Effect.succeed({ userId: "123" }),
+
+  // Called when subscription starts streaming
+  onSubscribe: (ctx) =>
+    Effect.log(`User ${ctx.connectionContext.userId} subscribed`),
+
+  // Called when subscription completes
+  onComplete: (ctx) =>
+    Effect.log(`Subscription completed`),
+
+  // Called when client disconnects
+  onDisconnect: (ctx) =>
+    Effect.log(`Client disconnected`),
+
+  // Called on subscription errors
+  onError: (ctx, error) =>
+    Effect.logError("Subscription error", error),
+})
+```
+
+## Complexity Limiting
+
+Protect your server from expensive subscription queries:
+
+```typescript
+const sseHandler = createSSEHandler(schema, Layer.empty, {
+  complexity: {
+    maxComplexity: 100,
+    maxDepth: 5,
+  },
+  fieldComplexities: builder.getFieldComplexities(),
+})
+```
+
+Rejected queries receive an error event:
+
+```
+event: error
+data: {"errors":[{"message":"Query complexity 150 exceeds maximum 100","extensions":{"code":"COMPLEXITY_LIMIT_EXCEEDED"}}]}
+
+event: complete
+data:
+```
+
+## Platform-Specific APIs
+
+### Node.js
+
+```typescript
+import { createSSEHandler, createSSEServer } from "@effect-gql/node"
+
+// Low-level handler
+const handler = createSSEHandler(schema, layer, options)
+await handler(req, res)
+
+// Server with path matching
+const server = createSSEServer(schema, layer, { path: "/graphql/stream" })
+if (server.shouldHandle(req)) {
+  await server.handle(req, res)
+}
+```
+
+### Bun
+
+```typescript
+import { createBunSSEHandler, createBunSSEHandlers } from "@effect-gql/bun"
+
+// Low-level handler (returns Response)
+const handler = createBunSSEHandler(schema, layer, options)
+const response = await handler(request)
+
+// With path matching
+const sse = createBunSSEHandlers(schema, layer, { path: "/graphql/stream" })
+if (sse.shouldHandle(request)) {
+  return sse.handle(request)
+}
+```
+
+### Express
+
+```typescript
+import { sseMiddleware, createSSEHandler } from "@effect-gql/express"
+
+// As middleware (handles path matching)
+app.use(sseMiddleware(schema, layer, { path: "/graphql/stream" }))
+
+// As route handler
+const handler = createSSEHandler(schema, layer)
+app.post("/graphql/stream", handler)
+```
+
+### Web Standard (Workers, Deno)
+
+```typescript
+import { createSSEHandler, createSSEHandlers } from "@effect-gql/web"
+
+// Low-level handler
+const handler = createSSEHandler(schema, layer, options)
+const response = await handler(request)
+
+// With path matching
+const sse = createSSEHandlers(schema, layer, { path: "/graphql/stream" })
+if (sse.shouldHandle(request)) {
+  return sse.handle(request)
+}
+```
+
+## HTTP Headers
+
+SSE responses include these headers:
+
+```http
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+The `X-Accel-Buffering: no` header disables nginx buffering, ensuring events are sent immediately.
+
+## Best Practices
+
+### 1. Use Both SSE and WebSocket
+
+Offer both options and let clients choose:
+
+```typescript
+// WebSocket for feature-rich clients
+const ws = createGraphQLWSServer(schema, layer)
+
+// SSE for simpler clients or restricted networks
+const sse = createSSEHandler(schema, layer)
+```
+
+### 2. Handle Reconnection
+
+SSE clients should handle reconnection gracefully:
+
+```typescript
+let eventSource: EventSource
+
+function connect() {
+  eventSource = new EventSource("/graphql/stream?query=...")
+
+  eventSource.onerror = () => {
+    eventSource.close()
+    setTimeout(connect, 1000) // Reconnect after 1 second
+  }
+}
+```
+
+### 3. Set Appropriate Timeouts
+
+Configure proxy and server timeouts for long-running connections:
+
+```nginx
+# nginx.conf
+location /graphql/stream {
+  proxy_read_timeout 3600s;
+  proxy_send_timeout 3600s;
+  proxy_buffering off;
+}
+```
+
+### 4. Monitor Connection Count
+
+Track active SSE connections to prevent resource exhaustion:
+
+```typescript
+let activeConnections = 0
+
+const sseHandler = createSSEHandler(schema, layer, {
+  onSubscribe: () => Effect.sync(() => { activeConnections++ }),
+  onDisconnect: () => Effect.sync(() => { activeConnections-- }),
+})
+```
+
+## Troubleshooting
+
+### Events Not Streaming
+
+**Symptom:** Events arrive all at once instead of streaming.
+
+**Cause:** Proxy or middleware buffering the response.
+
+**Solution:** Add `X-Accel-Buffering: no` header (included by default) and configure your proxy:
+
+```nginx
+proxy_buffering off;
+```
+
+### Connection Drops
+
+**Symptom:** Connection closes unexpectedly.
+
+**Cause:** Proxy timeout or keep-alive timeout.
+
+**Solution:** Increase timeouts and send periodic heartbeats:
+
+```typescript
+// In your subscription resolver
+Stream.merge(
+  yourDataStream,
+  Stream.repeat(Effect.succeed({ __heartbeat: true })).pipe(
+    Stream.schedule(Schedule.spaced("30 seconds"))
+  )
+)
+```
+
+### 406 Not Acceptable
+
+**Symptom:** Server returns 406 status.
+
+**Cause:** Client not sending `Accept: text/event-stream` header.
+
+**Solution:** Ensure client sends proper Accept header:
+
+```typescript
+fetch("/graphql/stream", {
+  headers: { "Accept": "text/event-stream" },
+  // ...
+})
+```
+
+## API Reference
+
+### Core Functions
+
+| Export | Description |
+|--------|-------------|
+| `makeGraphQLSSEHandler` | Create a reusable SSE handler |
+| `makeSSESubscriptionStream` | Create an SSE event stream |
+| `formatSSEMessage` | Format an SSE event for the wire |
+
+### Types
+
+| Export | Description |
+|--------|-------------|
+| `SSEEvent` | SSE event with `event` and `data` |
+| `SSEEventType` | `"next"` \| `"error"` \| `"complete"` |
+| `SSESubscriptionRequest` | GraphQL subscription request |
+| `GraphQLSSEOptions` | Handler configuration options |
+| `SSEConnectionContext` | Context passed to hooks |
+
+## Next Steps
+
+- [Subscriptions](/effect-gql/guides/subscriptions) - WebSocket-based subscriptions
+- [Complexity Limiting](/effect-gql/guides/complexity-limiting) - Protect expensive subscriptions
+- [Server Integration](/effect-gql/guides/server-integration) - Deploy with SSE enabled

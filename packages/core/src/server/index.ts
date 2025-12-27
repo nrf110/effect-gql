@@ -75,3 +75,28 @@ export type {
 export { WebSocketError } from "./ws-types"
 
 export { makeGraphQLWSHandler } from "./ws-adapter"
+
+// SSE (Server-Sent Events) subscription support
+export type {
+  EffectSSE,
+  SSEEvent,
+  SSEEventType,
+  SSESubscriptionRequest,
+  SSEConnectionContext,
+  GraphQLSSEOptions,
+  GraphQLSSEConfig,
+  SSESubscriptionResult,
+} from "./sse-types"
+
+export {
+  SSEError,
+  formatNextEvent,
+  formatErrorEvent,
+  formatCompleteEvent,
+  formatSSEMessage,
+} from "./sse-types"
+
+export {
+  makeSSESubscriptionStream,
+  makeGraphQLSSEHandler,
+} from "./sse-adapter"
