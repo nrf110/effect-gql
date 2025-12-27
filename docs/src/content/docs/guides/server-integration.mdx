@@ -284,6 +284,273 @@ const app = HttpRouter.empty.pipe(
 )
 ```
 
+## Health Checks
+
+Health checks verify your server is running and can serve requests. Rather than implementing health checks in the GraphQL framework, we recommend using platform-level patterns. This gives you full control over health check behavior for your specific deployment environment (Kubernetes, AWS ALB, etc.).
+
+### GraphQL-Level Health Check
+
+The simplest approach is using a GraphQL query as your health check. Every GraphQL server supports:
+
+```
+GET /graphql?query={__typename}
+```
+
+This verifies the entire GraphQL execution pipeline is working. Add the `apollo-require-preflight: true` header if using CSRF protection.
+
+### Platform-Specific Patterns
+
+<Tabs>
+  <TabItem label="Node.js / Bun">
+Use `HttpRouter` to add a health endpoint before the GraphQL router:
+
+```typescript
+import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { toRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node" // or @effect-gql/bun
+
+const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
+
+const app = HttpRouter.empty.pipe(
+  // Simple health check
+  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
+
+  // Readiness check with service verification
+  HttpRouter.get("/ready",
+    Effect.gen(function* () {
+      const db = yield* Database
+      yield* db.ping()
+      return yield* HttpServerResponse.json({ status: "ready" })
+    }).pipe(
+      Effect.catchAll(() =>
+        HttpServerResponse.json({ status: "not ready" }, { status: 503 })
+      )
+    )
+  ),
+
+  // GraphQL routes
+  HttpRouter.concat(graphqlRouter)
+)
+
+serve(app, serviceLayer, { port: 4000 })
+```
+  </TabItem>
+  <TabItem label="Express">
+Add health routes directly to your Express app:
+
+```typescript
+import express from "express"
+import { graphqlMiddleware } from "@effect-gql/express"
+
+const app = express()
+
+// Simple liveness check
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" })
+})
+
+// Readiness check with async verification
+app.get("/ready", async (req, res) => {
+  try {
+    await checkDatabaseConnection()
+    res.json({ status: "ready" })
+  } catch (error) {
+    res.status(503).json({ status: "not ready" })
+  }
+})
+
+// GraphQL endpoint
+app.use("/graphql", graphqlMiddleware(schema, serviceLayer))
+
+app.listen(4000)
+```
+  </TabItem>
+  <TabItem label="Web Standards">
+For Cloudflare Workers, Deno, or other web-standard environments:
+
+```typescript
+import { toHandler } from "@effect-gql/web"
+
+const graphqlHandler = toHandler(builder, serviceLayer)
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+
+    // Health check
+    if (url.pathname === "/health") {
+      return new Response(JSON.stringify({ status: "ok" }), {
+        headers: { "content-type": "application/json" }
+      })
+    }
+
+    // GraphQL
+    if (url.pathname === "/graphql") {
+      return graphqlHandler(request)
+    }
+
+    return new Response("Not Found", { status: 404 })
+  }
+}
+```
+  </TabItem>
+</Tabs>
+
+### Kubernetes Example
+
+For Kubernetes deployments, configure liveness and readiness probes:
+
+```yaml
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: graphql-api
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: 4000
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      readinessProbe:
+        httpGet:
+          path: /ready
+          port: 4000
+        initialDelaySeconds: 5
+        periodSeconds: 5
+```
+
+## CORS (Cross-Origin Resource Sharing)
+
+CORS is HTTP infrastructure that should be configured at the platform level, not in the GraphQL framework. This gives you full control over origins, methods, and credentials for your specific deployment.
+
+### Platform-Specific Patterns
+
+<Tabs>
+  <TabItem label="Node.js / Bun">
+Use Effect's `HttpMiddleware.cors` for declarative CORS configuration:
+
+```typescript
+import { HttpMiddleware, HttpRouter } from "@effect/platform"
+import { toRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node" // or @effect-gql/bun
+
+const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
+
+const app = graphqlRouter.pipe(
+  HttpRouter.use(
+    HttpMiddleware.cors({
+      allowedOrigins: ["https://myapp.com", "https://studio.apollographql.com"],
+      allowedMethods: ["GET", "POST", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "Apollo-Require-Preflight"],
+      allowCredentials: true,
+      maxAge: 86400, // 24 hours
+    })
+  )
+)
+
+serve(app, serviceLayer, { port: 4000 })
+```
+
+For development, allow all origins:
+
+```typescript
+const corsMiddleware = HttpMiddleware.cors({
+  allowedOrigins: ["*"],
+  allowedMethods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["*"],
+})
+```
+  </TabItem>
+  <TabItem label="Express">
+Use the popular `cors` package:
+
+```bash
+npm install cors @types/cors
+```
+
+```typescript
+import express from "express"
+import cors from "cors"
+import { graphqlMiddleware } from "@effect-gql/express"
+
+const app = express()
+
+// Configure CORS
+app.use(cors({
+  origin: ["https://myapp.com", "https://studio.apollographql.com"],
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Apollo-Require-Preflight"],
+  credentials: true,
+  maxAge: 86400,
+}))
+
+// GraphQL endpoint
+app.use("/graphql", graphqlMiddleware(schema, serviceLayer))
+
+app.listen(4000)
+```
+  </TabItem>
+  <TabItem label="Web Standards">
+Handle CORS manually for Cloudflare Workers, Deno, etc.:
+
+```typescript
+import { toHandler } from "@effect-gql/web"
+
+const graphqlHandler = toHandler(builder, serviceLayer)
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "https://myapp.com",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Max-Age": "86400",
+}
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    // Handle preflight
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders })
+    }
+
+    const url = new URL(request.url)
+
+    if (url.pathname === "/graphql") {
+      const response = await graphqlHandler(request)
+      // Add CORS headers to response
+      const headers = new Headers(response.headers)
+      Object.entries(corsHeaders).forEach(([k, v]) => headers.set(k, v))
+      return new Response(response.body, {
+        status: response.status,
+        headers,
+      })
+    }
+
+    return new Response("Not Found", { status: 404 })
+  }
+}
+```
+  </TabItem>
+</Tabs>
+
+### Apollo Studio Integration
+
+To use [Apollo Studio](https://studio.apollographql.com) or [Apollo Sandbox](https://studio.apollographql.com/sandbox/explorer) with your local server, add their origin to your CORS configuration:
+
+```typescript
+allowedOrigins: [
+  "https://studio.apollographql.com",
+  // ... your app origins
+]
+```
+
+### Security Considerations
+
+- **Never use `*` for origins in production** - always specify allowed domains
+- **Be careful with `credentials: true`** - only enable if your app requires cookies/auth headers
+- **Consider per-environment configuration** - use environment variables for origin lists
+- **Apollo-Require-Preflight header** - include this in `allowedHeaders` for Apollo clients
+
 ## GraphiQL
 
 When enabled, GraphiQL provides an interactive IDE for exploring your GraphQL API:
