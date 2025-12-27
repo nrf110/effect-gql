@@ -4,6 +4,8 @@ import {
   GraphQLSchema,
   parse,
   validate,
+  specifiedRules,
+  NoSchemaIntrospectionCustomRule,
   execute as graphqlExecute,
   type DocumentNode,
 } from "graphql"
@@ -258,7 +260,11 @@ export const makePersistedQueriesRouter = <R>(
       )
 
       // Phase 2: Validate
-      const validationErrors = validate(schema, document)
+      // Add NoSchemaIntrospectionCustomRule if introspection is disabled
+      const validationRules = resolvedConfig.introspection
+        ? undefined
+        : [...specifiedRules, NoSchemaIntrospectionCustomRule]
+      const validationErrors = validate(schema, document, validationRules)
 
       // Run onValidate hooks
       yield* runValidateHooks(extensions, document, validationErrors).pipe(

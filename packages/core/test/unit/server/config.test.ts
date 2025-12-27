@@ -116,6 +116,8 @@ describe("config.ts", () => {
         expect(config).toEqual({
           path: "/graphql",
           graphiql: false,
+          complexity: undefined,
+          introspection: true,
         })
       })
 
@@ -124,6 +126,8 @@ describe("config.ts", () => {
         expect(config).toEqual({
           path: "/graphql",
           graphiql: false,
+          complexity: undefined,
+          introspection: true,
         })
       })
     })

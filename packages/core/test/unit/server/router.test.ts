@@ -845,4 +845,133 @@ describe("router.ts", () => {
       expect(result.body.errors).toBeDefined()
     })
   })
+
+  // ==========================================================================
+  // makeGraphQLRouter - Introspection control
+  // ==========================================================================
+  describe("makeGraphQLRouter - Introspection control", () => {
+    it("should allow introspection queries by default", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        {},
+        "{ __schema { types { name } } }"
+      )
+
+      expect(result.data).toBeDefined()
+      expect(result.data.__schema).toBeDefined()
+      expect(result.data.__schema.types).toBeDefined()
+      expect(result.errors).toBeUndefined()
+    })
+
+    it("should allow __type introspection queries by default", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        {},
+        '{ __type(name: "Query") { name fields { name } } }'
+      )
+
+      expect(result.data).toBeDefined()
+      expect(result.data.__type).toBeDefined()
+      expect(result.data.__type.name).toBe("Query")
+      expect(result.errors).toBeUndefined()
+    })
+
+    it("should block __schema introspection when disabled", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const result = await executeQueryWithResponse(
+        schema,
+        Layer.empty,
+        { introspection: false },
+        "{ __schema { types { name } } }"
+      )
+
+      expect(result.status).toBe(400)
+      expect(result.body.errors).toBeDefined()
+      expect(result.body.errors.length).toBeGreaterThan(0)
+      expect(result.body.errors[0].message).toContain("introspection")
+      expect(result.body.errors[0].message).toContain("__schema")
+    })
+
+    it("should block __type introspection when disabled", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const result = await executeQueryWithResponse(
+        schema,
+        Layer.empty,
+        { introspection: false },
+        '{ __type(name: "Query") { name } }'
+      )
+
+      expect(result.status).toBe(400)
+      expect(result.body.errors).toBeDefined()
+      expect(result.body.errors.length).toBeGreaterThan(0)
+      expect(result.body.errors[0].message).toContain("introspection")
+      expect(result.body.errors[0].message).toContain("__type")
+    })
+
+    it("should allow normal queries when introspection is disabled", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        { introspection: false },
+        "{ hello }"
+      )
+
+      expect(result).toEqual({ data: { hello: "world" } })
+    })
+
+    it("should allow introspection when explicitly enabled", async () => {
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", {
+          type: S.String,
+          resolve: () => Effect.succeed("world"),
+        })
+        .buildSchema()
+
+      const result = await executeQuery(
+        schema,
+        Layer.empty,
+        { introspection: true },
+        "{ __schema { queryType { name } } }"
+      )
+
+      expect(result.data).toBeDefined()
+      expect(result.data.__schema.queryType.name).toBe("Query")
+      expect(result.errors).toBeUndefined()
+    })
+  })
 })

@@ -21,6 +21,8 @@ export interface GraphQLRouterConfig {
   readonly graphiql: false | GraphiQLConfig
   /** Query complexity limiting configuration */
   readonly complexity?: ComplexityConfig
+  /** Enable introspection queries (default: true). Set to false in production. */
+  readonly introspection: boolean
 }
 
 /**
@@ -30,6 +32,7 @@ export const defaultConfig: GraphQLRouterConfig = {
   path: "/graphql",
   graphiql: false,
   complexity: undefined,
+  introspection: true,
 }
 
 /**
@@ -41,6 +44,8 @@ export interface GraphQLRouterConfigInput {
   readonly graphiql?: boolean | Partial<GraphiQLConfig>
   /** Query complexity limiting configuration */
   readonly complexity?: ComplexityConfig
+  /** Enable introspection queries (default: true). Set to false in production. */
+  readonly introspection?: boolean
 }
 
 export const normalizeConfig = (
@@ -58,7 +63,12 @@ export const normalizeConfig = (
     }
   }
 
-  return { path, graphiql, complexity: input.complexity }
+  return {
+    path,
+    graphiql,
+    complexity: input.complexity,
+    introspection: input.introspection ?? true,
+  }
 }
 
 /**
@@ -66,6 +76,7 @@ export const normalizeConfig = (
  *
  * Environment variables:
  * - GRAPHQL_PATH: Path for GraphQL endpoint (default: "/graphql")
+ * - GRAPHQL_INTROSPECTION: Enable introspection queries (default: true)
  * - GRAPHIQL_ENABLED: Enable GraphiQL UI (default: false)
  * - GRAPHIQL_PATH: Path for GraphiQL UI (default: "/graphiql")
  * - GRAPHIQL_ENDPOINT: URL where GraphiQL sends requests (default: same as GRAPHQL_PATH)
@@ -78,6 +89,9 @@ export const normalizeConfig = (
 export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
   Config.all({
     path: Config.string("GRAPHQL_PATH").pipe(Config.withDefault("/graphql")),
+    introspection: Config.boolean("GRAPHQL_INTROSPECTION").pipe(
+      Config.withDefault(true)
+    ),
     graphiqlEnabled: Config.boolean("GRAPHIQL_ENABLED").pipe(
       Config.withDefault(false)
     ),
@@ -95,6 +109,7 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
   }).pipe(
     Config.map(({
       path,
+      introspection,
       graphiqlEnabled,
       graphiqlPath,
       graphiqlEndpoint,
@@ -113,6 +128,7 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
 
       return {
         path,
+        introspection,
         graphiql: graphiqlEnabled
           ? {
               path: graphiqlPath,
