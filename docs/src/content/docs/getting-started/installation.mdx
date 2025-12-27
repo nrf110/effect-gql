@@ -6,17 +6,17 @@ description: How to install Effect GraphQL and its dependencies
 ## Prerequisites
 
 Effect GraphQL requires:
-- Node.js 18 or later
+- Node.js 24 or later
 - TypeScript 5.0 or later (for full type inference)
 
 ## Install Dependencies
 
 ```bash
-npm install effect-graphql effect graphql
+npm install @effect-gql/core effect graphql
 ```
 
 This installs:
-- `effect-graphql` - The core library
+- `@effect-gql/core` - The core library
 - `effect` - The Effect runtime and Schema library
 - `graphql` - GraphQL.js for schema execution
 
@@ -63,7 +63,7 @@ Create a simple test file to verify everything is working:
 // test-install.ts
 import { Effect } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchemaBuilder } from "effect-graphql"
+import { GraphQLSchemaBuilder } from "@effect-gql/core"
 
 const schema = GraphQLSchemaBuilder.empty
   .query("hello", {
@@ -91,4 +91,4 @@ Query type: Query
 
 ## Next Steps
 
-Now that you have Effect GraphQL installed, continue to the [Quick Start](/effect-graphql/getting-started/quick-start/) guide to build your first API.
+Now that you have Effect GraphQL installed, continue to the [Quick Start](/effect-gql/getting-started/quick-start/) guide to build your first API.

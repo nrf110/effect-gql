@@ -1,5 +1,5 @@
 ---
-title: Effect GraphQL
+title: Effect GQL
 description: Type-safe GraphQL servers with Effect-TS
 template: splash
 hero:
@@ -8,17 +8,17 @@ hero:
     file: ../../assets/houston.webp
   actions:
     - text: Get Started
-      link: /effect-graphql/getting-started/installation/
+      link: /effect-gql/getting-started/installation/
       icon: right-arrow
       variant: primary
     - text: View on GitHub
-      link: https://github.com/nrf110/effect-graphql
+      link: https://github.com/nrf110/effect-gql
       icon: external
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Why Effect GraphQL?
+## Why Effect GQL?
 
 <CardGrid stagger>
   <Card title="Type-Safe End-to-End" icon="approve-check">
@@ -40,7 +40,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 ```typescript
 import { Effect } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchemaBuilder } from "effect-graphql"
+import { GraphQLSchemaBuilder } from "@effect-gql/core"
 
 // Define your schema with Effect Schema
 const UserSchema = S.Struct({

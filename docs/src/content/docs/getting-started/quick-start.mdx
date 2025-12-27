@@ -46,7 +46,7 @@ A basic user API with:
 
    ```typescript
    import { Effect } from "effect"
-   import { GraphQLSchemaBuilder } from "effect-graphql"
+   import { GraphQLSchemaBuilder } from "@effect-gql/core"
 
    // Sample data
    const users: User[] = [
@@ -100,7 +100,7 @@ A basic user API with:
    Use the `execute` function to run GraphQL operations:
 
    ```typescript
-   import { execute } from "effect-graphql"
+   import { execute } from "@effect-gql/core"
    import { Layer } from "effect"
 
    // Execute a query
@@ -158,7 +158,7 @@ Here's the full code in one file:
 ```typescript
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchemaBuilder, execute } from "effect-graphql"
+import { GraphQLSchemaBuilder, execute } from "@effect-gql/core"
 
 // Schema definitions
 const UserSchema = S.Struct({
@@ -206,6 +206,6 @@ Effect.runPromise(main).then(console.log)
 
 ## Next Steps
 
-- Learn about the [Schema Builder](/effect-graphql/guides/schema-builder/) in detail
-- Understand how [Resolvers](/effect-graphql/guides/resolvers/) work with services
-- Handle errors with [Structured Errors](/effect-graphql/guides/error-handling/)
+- Learn about the [Schema Builder](/effect-gql/guides/schema-builder/) in detail
+- Understand how [Resolvers](/effect-gql/guides/resolvers/) work with services
+- Handle errors with [Structured Errors](/effect-gql/guides/error-handling/)

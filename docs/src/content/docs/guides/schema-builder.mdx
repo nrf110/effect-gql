@@ -10,7 +10,7 @@ The `GraphQLSchemaBuilder` is the core API for constructing GraphQL schemas in E
 ## Getting Started
 
 ```typescript
-import { GraphQLSchemaBuilder } from "effect-graphql"
+import { GraphQLSchemaBuilder } from "@effect-gql/core"
 
 // Start with an empty builder
 const builder = GraphQLSchemaBuilder.empty
@@ -51,7 +51,7 @@ import {
   objectType,
   field,
   compose,
-} from "effect-graphql"
+} from "@effect-gql/core"
 
 const schema = GraphQLSchemaBuilder.empty.pipe(
   objectType({ name: "User", schema: UserSchema }),
@@ -317,5 +317,5 @@ const result = await graphql({ schema, source: "{ hello }" })
 
 <Aside type="tip">
   For request execution with Effect services, use the `execute` function instead of `graphql()` directly.
-  See the [Resolvers guide](/effect-graphql/guides/resolvers/) for details.
+  See the [Resolvers guide](/effect-gql/guides/resolvers/) for details.
 </Aside>

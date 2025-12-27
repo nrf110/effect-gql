@@ -36,7 +36,7 @@ type User = S.Schema.Type<typeof UserSchema>
 `GraphQLSchemaBuilder` is an immutable builder for constructing your GraphQL schema:
 
 ```typescript
-import { GraphQLSchemaBuilder } from "effect-graphql"
+import { GraphQLSchemaBuilder } from "@effect-gql/core"
 
 const builder = GraphQLSchemaBuilder.empty
   .objectType({ name: "User", schema: UserSchema })
@@ -57,7 +57,7 @@ const schema = GraphQLSchemaBuilder.empty
   </TabItem>
   <TabItem label="Pipe API">
 ```typescript
-import { query, mutation, objectType } from "effect-graphql"
+import { query, mutation, objectType } from "@effect-gql/core"
 
 const schema = GraphQLSchemaBuilder.empty.pipe(
   objectType({ name: "User", schema: UserSchema }),
@@ -187,7 +187,7 @@ Putting it all together:
 ```typescript
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchemaBuilder, execute } from "effect-graphql"
+import { GraphQLSchemaBuilder, execute } from "@effect-gql/core"
 
 // Schemas
 const UserSchema = S.Struct({
@@ -279,6 +279,6 @@ console.log(JSON.stringify(result, null, 2))
 
 Now that you understand the basics:
 
-- Learn about [Effect-based resolvers](/effect-graphql/guides/resolvers/) and service injection
-- Handle errors with [structured error types](/effect-graphql/guides/error-handling/)
-- Explore the [Schema Builder API](/effect-graphql/guides/schema-builder/) in depth
+- Learn about [Effect-based resolvers](/effect-gql/guides/resolvers/) and service injection
+- Handle errors with [structured error types](/effect-gql/guides/error-handling/)
+- Explore the [Schema Builder API](/effect-gql/guides/schema-builder/) in depth
