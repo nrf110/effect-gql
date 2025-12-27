@@ -1,5 +1,6 @@
 import { Context, Effect, Ref } from "effect"
-import type { DocumentNode, ExecutionResult, GraphQLError } from "graphql"
+import type { DocumentNode, ExecutionResult, GraphQLError, GraphQLSchema } from "graphql"
+import type { FieldComplexityMap } from "./server/complexity"
 
 /**
  * Execution arguments passed to onExecuteStart hook
@@ -9,6 +10,10 @@ export interface ExecutionArgs {
   readonly document: DocumentNode
   readonly variableValues?: Record<string, unknown>
   readonly operationName?: string
+  /** The GraphQL schema being executed against */
+  readonly schema: GraphQLSchema
+  /** Field complexity definitions from the schema builder */
+  readonly fieldComplexities: FieldComplexityMap
 }
 
 /**

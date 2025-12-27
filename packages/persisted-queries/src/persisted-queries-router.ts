@@ -312,6 +312,8 @@ export const makePersistedQueriesRouter = <R>(
         document,
         variableValues: body.variables,
         operationName: body.operationName,
+        schema,
+        fieldComplexities,
       }
 
       // Run onExecuteStart hooks

@@ -18,6 +18,7 @@ import {
   runExecuteStartHooks,
   runExecuteEndHooks,
 } from "../extensions"
+import type { FieldComplexityMap } from "../server/complexity"
 
 /**
  * Execute a GraphQL query with a service layer
@@ -36,7 +37,8 @@ import {
 export const execute = <R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
-  extensions: readonly GraphQLExtension<any>[] = []
+  extensions: readonly GraphQLExtension<any>[] = [],
+  fieldComplexities: FieldComplexityMap = new Map()
 ) => (
   source: string,
   variableValues?: Record<string, unknown>,
@@ -94,6 +96,8 @@ export const execute = <R>(
       document,
       variableValues,
       operationName,
+      schema,
+      fieldComplexities,
     }
 
     // Run onExecuteStart hooks

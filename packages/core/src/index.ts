@@ -6,6 +6,7 @@ export * from './loader'
 export * from './resolver-context'
 export * from './server'
 export * from './extensions'
+export * from './analyzer-extension'
 
 // Re-export commonly used graphql types to ensure single instance
 export {

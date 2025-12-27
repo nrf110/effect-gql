@@ -228,6 +228,8 @@ export const makeGraphQLRouter = <R>(
       document,
       variableValues: body.variables,
       operationName: body.operationName,
+      schema,
+      fieldComplexities,
     }
 
     // Run onExecuteStart hooks

@@ -447,6 +447,135 @@ Use the `onExceeded` hook to track blocked queries:
 }
 ```
 
+## Analyzer Extension
+
+Sometimes you want to **report** complexity metrics to clients without blocking requests. The Analyzer extension adds complexity information to the response's `extensions` field, similar to [async-graphql's Analyzer](https://async-graphql.github.io/async-graphql/en/extensions_available.html).
+
+### Basic Usage
+
+```typescript
+import { createAnalyzerExtension, extension, GraphQLSchemaBuilder } from "@effect-gql/core"
+
+const analyzer = createAnalyzerExtension()
+
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  extension(analyzer),
+  query("users", {
+    type: S.Array(UserSchema),
+    resolve: () => fetchUsers()
+  })
+)
+```
+
+Responses will include complexity metrics:
+
+```json
+{
+  "data": { "users": [...] },
+  "extensions": {
+    "analyzer": {
+      "complexity": 42,
+      "depth": 3
+    }
+  }
+}
+```
+
+### Configuration Options
+
+```typescript
+const analyzer = createAnalyzerExtension({
+  // Which metrics to include (defaults shown)
+  includeComplexity: true,
+  includeDepth: true,
+  includeFieldCount: false,
+  includeAliasCount: false,
+
+  // Custom key in extensions (default: "analyzer")
+  key: "queryStats",
+
+  // Default cost per field (default: 1)
+  defaultFieldComplexity: 1,
+
+  // Log warnings when thresholds are exceeded
+  thresholds: {
+    depth: 10,
+    complexity: 500,
+    fieldCount: 100,
+    aliasCount: 20
+  }
+})
+```
+
+### All Metrics
+
+Enable all metrics for comprehensive analysis:
+
+```typescript
+const analyzer = createAnalyzerExtension({
+  includeComplexity: true,
+  includeDepth: true,
+  includeFieldCount: true,
+  includeAliasCount: true,
+  key: "queryAnalysis"
+})
+```
+
+Response:
+
+```json
+{
+  "data": { ... },
+  "extensions": {
+    "queryAnalysis": {
+      "complexity": 42,
+      "depth": 3,
+      "fieldCount": 15,
+      "aliasCount": 2
+    }
+  }
+}
+```
+
+### Thresholds
+
+Thresholds log warnings when exceeded but **do not block** the request:
+
+```typescript
+const analyzer = createAnalyzerExtension({
+  thresholds: {
+    depth: 5,         // Warn if depth > 5
+    complexity: 100   // Warn if complexity > 100
+  }
+})
+```
+
+This is useful for monitoring expensive queries in development or staging before enforcing limits in production.
+
+### Combining with Complexity Limiting
+
+Use both the analyzer (for reporting) and complexity limiting (for blocking):
+
+```typescript
+const analyzer = createAnalyzerExtension()
+
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  extension(analyzer),
+  query("users", { type: S.Array(UserSchema), resolve: ... })
+)
+
+const router = toRouter(builder, Layer.empty, {
+  // Block queries that exceed limits
+  complexity: {
+    maxDepth: 10,
+    maxComplexity: 1000
+  }
+})
+
+// Responses will include analyzer data for allowed queries
+// Blocked queries return errors before extensions are added
+```
+
 ## Next Steps
 
 - [Error Handling](/effect-gql/guides/error-handling) - Custom error responses
