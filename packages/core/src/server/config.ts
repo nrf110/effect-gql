@@ -1,5 +1,6 @@
 import { Config, Option } from "effect"
 import type { ComplexityConfig } from "./complexity"
+import type { CacheControlConfig } from "./cache-control"
 
 /**
  * Configuration for the GraphiQL UI
@@ -23,6 +24,8 @@ export interface GraphQLRouterConfig {
   readonly complexity?: ComplexityConfig
   /** Enable introspection queries (default: true). Set to false in production. */
   readonly introspection: boolean
+  /** Cache control configuration for HTTP Cache-Control headers */
+  readonly cacheControl?: CacheControlConfig
 }
 
 /**
@@ -33,6 +36,7 @@ export const defaultConfig: GraphQLRouterConfig = {
   graphiql: false,
   complexity: undefined,
   introspection: true,
+  cacheControl: undefined,
 }
 
 /**
@@ -46,6 +50,8 @@ export interface GraphQLRouterConfigInput {
   readonly complexity?: ComplexityConfig
   /** Enable introspection queries (default: true). Set to false in production. */
   readonly introspection?: boolean
+  /** Cache control configuration for HTTP Cache-Control headers */
+  readonly cacheControl?: CacheControlConfig
 }
 
 export const normalizeConfig = (
@@ -68,6 +74,7 @@ export const normalizeConfig = (
     graphiql,
     complexity: input.complexity,
     introspection: input.introspection ?? true,
+    cacheControl: input.cacheControl,
   }
 }
 
@@ -85,6 +92,9 @@ export const normalizeConfig = (
  * - GRAPHQL_MAX_ALIASES: Maximum number of aliases (optional)
  * - GRAPHQL_MAX_FIELDS: Maximum number of fields (optional)
  * - GRAPHQL_DEFAULT_FIELD_COMPLEXITY: Default field complexity (default: 1)
+ * - GRAPHQL_CACHE_CONTROL_ENABLED: Enable cache control headers (default: false)
+ * - GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE: Default maxAge for root fields (default: 0)
+ * - GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE: Default scope - PUBLIC or PRIVATE (default: PUBLIC)
  */
 export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
   Config.all({
@@ -106,6 +116,15 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
     defaultFieldComplexity: Config.number("GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
       Config.withDefault(1)
     ),
+    cacheControlEnabled: Config.boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(
+      Config.withDefault(false)
+    ),
+    cacheControlDefaultMaxAge: Config.number("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(
+      Config.withDefault(0)
+    ),
+    cacheControlDefaultScope: Config.string("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
+      Config.withDefault("PUBLIC")
+    ),
   }).pipe(
     Config.map(({
       path,
@@ -118,6 +137,9 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
       maxAliases,
       maxFields,
       defaultFieldComplexity,
+      cacheControlEnabled,
+      cacheControlDefaultMaxAge,
+      cacheControlDefaultScope,
     }) => {
       // Check if any complexity option is set
       const hasComplexity =
@@ -144,6 +166,14 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
               maxAliases: Option.getOrUndefined(maxAliases),
               maxFields: Option.getOrUndefined(maxFields),
               defaultFieldComplexity,
+            }
+          : undefined,
+        cacheControl: cacheControlEnabled
+          ? {
+              enabled: true,
+              defaultMaxAge: cacheControlDefaultMaxAge,
+              defaultScope: (cacheControlDefaultScope === "PRIVATE" ? "PRIVATE" : "PUBLIC") as import("../builder/types").CacheControlScope,
+              calculateHttpHeaders: true,
             }
           : undefined,
       }

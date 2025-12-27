@@ -24,10 +24,12 @@ import type {
   ObjectFieldRegistration,
   MiddlewareRegistration,
   MiddlewareContext,
+  CacheHint,
 } from "./types"
 import type { GraphQLExtension, ExecutionArgs } from "../extensions"
 import type { GraphQLResolveInfo, DocumentNode, ExecutionResult, GraphQLError as GQLError } from "graphql"
 import type { FieldComplexity, FieldComplexityMap } from "../server/complexity"
+import type { CacheHintMap } from "../server/cache-control"
 import {
   getSchemaName,
   schemaToFields,
@@ -142,6 +144,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
        * Can be a static number or a function that receives the resolved arguments.
        */
       complexity?: FieldComplexity
+      /**
+       * Cache control hint for this field.
+       * Used to compute HTTP Cache-Control headers for the response.
+       */
+      cacheControl?: CacheHint
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
   ): GraphQLSchemaBuilder<R | R2> {
@@ -202,6 +209,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
        * Can be a static number or a function that receives the resolved arguments.
        */
       complexity?: FieldComplexity
+      /**
+       * Cache control hint for this subscription.
+       * Note: Subscriptions are typically not cached, but this can be used for initial response hints.
+       */
+      cacheControl?: CacheHint
       subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R2>, E, R2>
       resolve?: (value: A, args: Args) => Effect.Effect<A, E, R2>
     }
@@ -219,6 +231,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     schema: S.Schema<A, any, any>
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
+    /**
+     * Default cache control hint for all fields returning this type.
+     * Can be overridden by field-level cacheControl.
+     */
+    cacheControl?: CacheHint
     fields?: Record<string, {
       type: S.Schema<any, any, any>
       args?: S.Schema<any, any, any>
@@ -228,17 +245,21 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
        * Complexity cost of this field for query complexity limiting.
        */
       complexity?: FieldComplexity
+      /**
+       * Cache control hint for this field.
+       */
+      cacheControl?: CacheHint
       resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
     }>
   }): GraphQLSchemaBuilder<R | R2> {
-    const { schema, implements: implementsInterfaces, directives, fields } = config
+    const { schema, implements: implementsInterfaces, directives, cacheControl, fields } = config
     const name = config.name ?? getSchemaName(schema)
     if (!name) {
       throw new Error("objectType requires a name. Either provide one explicitly or use a TaggedStruct/TaggedClass/Schema.Class")
     }
 
     const newTypes = new Map(this.state.types)
-    newTypes.set(name, { name, schema, implements: implementsInterfaces, directives })
+    newTypes.set(name, { name, schema, implements: implementsInterfaces, directives, cacheControl })
 
     let newObjectFields = this.state.objectFields
     if (fields) {
@@ -454,6 +475,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
        * Can be a static number or a function that receives the resolved arguments.
        */
       complexity?: FieldComplexity
+      /**
+       * Cache control hint for this field.
+       * Used to compute HTTP Cache-Control headers for the response.
+       */
+      cacheControl?: CacheHint
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>
     }
   ): GraphQLSchemaBuilder<R | R2> {
@@ -506,6 +532,47 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     }
 
     return complexities
+  }
+
+  /**
+   * Get the cache hint map for use in cache control calculation.
+   * Maps "TypeName.fieldName" to the cache hint for field-level hints,
+   * or "TypeName" to the cache hint for type-level hints.
+   */
+  getCacheHints(): CacheHintMap {
+    const hints: CacheHintMap = new Map()
+
+    // Type-level hints
+    for (const [typeName, typeReg] of this.state.types) {
+      if (typeReg.cacheControl !== undefined) {
+        hints.set(typeName, typeReg.cacheControl)
+      }
+    }
+
+    // Query fields
+    for (const [name, config] of this.state.queries) {
+      if (config.cacheControl !== undefined) {
+        hints.set(`Query.${name}`, config.cacheControl)
+      }
+    }
+
+    // Subscription fields
+    for (const [name, config] of this.state.subscriptions) {
+      if (config.cacheControl !== undefined) {
+        hints.set(`Subscription.${name}`, config.cacheControl)
+      }
+    }
+
+    // Object type fields
+    for (const [typeName, fields] of this.state.objectFields) {
+      for (const [fieldName, config] of fields) {
+        if (config.cacheControl !== undefined) {
+          hints.set(`${typeName}.${fieldName}`, config.cacheControl)
+        }
+      }
+    }
+
+    return hints
   }
 
   /**

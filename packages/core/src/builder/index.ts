@@ -14,6 +14,8 @@ export type {
   ObjectFieldRegistration,
   GraphQLEffectContext,
   TypeRegistries,
+  CacheHint,
+  CacheControlScope,
 } from "./types"
 
 // Re-export DirectiveLocation for convenience

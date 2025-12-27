@@ -46,6 +46,21 @@ export {
   ComplexityConfigFromEnv,
 } from "./complexity"
 
+// Cache control
+export type {
+  CacheHintMap,
+  CachePolicy,
+  CacheControlConfig,
+  CachePolicyAnalysisInfo,
+} from "./cache-control"
+
+export {
+  computeCachePolicy,
+  computeCachePolicyFromQuery,
+  toCacheControlHeader,
+  CacheControlConfigFromEnv,
+} from "./cache-control"
+
 // WebSocket subscription support
 export type {
   EffectWebSocket,

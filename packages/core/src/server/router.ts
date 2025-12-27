@@ -7,7 +7,9 @@ import {
   specifiedRules,
   NoSchemaIntrospectionCustomRule,
   execute as graphqlExecute,
+  Kind,
   type DocumentNode,
+  type OperationDefinitionNode,
 } from "graphql"
 import type { GraphQLEffectContext } from "../builder/types"
 import { graphiqlHtml } from "./graphiql"
@@ -17,6 +19,11 @@ import {
   ComplexityLimitExceededError,
   type FieldComplexityMap,
 } from "./complexity"
+import {
+  computeCachePolicy,
+  toCacheControlHeader,
+  type CacheHintMap,
+} from "./cache-control"
 import {
   type GraphQLExtension,
   ExtensionsService,
@@ -68,6 +75,13 @@ export interface MakeGraphQLRouterOptions extends GraphQLRouterConfigInput {
    * If using makeGraphQLRouter() directly, call builder.getFieldComplexities().
    */
   readonly fieldComplexities?: FieldComplexityMap
+
+  /**
+   * Cache hint definitions from the schema builder.
+   * If using toRouter(), this is automatically extracted from the builder.
+   * If using makeGraphQLRouter() directly, call builder.getCacheHints().
+   */
+  readonly cacheHints?: CacheHintMap
 
   /**
    * GraphQL extensions for lifecycle hooks.
@@ -122,6 +136,7 @@ export const makeGraphQLRouter = <R>(
 ): HttpRouter.HttpRouter<never, never> => {
   const resolvedConfig = normalizeConfig(options)
   const fieldComplexities = options.fieldComplexities ?? new Map()
+  const cacheHints = options.cacheHints ?? new Map()
   const extensions = options.extensions ?? []
   const errorHandler = options.errorHandler ?? defaultErrorHandler
 
@@ -257,7 +272,36 @@ export const makeGraphQLRouter = <R>(
           }
         : resolvedResult
 
-    return yield* HttpServerResponse.json(finalResult)
+    // Compute cache control headers if enabled
+    let cacheControlHeader: string | undefined
+    if (resolvedConfig.cacheControl?.enabled !== false && resolvedConfig.cacheControl?.calculateHttpHeaders !== false) {
+      // Find the operation from the document
+      const operations = document.definitions.filter(
+        (d): d is OperationDefinitionNode => d.kind === Kind.OPERATION_DEFINITION
+      )
+      const operation = body.operationName
+        ? operations.find((o) => o.name?.value === body.operationName)
+        : operations[0]
+
+      if (operation && operation.operation !== "mutation") {
+        // Only compute cache control for queries (mutations should not be cached)
+        const cachePolicy = yield* computeCachePolicy({
+          document,
+          operation,
+          schema,
+          cacheHints,
+          config: resolvedConfig.cacheControl ?? {},
+        })
+        cacheControlHeader = toCacheControlHeader(cachePolicy)
+      }
+    }
+
+    // Return response with optional cache control header
+    const responseHeaders = cacheControlHeader
+      ? { "cache-control": cacheControlHeader }
+      : undefined
+
+    return yield* HttpServerResponse.json(finalResult, { headers: responseHeaders })
   }).pipe(
     Effect.provide(layer),
     Effect.catchAll((error) => {

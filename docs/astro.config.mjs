@@ -35,6 +35,7 @@ export default defineConfig({
 						{ label: 'Subscriptions', slug: 'guides/subscriptions' },
 						{ label: 'DataLoader', slug: 'guides/dataloader' },
 						{ label: 'Complexity Limiting', slug: 'guides/complexity-limiting' },
+						{ label: 'Response Caching', slug: 'guides/response-caching' },
 						{ label: 'OpenTelemetry', slug: 'guides/opentelemetry' },
 						{ label: 'Apollo Federation', slug: 'guides/federation' },
 						{ label: 'Persisted Queries', slug: 'guides/persisted-queries' },

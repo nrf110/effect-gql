@@ -1,0 +1,361 @@
+---
+title: Response Caching
+description: Enable HTTP Cache-Control headers for CDN and browser caching
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Effect GQL supports automatic HTTP `Cache-Control` header generation based on field-level cache hints. This enables CDN caching for public queries and browser caching for user-specific data.
+
+## Quick Start
+
+Enable cache control by adding `cacheControl` hints to your fields:
+
+```typescript
+import { GraphQLSchemaBuilder, query, objectType, field, toRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
+import { Effect, Layer } from "effect"
+import * as S from "effect/Schema"
+
+const UserSchema = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  // Type-level hint: all User fields cache for 1 hour
+  objectType({
+    name: "User",
+    schema: UserSchema,
+    cacheControl: { maxAge: 3600 },
+  }),
+
+  // Field-level hint: email is private, cache for 1 minute
+  field("User", "email", {
+    type: S.String,
+    cacheControl: { maxAge: 60, scope: "PRIVATE" },
+    resolve: (user) => Effect.succeed(user.email),
+  }),
+
+  // Query with cache hint
+  query("users", {
+    type: S.Array(UserSchema),
+    cacheControl: { maxAge: 300 },  // 5 minutes
+    resolve: () => Effect.succeed([
+      { id: "1", name: "Alice", email: "alice@example.com" },
+    ]),
+  }),
+)
+
+const router = toRouter(builder, Layer.empty, {
+  cacheControl: { enabled: true },
+})
+
+serve(router, Layer.empty, { port: 4000 })
+```
+
+## How It Works
+
+### Cache Policy Computation
+
+Effect GQL computes the overall cache policy by analyzing all fields in the query:
+
+1. **maxAge**: Uses the **minimum** maxAge of all resolved fields
+2. **scope**: Set to `PRIVATE` if **any** field is `PRIVATE`
+
+```graphql
+# Query both public and private data
+query {
+  users {       # maxAge: 300, PUBLIC
+    id          # inherits from User type: 3600
+    name        # inherits from User type: 3600
+    email       # maxAge: 60, PRIVATE (field override)
+  }
+}
+```
+
+**Result**: `Cache-Control: private, max-age=60`
+
+The response uses `maxAge: 60` (minimum) and `scope: PRIVATE` (any field is private).
+
+### HTTP Headers
+
+Based on the computed policy, Effect GQL sets the `Cache-Control` header:
+
+| Policy | Header |
+|--------|--------|
+| `maxAge: 0` | `Cache-Control: no-store` |
+| `maxAge: 3600, scope: PUBLIC` | `Cache-Control: public, max-age=3600` |
+| `maxAge: 60, scope: PRIVATE` | `Cache-Control: private, max-age=60` |
+
+## Cache Hints
+
+### Field-Level Hints
+
+Apply cache hints to individual query or object fields:
+
+```typescript
+query("publicData", {
+  type: S.String,
+  cacheControl: { maxAge: 3600 },  // Cache for 1 hour
+  resolve: () => Effect.succeed("data"),
+})
+
+field("User", "recommendations", {
+  type: S.Array(ProductSchema),
+  cacheControl: { maxAge: 300, scope: "PRIVATE" },  // User-specific
+  resolve: (user) => getRecommendations(user.id),
+})
+```
+
+### Type-Level Hints
+
+Apply default cache hints to all fields returning a type:
+
+```typescript
+objectType({
+  name: "Product",
+  schema: ProductSchema,
+  cacheControl: { maxAge: 3600 },  // All Product fields cache 1 hour
+})
+```
+
+Field-level hints override type-level hints.
+
+### Cache Hint Options
+
+```typescript
+interface CacheHint {
+  // Maximum age in seconds (0 = no cache)
+  maxAge?: number
+
+  // PUBLIC: CDN + browser cacheable
+  // PRIVATE: Browser only (user-specific)
+  scope?: "PUBLIC" | "PRIVATE"
+
+  // Inherit maxAge from parent field
+  inheritMaxAge?: boolean
+}
+```
+
+## Default Behaviors
+
+Effect GQL follows these defaults (matching Apollo Server):
+
+| Field Type | Default maxAge | Behavior |
+|------------|---------------|----------|
+| Root fields (Query) | 0 | Must opt-in to caching |
+| Object-returning fields | 0 | Must opt-in to caching |
+| Scalar fields | inherited | Inherits parent's maxAge |
+| Introspection fields | ignored | Don't affect cache policy |
+
+<Aside type="caution">
+Mutations and subscriptions are excluded from cache control. Only queries receive `Cache-Control` headers.
+</Aside>
+
+## Configuration
+
+### Router Options
+
+```typescript
+const router = toRouter(builder, layer, {
+  cacheControl: {
+    // Enable cache control (default: true when cacheControl is set)
+    enabled: true,
+
+    // Default maxAge for fields without hints (default: 0)
+    defaultMaxAge: 0,
+
+    // Default scope for fields without hints (default: "PUBLIC")
+    defaultScope: "PUBLIC",
+
+    // Set HTTP headers on responses (default: true)
+    calculateHttpHeaders: true,
+  },
+})
+```
+
+### Environment Variables
+
+```bash
+GRAPHQL_CACHE_CONTROL_ENABLED=true
+GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE=0
+GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE=PUBLIC
+```
+
+## CDN Integration
+
+### With Persisted Queries
+
+Cache control works best with [Persisted Queries](/effect-gql/guides/persisted-queries) and GET requests:
+
+```typescript
+import { makePersistedQueriesRouter } from "@effect-gql/persisted-queries"
+
+const router = makePersistedQueriesRouter(schema, layer, {
+  mode: "apq",
+  enableGet: true,  // Enable GET requests for CDN caching
+  cacheControl: { enabled: true },
+})
+```
+
+When a client sends a GET request with a persisted query hash, CDNs can cache the response based on the URL:
+
+```
+GET /graphql?extensions={"persistedQuery":{"version":1,"sha256Hash":"abc123"}}
+
+Cache-Control: public, max-age=3600
+```
+
+### CDN Configuration
+
+<Tabs>
+  <TabItem label="Cloudflare">
+```typescript
+// Cloudflare respects Cache-Control headers by default
+// Configure cache rules in dashboard or via Page Rules
+```
+  </TabItem>
+  <TabItem label="Fastly">
+```vcl
+# Fastly VCL snippet
+sub vcl_fetch {
+  # Only cache GET requests
+  if (req.method == "GET") {
+    # Use Cache-Control header from origin
+    set beresp.ttl = std.integer(regsub(
+      beresp.http.Cache-Control, ".*max-age=(\d+).*", "\1"), 0);
+  }
+}
+```
+  </TabItem>
+  <TabItem label="AWS CloudFront">
+```yaml
+# CloudFront behavior settings
+CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3  # AllViewer
+```
+  </TabItem>
+</Tabs>
+
+## Programmatic Access
+
+### Computing Cache Policy Manually
+
+```typescript
+import { computeCachePolicyFromQuery, toCacheControlHeader } from "@effect-gql/core/server"
+
+const policy = await Effect.runPromise(
+  computeCachePolicyFromQuery(
+    "{ users { id name } }",
+    undefined,  // operationName
+    schema,
+    builder.getCacheHints(),
+    { defaultMaxAge: 0 }
+  )
+)
+
+console.log(policy)  // { maxAge: 300, scope: "PUBLIC" }
+console.log(toCacheControlHeader(policy))  // "public, max-age=300"
+```
+
+### Getting Cache Hints from Builder
+
+```typescript
+const hints = builder.getCacheHints()
+// Map<string, CacheHint>
+// "Query.users" -> { maxAge: 300 }
+// "User" -> { maxAge: 3600 }
+// "User.email" -> { maxAge: 60, scope: "PRIVATE" }
+```
+
+## Best Practices
+
+### 1. Start with No Caching
+
+Default to `maxAge: 0` and explicitly opt-in to caching:
+
+```typescript
+// Only cache fields you've verified are safe
+query("publicPosts", {
+  type: S.Array(PostSchema),
+  cacheControl: { maxAge: 300 },  // Explicitly enable
+  resolve: () => getPosts(),
+})
+```
+
+### 2. Mark User-Specific Data as Private
+
+```typescript
+query("me", {
+  type: UserSchema,
+  cacheControl: { maxAge: 60, scope: "PRIVATE" },
+  resolve: () => getCurrentUser(),
+})
+
+field("User", "settings", {
+  type: SettingsSchema,
+  cacheControl: { scope: "PRIVATE" },  // Even with inheritance
+  resolve: (user) => getSettings(user.id),
+})
+```
+
+### 3. Use Type-Level Hints for Consistency
+
+```typescript
+// All Product data is public and stable
+objectType({
+  name: "Product",
+  schema: ProductSchema,
+  cacheControl: { maxAge: 3600 },
+})
+
+// Override only for dynamic fields
+field("Product", "inventory", {
+  type: S.Number,
+  cacheControl: { maxAge: 60 },  // More volatile
+  resolve: (product) => getInventory(product.id),
+})
+```
+
+### 4. Combine with Complexity Limiting
+
+```typescript
+const router = toRouter(builder, layer, {
+  complexity: { maxComplexity: 1000 },
+  cacheControl: { enabled: true },
+})
+```
+
+## API Reference
+
+### Types
+
+| Export | Description |
+|--------|-------------|
+| `CacheHint` | Cache hint with `maxAge`, `scope`, `inheritMaxAge` |
+| `CacheControlScope` | `"PUBLIC"` or `"PRIVATE"` |
+| `CachePolicy` | Computed policy with `maxAge` and `scope` |
+| `CacheHintMap` | Map of type/field names to cache hints |
+| `CacheControlConfig` | Router configuration options |
+
+### Functions
+
+| Export | Description |
+|--------|-------------|
+| `computeCachePolicy(info)` | Compute cache policy from parsed query |
+| `computeCachePolicyFromQuery(query, ...)` | Compute cache policy from query string |
+| `toCacheControlHeader(policy)` | Convert policy to HTTP header value |
+
+### Configuration
+
+| Export | Description |
+|--------|-------------|
+| `CacheControlConfigFromEnv` | Effect Config for environment variables |
+
+## Next Steps
+
+- [Persisted Queries](/effect-gql/guides/persisted-queries) - Enable CDN caching with GET requests
+- [Complexity Limiting](/effect-gql/guides/complexity-limiting) - Protect expensive queries
+- [Server Integration](/effect-gql/guides/server-integration) - Deploy with caching enabled

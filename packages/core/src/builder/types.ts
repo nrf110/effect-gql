@@ -4,6 +4,38 @@ import { DirectiveLocation, GraphQLResolveInfo } from "graphql"
 import type { FieldComplexity } from "../server/complexity"
 
 /**
+ * Cache control scope determines whether a cached response can be shared.
+ * - PUBLIC: Response can be cached by CDNs and shared across users
+ * - PRIVATE: Response is user-specific and should only be cached in browsers
+ */
+export type CacheControlScope = "PUBLIC" | "PRIVATE"
+
+/**
+ * Cache control hint for a type or field.
+ * Used to compute the overall cache policy for a GraphQL response.
+ */
+export interface CacheHint {
+  /**
+   * Maximum age in seconds that this field's value can be cached.
+   * The response's maxAge will be the minimum of all field maxAges.
+   */
+  readonly maxAge?: number
+
+  /**
+   * Whether the cached value is user-specific (PRIVATE) or shared (PUBLIC).
+   * If any field is PRIVATE, the entire response is PRIVATE.
+   */
+  readonly scope?: CacheControlScope
+
+  /**
+   * When true, this field inherits its maxAge from the parent field
+   * instead of using the default (which is 0 for root fields).
+   * Cannot be used together with maxAge.
+   */
+  readonly inheritMaxAge?: boolean
+}
+
+/**
  * Configuration for a query or mutation field
  */
 export interface FieldRegistration<Args = any, A = any, E = any, R = any> {
@@ -24,6 +56,18 @@ export interface FieldRegistration<Args = any, A = any, E = any, R = any> {
    * complexity: (args) => args.limit * 2
    */
   complexity?: FieldComplexity
+  /**
+   * Cache control hint for this field.
+   * Used to compute HTTP Cache-Control headers for the response.
+   *
+   * @example
+   * // Cache for 1 hour
+   * cacheControl: { maxAge: 3600 }
+   *
+   * // User-specific data, don't cache in CDN
+   * cacheControl: { maxAge: 60, scope: "PRIVATE" }
+   */
+  cacheControl?: CacheHint
   resolve: (args: Args) => Effect.Effect<A, E, R>
 }
 
@@ -35,6 +79,15 @@ export interface TypeRegistration {
   schema: S.Schema<any, any, any>
   implements?: readonly string[]
   directives?: readonly DirectiveApplication[]
+  /**
+   * Default cache control hint for all fields returning this type.
+   * Can be overridden by field-level cacheControl.
+   *
+   * @example
+   * // All User fields cacheable for 1 hour by default
+   * cacheControl: { maxAge: 3600 }
+   */
+  cacheControl?: CacheHint
 }
 
 /**
@@ -182,6 +235,12 @@ export interface SubscriptionFieldRegistration<Args = any, A = any, E = any, R =
    */
   complexity?: FieldComplexity
   /**
+   * Cache control hint for this subscription.
+   * Note: Subscriptions are real-time and typically not cached,
+   * but this can be used for initial data hints.
+   */
+  cacheControl?: CacheHint
+  /**
    * Subscribe function returns an Effect that produces a Stream.
    * The Stream yields values that are passed to the resolve function.
    */
@@ -211,6 +270,18 @@ export interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = 
    * complexity: (args) => (args.limit ?? 10) * 2
    */
   complexity?: FieldComplexity
+  /**
+   * Cache control hint for this field.
+   * Used to compute HTTP Cache-Control headers for the response.
+   *
+   * @example
+   * // Expensive computation, cache for 5 minutes
+   * cacheControl: { maxAge: 300 }
+   *
+   * // Inherit cache policy from parent type
+   * cacheControl: { inheritMaxAge: true }
+   */
+  cacheControl?: CacheHint
   resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
 }
 

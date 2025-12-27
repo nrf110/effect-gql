@@ -1,9 +1,10 @@
 import { Effect, Stream } from "effect"
 import * as S from "effect/Schema"
 import { DirectiveLocation, GraphQLResolveInfo, DocumentNode, ExecutionResult, GraphQLError } from "graphql"
-import type { DirectiveApplication, MiddlewareContext } from "./types"
+import type { DirectiveApplication, MiddlewareContext, CacheHint } from "./types"
 import type { ExecutionArgs } from "../extensions"
 import { GraphQLSchemaBuilder } from "./schema-builder"
+import type { FieldComplexity } from "../server/complexity"
 
 /**
  * Add an object type to the schema builder (pipe-able)
@@ -14,11 +15,18 @@ export const objectType = <A, R2 = never>(config: {
   schema: S.Schema<A, any, any>
   implements?: readonly string[]
   directives?: readonly DirectiveApplication[]
+  /**
+   * Default cache control hint for all fields returning this type.
+   * Can be overridden by field-level cacheControl.
+   */
+  cacheControl?: CacheHint
   fields?: Record<string, {
     type: S.Schema<any, any, any>
     args?: S.Schema<any, any, any>
     description?: string
     directives?: readonly DirectiveApplication[]
+    complexity?: FieldComplexity
+    cacheControl?: CacheHint
     resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
   }>
 }) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
@@ -183,6 +191,8 @@ export const query = <A, E, R2, Args = void>(
     args?: S.Schema<Args, any, any>
     description?: string
     directives?: readonly DirectiveApplication[]
+    complexity?: FieldComplexity
+    cacheControl?: CacheHint
     resolve: (args: Args) => Effect.Effect<A, E, R2>
   }
 ) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
@@ -198,6 +208,7 @@ export const mutation = <A, E, R2, Args = void>(
     args?: S.Schema<Args, any, any>
     description?: string
     directives?: readonly DirectiveApplication[]
+    complexity?: FieldComplexity
     resolve: (args: Args) => Effect.Effect<A, E, R2>
   }
 ) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
@@ -228,6 +239,8 @@ export const subscription = <A, E, R2, Args = void>(
     args?: S.Schema<Args, any, any>
     description?: string
     directives?: readonly DirectiveApplication[]
+    complexity?: FieldComplexity
+    cacheControl?: CacheHint
     subscribe: (args: Args) => Effect.Effect<Stream.Stream<A, E, R2>, E, R2>
     resolve?: (value: A, args: Args) => Effect.Effect<A, E, R2>
   }
@@ -245,6 +258,8 @@ export const field = <Parent, A, E, R2, Args = void>(
     args?: S.Schema<Args, any, any>
     description?: string
     directives?: readonly DirectiveApplication[]
+    complexity?: FieldComplexity
+    cacheControl?: CacheHint
     resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>
   }
 ) => <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
