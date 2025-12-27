@@ -1,0 +1,46 @@
+{
+  "name": "@effect-gql/persisted-queries",
+  "version": "0.1.0",
+  "description": "Apollo Persisted Queries support for @effect-gql/core",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:watch": "vitest"
+  },
+  "peerDependencies": {
+    "@effect-gql/core": "^0.1.0",
+    "@effect/platform": "^0.94.0",
+    "effect": "^3.19.0",
+    "graphql": "^16.0.0"
+  },
+  "devDependencies": {
+    "@effect-gql/core": "*",
+    "@effect/platform": "^0.94.0",
+    "effect": "^3.19.13",
+    "graphql": "^16.0.0"
+  },
+  "keywords": [
+    "effect",
+    "graphql",
+    "persisted-queries",
+    "apq",
+    "apollo",
+    "caching"
+  ],
+  "license": "MIT"
+}

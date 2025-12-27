@@ -25,6 +25,7 @@
     { "path": "./packages/web" },
     { "path": "./packages/express" },
     { "path": "./packages/federation" },
-    { "path": "./packages/opentelemetry" }
+    { "path": "./packages/opentelemetry" },
+    { "path": "./packages/persisted-queries" }
   ]
 }
