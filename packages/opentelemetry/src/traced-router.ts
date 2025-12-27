@@ -1,5 +1,5 @@
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect, Layer, Option } from "effect"
+import { Effect, Layer, Tracer } from "effect"
 import type { GraphQLSchema } from "graphql"
 import { makeGraphQLRouter, type MakeGraphQLRouterOptions } from "@effect-gql/core/server"
 import { extractTraceContext, type TraceContext } from "./context-propagation"
@@ -36,7 +36,7 @@ const createSpanOptions = (
   config: TracedRouterOptions
 ): {
   attributes?: Record<string, unknown>
-  parent?: { traceId: string; spanId: string; sampled: boolean }
+  parent?: Tracer.ExternalSpan
 } => {
   const attributes: Record<string, unknown> = {
     "http.method": request.method,
@@ -48,11 +48,11 @@ const createSpanOptions = (
   if (traceContext && config.propagateContext !== false) {
     return {
       attributes,
-      parent: {
+      parent: Tracer.externalSpan({
         traceId: traceContext.traceId,
         spanId: traceContext.parentSpanId,
         sampled: (traceContext.traceFlags & 0x01) === 0x01,
-      },
+      }),
     }
   }
 
@@ -111,6 +111,9 @@ export const makeTracedGraphQLRouter = <R>(
   // Create the base router (handles GraphQL logic)
   const baseRouter = makeGraphQLRouter(schema, layer, options)
 
+  // Convert base router to an HttpApp for Effect-based handling
+  const baseApp = HttpRouter.toHttpApp(baseRouter)
+
   // Wrap with tracing
   return HttpRouter.empty.pipe(
     HttpRouter.all(
@@ -130,37 +133,21 @@ export const makeTracedGraphQLRouter = <R>(
         // Execute the request inside a root span
         return yield* Effect.withSpan(rootSpanName, spanOptions)(
           Effect.gen(function* () {
-            // Add operation info once we know it (after parsing)
-            // This is handled by the tracing extension
-
-            // Delegate to the base router
-            const handler = HttpRouter.toWebHandler(baseRouter)
-            const webRequest = yield* HttpServerRequest.HttpServerRequest.pipe(
-              Effect.map((req) => req.source as Request)
+            // Delegate to the base app (which handles the request from context)
+            const app = yield* baseApp
+            const response = yield* app.pipe(
+              Effect.catchTag("RouteNotFound", () =>
+                HttpServerResponse.text(
+                  JSON.stringify({ errors: [{ message: "Not Found" }] }),
+                  { status: 404, headers: { "content-type": "application/json" } }
+                )
+              )
             )
-
-            const response = yield* Effect.promise(() => handler(webRequest))
-
-            // Convert web Response back to HttpServerResponse
-            const status = response.status
-            const headers: Record<string, string> = {}
-            response.headers.forEach((value, key) => {
-              headers[key] = value
-            })
-
-            const body = yield* Effect.promise(() => response.text())
 
             // Annotate span with response info
-            yield* Effect.annotateCurrentSpan("http.status_code", status)
-            yield* Effect.annotateCurrentSpan(
-              "http.response.has_errors",
-              body.includes('"errors"')
-            )
+            yield* Effect.annotateCurrentSpan("http.status_code", response.status)
 
-            return yield* HttpServerResponse.text(body, {
-              status,
-              headers,
-            })
+            return response
           })
         )
       })
@@ -195,6 +182,9 @@ export const withTracedRouter = (
 ): HttpRouter.HttpRouter<any, any> => {
   const rootSpanName = options.rootSpanName ?? "graphql.http"
 
+  // Convert router to an HttpApp for Effect-based handling
+  const baseApp = HttpRouter.toHttpApp(router)
+
   return HttpRouter.empty.pipe(
     HttpRouter.all(
       "*",
@@ -207,41 +197,36 @@ export const withTracedRouter = (
             ? yield* extractTraceContext.pipe(Effect.catchAll(() => Effect.succeed(null)))
             : null
 
-        const spanOptions = {
+        const spanOptions: {
+          attributes: Record<string, unknown>
+          parent?: Tracer.ExternalSpan
+        } = {
           attributes: {
             "http.method": request.method,
             "http.url": request.url,
             ...options.rootSpanAttributes,
           },
-          ...(traceContext && options.propagateContext !== false
-            ? {
-                parent: {
-                  traceId: traceContext.traceId,
-                  spanId: traceContext.parentSpanId,
-                  sampled: (traceContext.traceFlags & 0x01) === 0x01,
-                },
-              }
-            : {}),
+        }
+
+        if (traceContext && options.propagateContext !== false) {
+          spanOptions.parent = Tracer.externalSpan({
+            traceId: traceContext.traceId,
+            spanId: traceContext.parentSpanId,
+            sampled: (traceContext.traceFlags & 0x01) === 0x01,
+          })
         }
 
         return yield* Effect.withSpan(rootSpanName, spanOptions)(
-          HttpRouter.toWebHandler(router)(request.source as Request).then(
-            (response) =>
-              Effect.gen(function* () {
-                yield* Effect.annotateCurrentSpan("http.status_code", response.status)
+          Effect.gen(function* () {
+            // Delegate to the base app (which handles the request from context)
+            const app = yield* baseApp
+            const response = yield* app
 
-                const headers: Record<string, string> = {}
-                response.headers.forEach((value, key) => {
-                  headers[key] = value
-                })
+            // Annotate span with response info
+            yield* Effect.annotateCurrentSpan("http.status_code", response.status)
 
-                const body = yield* Effect.promise(() => response.text())
-                return yield* HttpServerResponse.text(body, {
-                  status: response.status,
-                  headers,
-                })
-              })
-          )
+            return response
+          })
         )
       })
     )

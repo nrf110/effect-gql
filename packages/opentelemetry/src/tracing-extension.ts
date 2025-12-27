@@ -1,6 +1,7 @@
 import { Effect, Option } from "effect"
 import type { DocumentNode, ExecutionResult, GraphQLError, OperationDefinitionNode } from "graphql"
-import type { GraphQLExtension, ExecutionArgs, ExtensionsService } from "@effect-gql/core"
+import type { GraphQLExtension, ExecutionArgs } from "@effect-gql/core"
+import { ExtensionsService } from "@effect-gql/core"
 
 /**
  * Configuration for the GraphQL tracing extension
@@ -80,7 +81,7 @@ const getOperationType = (document: DocumentNode): string => {
  */
 export const tracingExtension = (
   config?: TracingExtensionConfig
-): GraphQLExtension<never> => ({
+): GraphQLExtension<ExtensionsService> => ({
   name: "opentelemetry-tracing",
   description: "Adds OpenTelemetry tracing to GraphQL execution phases",
 
@@ -139,13 +140,9 @@ export const tracingExtension = (
 
       // Expose trace ID in response extensions if configured
       if (config?.exposeTraceIdInResponse) {
-        const currentSpan = yield* Effect.currentSpan
-        if (Option.isSome(currentSpan)) {
-          const span = currentSpan.value
-          // Import ExtensionsService dynamically to avoid circular dependency issues
-          const { ExtensionsService } = yield* Effect.sync(() =>
-            require("@effect-gql/core") as { ExtensionsService: typeof ExtensionsService }
-          )
+        const currentSpanOption = yield* Effect.option(Effect.currentSpan)
+        if (Option.isSome(currentSpanOption)) {
+          const span = currentSpanOption.value
           const ext = yield* ExtensionsService
           yield* ext.set("tracing", {
             traceId: span.traceId,
