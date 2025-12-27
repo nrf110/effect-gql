@@ -1,0 +1,660 @@
+---
+title: File Uploads
+description: Secure file uploads using signed URLs with cloud storage
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+Effect GQL recommends the **signed URL pattern** for file uploads. Instead of streaming files through your GraphQL server, clients upload directly to cloud storage using pre-signed URLs.
+
+## Why Signed URLs?
+
+| Approach | Security | Scalability | Complexity |
+|----------|----------|-------------|------------|
+| Multipart uploads | CSRF vulnerable | Server bottleneck | Middleware required |
+| **Signed URLs** | Secure by default | Scales with storage | Simple mutations |
+
+**Benefits:**
+- Files never touch your GraphQL server
+- No CSRF vulnerabilities from multipart requests
+- Cloud storage handles large files efficiently
+- Progress tracking and resumable uploads supported
+- Works with any storage provider (S3, GCS, Azure, R2, etc.)
+
+---
+
+## How It Works
+
+```
+┌────────┐     1. Request URL      ┌─────────────┐
+│        │ ──────────────────────► │             │
+│ Client │                         │ GraphQL API │
+│        │ ◄────────────────────── │             │
+└────────┘     2. Signed URL       └──────┬──────┘
+    │                                     │
+    │ 3. Upload file                      │ Generate URL
+    ▼                                     ▼
+┌────────────────┐               ┌─────────────────┐
+│ Cloud Storage  │               │ Storage Service │
+│ (S3, GCS, R2)  │               │ (AWS SDK, etc.) │
+└────────────────┘               └─────────────────┘
+    │
+    │ 4. Confirm upload
+    ▼
+┌────────┐                        ┌─────────────┐
+│ Client │ ─────────────────────► │ GraphQL API │
+└────────┘   5. Complete mutation └─────────────┘
+```
+
+1. Client requests a signed upload URL via GraphQL mutation
+2. Server generates a pre-signed URL with the storage provider
+3. Client uploads the file directly to cloud storage
+4. Storage confirms the upload
+5. Client notifies the server via a completion mutation
+
+---
+
+## Implementation
+
+### Define the Schema
+
+```typescript
+import { GraphQLSchemaBuilder, mutation } from "@effect-gql/core"
+import { Effect } from "effect"
+import * as S from "effect/Schema"
+
+// Response from requesting an upload URL
+const UploadUrlResponse = S.Struct({
+  uploadUrl: S.String,
+  fileId: S.String,
+  expiresAt: S.String,
+})
+
+// Metadata about the uploaded file
+const FileMetadata = S.Struct({
+  id: S.String,
+  filename: S.String,
+  contentType: S.String,
+  size: S.Number,
+  url: S.String,
+})
+
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  // Step 1: Request a signed upload URL
+  mutation("createUploadUrl", {
+    type: UploadUrlResponse,
+    args: S.Struct({
+      filename: S.String,
+      contentType: S.String,
+      size: S.Number,
+    }),
+    resolve: ({ filename, contentType, size }) =>
+      Effect.gen(function* () {
+        const storage = yield* StorageService
+
+        // Generate unique file ID
+        const fileId = crypto.randomUUID()
+
+        // Get pre-signed URL from storage provider
+        const { url, expiresAt } = yield* storage.createUploadUrl({
+          key: `uploads/${fileId}/${filename}`,
+          contentType,
+          maxSize: size,
+          expiresIn: 3600, // 1 hour
+        })
+
+        // Store pending upload metadata
+        yield* storage.createPendingUpload({
+          fileId,
+          filename,
+          contentType,
+          expectedSize: size,
+        })
+
+        return {
+          uploadUrl: url,
+          fileId,
+          expiresAt: expiresAt.toISOString(),
+        }
+      }),
+  }),
+
+  // Step 2: Confirm upload completion
+  mutation("completeUpload", {
+    type: FileMetadata,
+    args: S.Struct({
+      fileId: S.String,
+    }),
+    resolve: ({ fileId }) =>
+      Effect.gen(function* () {
+        const storage = yield* StorageService
+
+        // Verify the file was actually uploaded
+        const file = yield* storage.verifyUpload(fileId)
+
+        // Mark upload as complete and get final metadata
+        const metadata = yield* storage.completeUpload(fileId)
+
+        return {
+          id: metadata.id,
+          filename: metadata.filename,
+          contentType: metadata.contentType,
+          size: metadata.size,
+          url: metadata.publicUrl,
+        }
+      }),
+  }),
+
+  // Optional: Cancel/cleanup a pending upload
+  mutation("cancelUpload", {
+    type: S.Boolean,
+    args: S.Struct({ fileId: S.String }),
+    resolve: ({ fileId }) =>
+      Effect.gen(function* () {
+        const storage = yield* StorageService
+        yield* storage.cancelUpload(fileId)
+        return true
+      }),
+  })
+)
+```
+
+### Storage Service
+
+<Tabs>
+  <TabItem label="AWS S3">
+```typescript
+import { Context, Effect, Layer } from "effect"
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3"
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
+
+interface UploadUrlOptions {
+  key: string
+  contentType: string
+  maxSize: number
+  expiresIn: number
+}
+
+class StorageService extends Context.Tag("StorageService")<
+  StorageService,
+  {
+    createUploadUrl: (options: UploadUrlOptions) => Effect.Effect<{ url: string; expiresAt: Date }>
+    createPendingUpload: (metadata: PendingUpload) => Effect.Effect<void>
+    verifyUpload: (fileId: string) => Effect.Effect<void>
+    completeUpload: (fileId: string) => Effect.Effect<FileMetadata>
+    cancelUpload: (fileId: string) => Effect.Effect<void>
+  }
+>() {}
+
+const makeS3StorageService = Effect.gen(function* () {
+  const client = new S3Client({ region: process.env.AWS_REGION })
+  const bucket = process.env.S3_BUCKET!
+  const db = yield* Database
+
+  return {
+    createUploadUrl: ({ key, contentType, maxSize, expiresIn }) =>
+      Effect.tryPromise({
+        try: async () => {
+          const command = new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            ContentType: contentType,
+            ContentLength: maxSize,
+          })
+
+          const url = await getSignedUrl(client, command, { expiresIn })
+          const expiresAt = new Date(Date.now() + expiresIn * 1000)
+
+          return { url, expiresAt }
+        },
+        catch: (error) => new StorageError({ cause: error }),
+      }),
+
+    createPendingUpload: (metadata) =>
+      db.pendingUploads.insert({
+        ...metadata,
+        status: "pending",
+        createdAt: new Date(),
+      }),
+
+    verifyUpload: (fileId) =>
+      Effect.gen(function* () {
+        const pending = yield* db.pendingUploads.findById(fileId)
+        if (!pending) {
+          return yield* Effect.fail(new NotFoundError({ message: "Upload not found" }))
+        }
+
+        // Check if file exists in S3
+        const command = new HeadObjectCommand({
+          Bucket: bucket,
+          Key: `uploads/${fileId}/${pending.filename}`,
+        })
+
+        yield* Effect.tryPromise({
+          try: () => client.send(command),
+          catch: () => new NotFoundError({ message: "File not uploaded" }),
+        })
+      }),
+
+    completeUpload: (fileId) =>
+      Effect.gen(function* () {
+        const pending = yield* db.pendingUploads.findById(fileId)
+
+        // Get actual file size from S3
+        const command = new HeadObjectCommand({
+          Bucket: bucket,
+          Key: `uploads/${fileId}/${pending.filename}`,
+        })
+        const response = yield* Effect.tryPromise({
+          try: () => client.send(command),
+          catch: (error) => new StorageError({ cause: error }),
+        })
+
+        // Create file record
+        const file = yield* db.files.insert({
+          id: fileId,
+          filename: pending.filename,
+          contentType: pending.contentType,
+          size: response.ContentLength ?? 0,
+          key: `uploads/${fileId}/${pending.filename}`,
+          createdAt: new Date(),
+        })
+
+        // Remove pending record
+        yield* db.pendingUploads.delete(fileId)
+
+        return {
+          ...file,
+          publicUrl: `https://${bucket}.s3.amazonaws.com/${file.key}`,
+        }
+      }),
+
+    cancelUpload: (fileId) =>
+      db.pendingUploads.delete(fileId),
+  }
+})
+
+const StorageServiceLive = Layer.effect(StorageService, makeS3StorageService)
+```
+  </TabItem>
+  <TabItem label="Google Cloud Storage">
+```typescript
+import { Storage } from "@google-cloud/storage"
+import { Context, Effect, Layer } from "effect"
+
+const makeGCSStorageService = Effect.gen(function* () {
+  const storage = new Storage()
+  const bucket = storage.bucket(process.env.GCS_BUCKET!)
+  const db = yield* Database
+
+  return {
+    createUploadUrl: ({ key, contentType, maxSize, expiresIn }) =>
+      Effect.tryPromise({
+        try: async () => {
+          const file = bucket.file(key)
+          const expiresAt = new Date(Date.now() + expiresIn * 1000)
+
+          const [url] = await file.getSignedUrl({
+            version: "v4",
+            action: "write",
+            expires: expiresAt,
+            contentType,
+          })
+
+          return { url, expiresAt }
+        },
+        catch: (error) => new StorageError({ cause: error }),
+      }),
+
+    // ... similar implementation for other methods
+  }
+})
+```
+  </TabItem>
+  <TabItem label="Cloudflare R2">
+```typescript
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3"
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
+import { Context, Effect, Layer } from "effect"
+
+const makeR2StorageService = Effect.gen(function* () {
+  const client = new S3Client({
+    region: "auto",
+    endpoint: `https://${process.env.CF_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: process.env.R2_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+    },
+  })
+  const bucket = process.env.R2_BUCKET!
+  const db = yield* Database
+
+  return {
+    createUploadUrl: ({ key, contentType, maxSize, expiresIn }) =>
+      Effect.tryPromise({
+        try: async () => {
+          const command = new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            ContentType: contentType,
+          })
+
+          const url = await getSignedUrl(client, command, { expiresIn })
+          const expiresAt = new Date(Date.now() + expiresIn * 1000)
+
+          return { url, expiresAt }
+        },
+        catch: (error) => new StorageError({ cause: error }),
+      }),
+
+    // ... similar implementation for other methods
+  }
+})
+```
+  </TabItem>
+</Tabs>
+
+---
+
+## Client Integration
+
+### Basic JavaScript
+
+```javascript
+async function uploadFile(file) {
+  // Step 1: Get signed URL
+  const { data } = await graphqlClient.mutate({
+    mutation: gql`
+      mutation CreateUploadUrl($filename: String!, $contentType: String!, $size: Int!) {
+        createUploadUrl(filename: $filename, contentType: $contentType, size: $size) {
+          uploadUrl
+          fileId
+          expiresAt
+        }
+      }
+    `,
+    variables: {
+      filename: file.name,
+      contentType: file.type,
+      size: file.size,
+    },
+  })
+
+  const { uploadUrl, fileId } = data.createUploadUrl
+
+  // Step 2: Upload directly to storage
+  await fetch(uploadUrl, {
+    method: "PUT",
+    body: file,
+    headers: {
+      "Content-Type": file.type,
+    },
+  })
+
+  // Step 3: Confirm upload
+  const { data: completeData } = await graphqlClient.mutate({
+    mutation: gql`
+      mutation CompleteUpload($fileId: String!) {
+        completeUpload(fileId: $fileId) {
+          id
+          filename
+          url
+        }
+      }
+    `,
+    variables: { fileId },
+  })
+
+  return completeData.completeUpload
+}
+```
+
+### With Progress Tracking
+
+```javascript
+async function uploadFileWithProgress(file, onProgress) {
+  const { uploadUrl, fileId } = await getUploadUrl(file)
+
+  // Use XMLHttpRequest for progress events
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) {
+        onProgress(event.loaded / event.total)
+      }
+    })
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve()
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status}`))
+      }
+    })
+
+    xhr.addEventListener("error", () => reject(new Error("Upload failed")))
+
+    xhr.open("PUT", uploadUrl)
+    xhr.setRequestHeader("Content-Type", file.type)
+    xhr.send(file)
+  })
+
+  return await completeUpload(fileId)
+}
+```
+
+### React Hook
+
+```typescript
+import { useState, useCallback } from "react"
+import { useMutation } from "@apollo/client"
+
+export function useFileUpload() {
+  const [progress, setProgress] = useState(0)
+  const [uploading, setUploading] = useState(false)
+  const [createUploadUrl] = useMutation(CREATE_UPLOAD_URL)
+  const [completeUpload] = useMutation(COMPLETE_UPLOAD)
+
+  const upload = useCallback(async (file: File) => {
+    setUploading(true)
+    setProgress(0)
+
+    try {
+      // Get signed URL
+      const { data } = await createUploadUrl({
+        variables: {
+          filename: file.name,
+          contentType: file.type,
+          size: file.size,
+        },
+      })
+
+      const { uploadUrl, fileId } = data.createUploadUrl
+
+      // Upload with progress
+      await uploadWithProgress(uploadUrl, file, setProgress)
+
+      // Complete
+      const result = await completeUpload({
+        variables: { fileId },
+      })
+
+      return result.data.completeUpload
+    } finally {
+      setUploading(false)
+    }
+  }, [createUploadUrl, completeUpload])
+
+  return { upload, progress, uploading }
+}
+
+// Usage in component
+function AvatarUpload() {
+  const { upload, progress, uploading } = useFileUpload()
+
+  return (
+    <div>
+      <input
+        type="file"
+        accept="image/*"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) upload(file)
+        }}
+        disabled={uploading}
+      />
+      {uploading && <progress value={progress} max={1} />}
+    </div>
+  )
+}
+```
+
+---
+
+## Security Considerations
+
+### URL Expiration
+
+Always set short expiration times for signed URLs:
+
+```typescript
+createUploadUrl: ({ key, contentType, expiresIn = 3600 }) =>
+  // Default 1 hour, max 7 days for S3
+```
+
+### Content Type Validation
+
+Validate content types server-side:
+
+```typescript
+const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"]
+
+mutation("createUploadUrl", {
+  // ...
+  resolve: ({ contentType }) =>
+    Effect.gen(function* () {
+      if (!ALLOWED_TYPES.includes(contentType)) {
+        return yield* Effect.fail(
+          new ValidationError({ message: `Content type ${contentType} not allowed` })
+        )
+      }
+      // ...
+    }),
+})
+```
+
+### File Size Limits
+
+Enforce size limits at URL generation:
+
+```typescript
+const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+
+mutation("createUploadUrl", {
+  // ...
+  resolve: ({ size }) =>
+    Effect.gen(function* () {
+      if (size > MAX_FILE_SIZE) {
+        return yield* Effect.fail(
+          new ValidationError({ message: "File too large" })
+        )
+      }
+      // ...
+    }),
+})
+```
+
+### User Authorization
+
+Ensure users can only upload to their own storage paths:
+
+```typescript
+resolve: ({ filename }) =>
+  Effect.gen(function* () {
+    const user = yield* CurrentUser
+    const key = `users/${user.id}/uploads/${crypto.randomUUID()}/${filename}`
+    // ...
+  })
+```
+
+---
+
+## Cleanup
+
+Handle orphaned uploads with a background job:
+
+```typescript
+// Clean up pending uploads older than 24 hours
+const cleanupOrphanedUploads = Effect.gen(function* () {
+  const db = yield* Database
+  const storage = yield* StorageService
+
+  const orphaned = yield* db.pendingUploads.findOlderThan(
+    new Date(Date.now() - 24 * 60 * 60 * 1000)
+  )
+
+  for (const upload of orphaned) {
+    yield* storage.deleteFile(`uploads/${upload.fileId}/${upload.filename}`)
+    yield* db.pendingUploads.delete(upload.fileId)
+    yield* Effect.logInfo(`Cleaned up orphaned upload: ${upload.fileId}`)
+  }
+})
+
+// Run periodically
+Effect.repeat(cleanupOrphanedUploads, Schedule.fixed("1 hour"))
+```
+
+---
+
+## Multiple File Uploads
+
+For uploading multiple files, request URLs in parallel:
+
+```typescript
+mutation("createMultipleUploadUrls", {
+  type: S.Array(UploadUrlResponse),
+  args: S.Struct({
+    files: S.Array(S.Struct({
+      filename: S.String,
+      contentType: S.String,
+      size: S.Number,
+    })),
+  }),
+  resolve: ({ files }) =>
+    Effect.gen(function* () {
+      const storage = yield* StorageService
+
+      // Generate all URLs in parallel
+      return yield* Effect.all(
+        files.map((file) =>
+          Effect.gen(function* () {
+            const fileId = crypto.randomUUID()
+            const { url, expiresAt } = yield* storage.createUploadUrl({
+              key: `uploads/${fileId}/${file.filename}`,
+              contentType: file.contentType,
+              maxSize: file.size,
+              expiresIn: 3600,
+            })
+
+            yield* storage.createPendingUpload({
+              fileId,
+              ...file,
+            })
+
+            return { uploadUrl: url, fileId, expiresAt: expiresAt.toISOString() }
+          })
+        ),
+        { concurrency: 10 }
+      )
+    }),
+})
+```
+
+---
+
+## Next Steps
+
+- [Error Handling](/effect-gql/guides/error-handling) - Handle upload failures gracefully
+- [Middleware](/effect-gql/guides/middleware) - Add upload rate limiting
+- [Server Integration](/effect-gql/guides/server-integration) - Deploy with your storage provider

@@ -39,6 +39,7 @@ export default defineConfig({
 						{ label: 'OpenTelemetry', slug: 'guides/opentelemetry' },
 						{ label: 'Apollo Federation', slug: 'guides/federation' },
 						{ label: 'Persisted Queries', slug: 'guides/persisted-queries' },
+						{ label: 'File Uploads', slug: 'guides/file-uploads' },
 					],
 				},
 				{
