@@ -90,6 +90,7 @@ export type {
 
 export {
   SSEError,
+  SSE_HEADERS,
   formatNextEvent,
   formatErrorEvent,
   formatCompleteEvent,

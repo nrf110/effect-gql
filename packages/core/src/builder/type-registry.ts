@@ -70,9 +70,13 @@ export interface TypeConversionContext {
   astToTypeName?: Map<AST.AST, string>
   schemaToInterfaceName?: Map<S.Schema<any, any, any>, string>
   astToInterfaceName?: Map<AST.AST, string>
+  schemaToInputName?: Map<S.Schema<any, any, any>, string>
+  astToInputName?: Map<AST.AST, string>
   // Cached sorted values for enum/union matching
   enumSortedValues?: Map<string, readonly string[]>
   unionSortedTypes?: Map<string, readonly string[]>
+  // Reverse lookup: literal value -> enum name (for single literal O(1) lookup)
+  literalToEnumName?: Map<string, string>
 }
 
 /**
@@ -99,11 +103,26 @@ export function buildReverseLookups(ctx: TypeConversionContext): void {
     }
   }
 
-  // Build cached sorted enum values
+  // Build schema/AST -> input name lookups
+  if (!ctx.schemaToInputName) {
+    ctx.schemaToInputName = new Map()
+    ctx.astToInputName = new Map()
+    for (const [inputName, inputReg] of ctx.inputs) {
+      ctx.schemaToInputName.set(inputReg.schema, inputName)
+      ctx.astToInputName.set(inputReg.schema.ast, inputName)
+    }
+  }
+
+  // Build cached sorted enum values and literal -> enum lookup
   if (!ctx.enumSortedValues) {
     ctx.enumSortedValues = new Map()
+    ctx.literalToEnumName = new Map()
     for (const [enumName, enumReg] of ctx.enums) {
       ctx.enumSortedValues.set(enumName, [...enumReg.values].sort())
+      // Build literal -> enum reverse lookup for O(1) single literal lookups
+      for (const value of enumReg.values) {
+        ctx.literalToEnumName.set(value, enumName)
+      }
     }
   }
 
@@ -319,17 +338,17 @@ function findRegisteredUnion(
 }
 
 /**
- * Find a registered enum containing a single literal value
+ * Find a registered enum containing a single literal value (O(1) with reverse lookup)
  */
 function findEnumForLiteral(
   ast: any,
   ctx: TypeConversionContext
 ): GraphQLEnumType | undefined {
   const literalValue = String(ast.literal)
-  for (const [enumName, enumReg] of ctx.enums) {
-    if (enumReg.values.includes(literalValue)) {
-      return ctx.enumRegistry.get(enumName)
-    }
+  // Use reverse lookup map for O(1) lookup instead of O(N×M) iteration
+  const enumName = ctx.literalToEnumName?.get(literalValue)
+  if (enumName) {
+    return ctx.enumRegistry.get(enumName)
   }
   return undefined
 }
@@ -402,7 +421,8 @@ export function schemaToInputFields(
   enumRegistry: Map<string, GraphQLEnumType>,
   inputRegistry: Map<string, GraphQLInputObjectType>,
   inputs: Map<string, InputTypeRegistration>,
-  enums: Map<string, EnumRegistration>
+  enums: Map<string, EnumRegistration>,
+  cache?: InputTypeLookupCache
 ): GraphQLInputFieldConfigMap {
   const ast = schema.ast
 
@@ -417,7 +437,8 @@ export function schemaToInputFields(
         enumRegistry,
         inputRegistry,
         inputs,
-        enums
+        enums,
+        cache
       )
 
       // Make non-optional fields non-null (memoized)
@@ -435,28 +456,80 @@ export function schemaToInputFields(
 }
 
 /**
- * Convert a schema to GraphQL input type, checking enum and input registries
+ * Optional cache for input type lookups to enable O(1) resolution
+ */
+export interface InputTypeLookupCache {
+  schemaToInputName?: Map<S.Schema<any, any, any>, string>
+  astToInputName?: Map<AST.AST, string>
+  literalToEnumName?: Map<string, string>
+  enumSortedValues?: Map<string, readonly string[]>
+}
+
+/**
+ * Build lookup caches for input type resolution
+ */
+export function buildInputTypeLookupCache(
+  inputs: Map<string, InputTypeRegistration>,
+  enums: Map<string, EnumRegistration>
+): InputTypeLookupCache {
+  const cache: InputTypeLookupCache = {
+    schemaToInputName: new Map(),
+    astToInputName: new Map(),
+    literalToEnumName: new Map(),
+    enumSortedValues: new Map(),
+  }
+
+  // Build input type reverse lookups
+  for (const [inputName, inputReg] of inputs) {
+    cache.schemaToInputName!.set(inputReg.schema, inputName)
+    cache.astToInputName!.set(inputReg.schema.ast, inputName)
+  }
+
+  // Build enum lookups
+  for (const [enumName, enumReg] of enums) {
+    cache.enumSortedValues!.set(enumName, [...enumReg.values].sort())
+    for (const value of enumReg.values) {
+      cache.literalToEnumName!.set(value, enumName)
+    }
+  }
+
+  return cache
+}
+
+/**
+ * Convert a schema to GraphQL input type, checking enum and input registries.
+ * Uses O(1) reverse lookups when cache is provided.
  */
 export function toGraphQLInputTypeWithRegistry(
   schema: S.Schema<any, any, any>,
   enumRegistry: Map<string, GraphQLEnumType>,
   inputRegistry: Map<string, GraphQLInputObjectType>,
   inputs: Map<string, InputTypeRegistration>,
-  enums: Map<string, EnumRegistration>
+  enums: Map<string, EnumRegistration>,
+  cache?: InputTypeLookupCache
 ): any {
   const ast = schema.ast
 
   // Handle transformations (like S.optional wrapping)
   if (ast._tag === "Transformation") {
     const toAst = (ast as any).to
-    return toGraphQLInputTypeWithRegistry(S.make(toAst), enumRegistry, inputRegistry, inputs, enums)
+    return toGraphQLInputTypeWithRegistry(S.make(toAst), enumRegistry, inputRegistry, inputs, enums, cache)
   }
 
-  // Check if this schema matches a registered input type
-  for (const [inputName, inputReg] of inputs) {
-    if (inputReg.schema.ast === ast || inputReg.schema === schema) {
+  // Check if this schema matches a registered input type (O(1) with cache)
+  if (cache?.schemaToInputName || cache?.astToInputName) {
+    const inputName = cache.schemaToInputName?.get(schema) ?? cache.astToInputName?.get(ast)
+    if (inputName) {
       const result = inputRegistry.get(inputName)
       if (result) return result
+    }
+  } else {
+    // Fallback to linear scan if no cache
+    for (const [inputName, inputReg] of inputs) {
+      if (inputReg.schema.ast === ast || inputReg.schema === schema) {
+        const result = inputRegistry.get(inputName)
+        if (result) return result
+      }
     }
   }
 
@@ -472,7 +545,8 @@ export function toGraphQLInputTypeWithRegistry(
         enumRegistry,
         inputRegistry,
         inputs,
-        enums
+        enums,
+        cache
       )
     }
 
@@ -483,7 +557,8 @@ export function toGraphQLInputTypeWithRegistry(
         enumRegistry,
         inputRegistry,
         inputs,
-        enums
+        enums,
+        cache
       )
     }
 
@@ -492,8 +567,9 @@ export function toGraphQLInputTypeWithRegistry(
     if (allLiterals) {
       const literalValues = unionAst.types.map((t: any) => String(t.literal)).sort()
 
-      for (const [enumName, enumReg] of enums) {
-        const enumValues = [...enumReg.values].sort()
+      // Use cached sorted values if available
+      for (const [enumName] of enums) {
+        const enumValues = cache?.enumSortedValues?.get(enumName) ?? [...enums.get(enumName)!.values].sort()
         if (literalValues.length === enumValues.length &&
             literalValues.every((v: string, i: number) => v === enumValues[i])) {
           const result = enumRegistry.get(enumName)
@@ -503,13 +579,22 @@ export function toGraphQLInputTypeWithRegistry(
     }
   }
 
-  // Check single literal
+  // Check single literal (O(1) with cache)
   if (ast._tag === "Literal") {
     const literalValue = String((ast as any).literal)
-    for (const [enumName, enumReg] of enums) {
-      if (enumReg.values.includes(literalValue)) {
+    if (cache?.literalToEnumName) {
+      const enumName = cache.literalToEnumName.get(literalValue)
+      if (enumName) {
         const result = enumRegistry.get(enumName)
         if (result) return result
+      }
+    } else {
+      // Fallback to linear scan if no cache
+      for (const [enumName, enumReg] of enums) {
+        if (enumReg.values.includes(literalValue)) {
+          const result = enumRegistry.get(enumName)
+          if (result) return result
+        }
       }
     }
   }
@@ -517,7 +602,7 @@ export function toGraphQLInputTypeWithRegistry(
   // Handle Suspend (recursive/self-referential schemas)
   if (ast._tag === "Suspend") {
     const innerAst = (ast as any).f()
-    return toGraphQLInputTypeWithRegistry(S.make(innerAst), enumRegistry, inputRegistry, inputs, enums)
+    return toGraphQLInputTypeWithRegistry(S.make(innerAst), enumRegistry, inputRegistry, inputs, enums, cache)
   }
 
   // Fall back to default toGraphQLInputType
@@ -525,14 +610,16 @@ export function toGraphQLInputTypeWithRegistry(
 }
 
 /**
- * Convert a schema to GraphQL arguments with registry support
+ * Convert a schema to GraphQL arguments with registry support.
+ * Uses O(1) reverse lookups when cache is provided.
  */
 export function toGraphQLArgsWithRegistry(
   schema: S.Schema<any, any, any>,
   enumRegistry: Map<string, GraphQLEnumType>,
   inputRegistry: Map<string, GraphQLInputObjectType>,
   inputs: Map<string, InputTypeRegistration>,
-  enums: Map<string, EnumRegistration>
+  enums: Map<string, EnumRegistration>,
+  cache?: InputTypeLookupCache
 ): any {
   const ast = schema.ast
 
@@ -547,7 +634,8 @@ export function toGraphQLArgsWithRegistry(
         enumRegistry,
         inputRegistry,
         inputs,
-        enums
+        enums,
+        cache
       )
 
       // Make non-optional fields non-null (memoized)

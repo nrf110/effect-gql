@@ -3,6 +3,17 @@ import type { ExecutionResult } from "graphql"
 import type { ComplexityConfig, FieldComplexityMap } from "./complexity"
 
 /**
+ * Standard SSE response headers following the graphql-sse protocol.
+ * Use these headers when writing SSE responses in platform adapters.
+ */
+export const SSE_HEADERS: Record<string, string> = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  "Connection": "keep-alive",
+  "X-Accel-Buffering": "no", // Disable nginx buffering
+} as const
+
+/**
  * Error type for SSE operations
  */
 export class SSEError extends Data.TaggedError("SSEError")<{

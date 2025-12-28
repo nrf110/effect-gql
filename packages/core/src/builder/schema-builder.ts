@@ -36,6 +36,7 @@ import {
   schemaToInputFields,
   toGraphQLArgsWithRegistry,
   buildReverseLookups,
+  buildInputTypeLookupCache,
   type TypeConversionContext,
 } from "./type-registry"
 import {
@@ -620,6 +621,9 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   private buildDirectiveRegistry(): Map<string, GraphQLDirective> {
     const registry = new Map<string, GraphQLDirective>()
 
+    // Build cache once for O(1) lookups across all directives
+    const cache = buildInputTypeLookupCache(this.state.inputs, this.state.enums)
+
     for (const [name, reg] of this.state.directives) {
       const graphqlDirective = new GraphQLDirective({
         name,
@@ -631,7 +635,8 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
               new Map(),
               new Map(),
               this.state.inputs,
-              this.state.enums
+              this.state.enums,
+              cache
             )
           : undefined,
       })
@@ -665,6 +670,9 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   ): Map<string, GraphQLInputObjectType> {
     const registry = new Map<string, GraphQLInputObjectType>()
 
+    // Build cache once for O(1) lookups across all input types
+    const cache = buildInputTypeLookupCache(this.state.inputs, this.state.enums)
+
     for (const [name, reg] of this.state.inputs) {
       const inputType = new GraphQLInputObjectType({
         name,
@@ -674,7 +682,8 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
           enumRegistry,
           registry,
           this.state.inputs,
-          this.state.enums
+          this.state.enums,
+          cache
         ),
         extensions: reg.directives ? { directives: reg.directives } : undefined,
       })
@@ -804,6 +813,9 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     unionRegistry: Map<string, GraphQLUnionType>,
     inputRegistry: Map<string, GraphQLInputObjectType>
   ): FieldBuilderContext {
+    // Build cache once for O(1) input type lookups across all fields
+    const inputTypeLookupCache = buildInputTypeLookupCache(this.state.inputs, this.state.enums)
+
     return {
       types: this.state.types,
       interfaces: this.state.interfaces,
@@ -817,6 +829,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       inputRegistry,
       directiveRegistrations: this.state.directives,
       middlewares: this.state.middlewares,
+      inputTypeLookupCache,
     }
   }
 

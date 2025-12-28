@@ -16,6 +16,7 @@ import {
   toGraphQLTypeWithRegistry,
   toGraphQLArgsWithRegistry,
   type TypeConversionContext,
+  type InputTypeLookupCache,
 } from "./type-registry"
 
 /**
@@ -24,6 +25,7 @@ import {
 export interface FieldBuilderContext extends TypeConversionContext {
   directiveRegistrations: Map<string, DirectiveRegistration>
   middlewares: readonly MiddlewareRegistration[]
+  inputTypeLookupCache?: InputTypeLookupCache
 }
 
 /**
@@ -111,7 +113,8 @@ export function buildField(
       ctx.enumRegistry,
       ctx.inputRegistry,
       ctx.inputs,
-      ctx.enums
+      ctx.enums,
+      ctx.inputTypeLookupCache
     )
   }
   if (config.description) {
@@ -152,7 +155,8 @@ export function buildObjectField(
       ctx.enumRegistry,
       ctx.inputRegistry,
       ctx.inputs,
-      ctx.enums
+      ctx.enums,
+      ctx.inputTypeLookupCache
     )
   }
   if (config.description) {
@@ -221,7 +225,8 @@ export function buildSubscriptionField(
       ctx.enumRegistry,
       ctx.inputRegistry,
       ctx.inputs,
-      ctx.enums
+      ctx.enums,
+      ctx.inputTypeLookupCache
     )
   }
   if (config.description) {

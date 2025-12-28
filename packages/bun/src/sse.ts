@@ -3,6 +3,7 @@ import { GraphQLSchema } from "graphql"
 import {
   makeGraphQLSSEHandler,
   formatSSEMessage,
+  SSE_HEADERS,
   type GraphQLSSEOptions,
   type SSESubscriptionRequest,
 } from "@effect-gql/core"
@@ -16,16 +17,6 @@ export interface BunSSEOptions<R> extends GraphQLSSEOptions<R> {
    * @default "/graphql/stream"
    */
   readonly path?: string
-}
-
-/**
- * SSE response headers following the graphql-sse protocol.
- */
-const SSE_HEADERS = {
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache",
-  "Connection": "keep-alive",
-  "X-Accel-Buffering": "no", // Disable nginx buffering
 }
 
 /**
