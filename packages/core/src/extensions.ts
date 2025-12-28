@@ -119,12 +119,17 @@ export interface ExtensionsService {
 /**
  * Tag for the ExtensionsService
  */
-export const ExtensionsService = Context.GenericTag<ExtensionsService>("@effect-gql/ExtensionsService")
+export const ExtensionsService = Context.GenericTag<ExtensionsService>(
+  "@effect-gql/ExtensionsService"
+)
 
 /**
  * Deep merge two objects
  */
-function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+function deepMerge(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>
+): Record<string, unknown> {
   const result = { ...target }
   for (const key of Object.keys(source)) {
     const sourceValue = source[key]
@@ -162,11 +167,7 @@ export const makeExtensionsService = (): Effect.Effect<ExtensionsService, never,
       merge: (key, value) =>
         Ref.update(ref, (current) => {
           const existing = current[key]
-          if (
-            typeof existing === "object" &&
-            existing !== null &&
-            !Array.isArray(existing)
-          ) {
+          if (typeof existing === "object" && existing !== null && !Array.isArray(existing)) {
             return {
               ...current,
               [key]: deepMerge(existing as Record<string, unknown>, value),

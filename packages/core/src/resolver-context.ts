@@ -40,7 +40,9 @@ export class MissingResolverContextError extends Error {
   readonly _tag = "MissingResolverContextError"
 
   constructor(readonly contextName: string) {
-    super(`Resolver context "${contextName}" was not provided. Ensure a parent resolver or directive provides this context.`)
+    super(
+      `Resolver context "${contextName}" was not provided. Ensure a parent resolver or directive provides this context.`
+    )
     this.name = "MissingResolverContextError"
   }
 }
@@ -71,9 +73,8 @@ export const ResolverContextStore = Context.GenericTag<ResolverContextStore>(
  * This should be included in the request layer.
  */
 export const makeStoreLayer = (): Effect.Effect<Layer.Layer<ResolverContextStore>> =>
-  Effect.map(
-    Ref.make(HashMap.empty<string, unknown>()),
-    (ref) => Layer.succeed(ResolverContextStore, { ref })
+  Effect.map(Ref.make(HashMap.empty<string, unknown>()), (ref) =>
+    Layer.succeed(ResolverContextStore, { ref })
   )
 
 /**
@@ -82,10 +83,7 @@ export const makeStoreLayer = (): Effect.Effect<Layer.Layer<ResolverContextStore
  */
 export const storeLayer: Layer.Layer<ResolverContextStore> = Layer.effect(
   ResolverContextStore,
-  Effect.map(
-    Ref.make(HashMap.empty<string, unknown>()),
-    (ref) => ({ ref })
-  )
+  Effect.map(Ref.make(HashMap.empty<string, unknown>()), (ref) => ({ ref }))
 )
 
 /**
@@ -142,9 +140,7 @@ export const getOption = <A>(
   slot: ResolverContextSlot<A>
 ): Effect.Effect<Option.Option<A>, never, ResolverContextStore> =>
   Effect.flatMap(ResolverContextStore, (store) =>
-    Effect.map(Ref.get(store.ref), (map) =>
-      HashMap.get(map, slot.name) as Option.Option<A>
-    )
+    Effect.map(Ref.get(store.ref), (map) => HashMap.get(map, slot.name) as Option.Option<A>)
   )
 
 /**
@@ -215,17 +211,15 @@ export const getOrElse = <A>(
  * The value is set before the effect runs and removed after.
  * Useful for scoped context that shouldn't persist.
  */
-export const scoped = <A>(slot: ResolverContextSlot<A>, value: A) =>
+export const scoped =
+  <A>(slot: ResolverContextSlot<A>, value: A) =>
   <B, E, R>(effect: Effect.Effect<B, E, R>): Effect.Effect<B, E, R | ResolverContextStore> =>
     Effect.flatMap(ResolverContextStore, (store) =>
       Effect.acquireUseRelease(
         // Acquire: save current value and set new one
         Effect.flatMap(Ref.get(store.ref), (map) => {
           const previous = HashMap.get(map, slot.name)
-          return Effect.as(
-            Ref.set(store.ref, HashMap.set(map, slot.name, value)),
-            previous
-          )
+          return Effect.as(Ref.set(store.ref, HashMap.set(map, slot.name, value)), previous)
         }),
         // Use: run the effect
         () => effect,

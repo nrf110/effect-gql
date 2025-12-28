@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest"
 import { Effect } from "effect"
-import { GraphQLSchema, GraphQLObjectType, GraphQLString, GraphQLList, GraphQLInt, GraphQLNonNull, buildSchema } from "graphql"
+import {
+  GraphQLSchema,
+  GraphQLObjectType,
+  GraphQLString,
+  GraphQLList,
+  GraphQLInt,
+  GraphQLNonNull,
+  buildSchema,
+} from "graphql"
 import {
   validateComplexity,
   defaultComplexityCalculator,
@@ -197,9 +205,14 @@ describe("Complexity Analysis", () => {
         ["Query.users", 50], // High cost for users field
       ])
 
-      const result = await runValidation(query, testSchema, {
-        maxComplexity: 40,
-      }, fieldComplexities)
+      const result = await runValidation(
+        query,
+        testSchema,
+        {
+          maxComplexity: 40,
+        },
+        fieldComplexities
+      )
 
       expect(result._tag).toBe("Failure")
     })
@@ -211,9 +224,14 @@ describe("Complexity Analysis", () => {
         ["Query.users", (args: Record<string, unknown>) => ((args.limit as number) ?? 10) * 2],
       ])
 
-      const result = await runValidation(query, testSchema, {
-        maxComplexity: 100,
-      }, fieldComplexities)
+      const result = await runValidation(
+        query,
+        testSchema,
+        {
+          maxComplexity: 100,
+        },
+        fieldComplexities
+      )
 
       expect(result._tag).toBe("Failure")
     })
@@ -272,9 +290,15 @@ describe("Complexity Analysis", () => {
         }
       `
 
-      const result = await runValidation(query, testSchema, {
-        maxDepth: 10,
-      }, new Map(), "GetHello")
+      const result = await runValidation(
+        query,
+        testSchema,
+        {
+          maxDepth: 10,
+        },
+        new Map(),
+        "GetHello"
+      )
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
@@ -463,10 +487,7 @@ describe("Complexity Analysis", () => {
           aliasCount: 25,
         })
 
-      const combined = combineCalculators(
-        defaultComplexityCalculator(1),
-        customCalculator
-      )
+      const combined = combineCalculators(defaultComplexityCalculator(1), customCalculator)
 
       const query = `{ hello }`
 

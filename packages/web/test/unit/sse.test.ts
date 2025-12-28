@@ -1,11 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Layer } from "effect"
-import {
-  GraphQLSchema,
-  GraphQLObjectType,
-  GraphQLString,
-  GraphQLInt,
-} from "graphql"
+import { GraphQLSchema, GraphQLObjectType, GraphQLString, GraphQLInt } from "graphql"
 import { createSSEHandler, createSSEHandlers } from "../../src/sse"
 
 describe("sse.ts", () => {

@@ -65,11 +65,12 @@ type LoaderInstances<Defs extends Record<string, LoaderDef<any, any, any>>> = {
 /**
  * Extract the value type for a loader (accounting for grouped loaders)
  */
-type LoaderValue<Def> = Def extends SingleLoaderDef<any, infer V, any>
-  ? V
-  : Def extends GroupedLoaderDef<any, infer V, any>
-    ? V[]
-    : never
+type LoaderValue<Def> =
+  Def extends SingleLoaderDef<any, infer V, any>
+    ? V
+    : Def extends GroupedLoaderDef<any, infer V, any>
+      ? V[]
+      : never
 
 /**
  * Extract the key type for a loader
@@ -239,9 +240,7 @@ function createDataLoader<K, V, R>(
 
     if (def._tag === "single") {
       const loader = new DataLoader<K, V>(async (keys) => {
-        const items = await Effect.runPromise(
-          def.batch(keys).pipe(Effect.provide(context))
-        )
+        const items = await Effect.runPromise(def.batch(keys).pipe(Effect.provide(context)))
         // Map items back to keys in order
         return keys.map((key) => {
           const item = items.find((i) => def.key(i) === key)
@@ -253,9 +252,7 @@ function createDataLoader<K, V, R>(
     } else {
       // Grouped loader
       const loader = new DataLoader<K, V[]>(async (keys) => {
-        const items = await Effect.runPromise(
-          def.batch(keys).pipe(Effect.provide(context))
-        )
+        const items = await Effect.runPromise(def.batch(keys).pipe(Effect.provide(context)))
         // Group items by key with lazy array initialization
         // Only create arrays for keys that have matching items
         const map = new Map<K, V[]>()

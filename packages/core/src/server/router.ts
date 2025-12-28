@@ -19,11 +19,7 @@ import {
   ComplexityLimitExceededError,
   type FieldComplexityMap,
 } from "./complexity"
-import {
-  computeCachePolicy,
-  toCacheControlHeader,
-  type CacheHintMap,
-} from "./cache-control"
+import { computeCachePolicy, toCacheControlHeader, type CacheHintMap } from "./cache-control"
 import {
   type GraphQLExtension,
   ExtensionsService,
@@ -82,7 +78,8 @@ const parseGraphQLQuery = (
   query: string,
   extensionsService: Context.Tag.Service<typeof ExtensionsService>
 ): Effect.Effect<
-  { ok: true; document: DocumentNode } | { ok: false; response: HttpServerResponse.HttpServerResponse },
+  | { ok: true; document: DocumentNode }
+  | { ok: false; response: HttpServerResponse.HttpServerResponse },
   never,
   never
 > =>
@@ -99,7 +96,6 @@ const parseGraphQLQuery = (
       return { ok: false as const, response }
     }
   })
-
 
 /**
  * Run complexity validation if configured.
@@ -123,9 +119,7 @@ const runComplexityValidation = (
     fieldComplexities,
     complexityConfig
   ).pipe(
-    Effect.catchTag("ComplexityLimitExceededError", (error) =>
-      Effect.fail(error)
-    ),
+    Effect.catchTag("ComplexityLimitExceededError", (error) => Effect.fail(error)),
     Effect.catchTag("ComplexityAnalysisError", (error) =>
       Effect.logWarning("Complexity analysis failed", error)
     )
@@ -157,7 +151,9 @@ const executeGraphQLQuery = <R>(
 
     // Await result if it's a promise
     if (executeResult && typeof executeResult === "object" && "then" in executeResult) {
-      return yield* Effect.promise(() => executeResult as Promise<import("graphql").ExecutionResult>)
+      return yield* Effect.promise(
+        () => executeResult as Promise<import("graphql").ExecutionResult>
+      )
     }
     return executeResult as import("graphql").ExecutionResult
   })
@@ -170,10 +166,15 @@ const computeCacheControlHeader = (
   operationName: string | undefined,
   schema: GraphQLSchema,
   cacheHints: CacheHintMap,
-  cacheControlConfig: { enabled?: boolean; calculateHttpHeaders?: boolean; defaultMaxAge?: number } | undefined
+  cacheControlConfig:
+    | { enabled?: boolean; calculateHttpHeaders?: boolean; defaultMaxAge?: number }
+    | undefined
 ): Effect.Effect<string | undefined, never, never> =>
   Effect.gen(function* () {
-    if (cacheControlConfig?.enabled === false || cacheControlConfig?.calculateHttpHeaders === false) {
+    if (
+      cacheControlConfig?.enabled === false ||
+      cacheControlConfig?.calculateHttpHeaders === false
+    ) {
       return undefined
     }
 
@@ -220,9 +221,7 @@ const buildGraphQLResponse = (
         }
       : result
 
-  const responseHeaders = cacheControlHeader
-    ? { "cache-control": cacheControlHeader }
-    : undefined
+  const responseHeaders = cacheControlHeader ? { "cache-control": cacheControlHeader } : undefined
 
   return HttpServerResponse.json(finalResult, { headers: responseHeaders }).pipe(Effect.orDie)
 }
@@ -425,10 +424,7 @@ export const makeGraphQLRouter = <R>(
   if (resolvedConfig.graphiql) {
     const { path, endpoint } = resolvedConfig.graphiql
     router = router.pipe(
-      HttpRouter.get(
-        path as HttpRouter.PathInput,
-        HttpServerResponse.html(graphiqlHtml(endpoint))
-      )
+      HttpRouter.get(path as HttpRouter.PathInput, HttpServerResponse.html(graphiqlHtml(endpoint)))
     )
   }
 

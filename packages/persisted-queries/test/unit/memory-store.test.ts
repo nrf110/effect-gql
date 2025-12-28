@@ -16,9 +16,7 @@ describe("makeMemoryStore", () => {
       return result
     })
 
-    const result = await Effect.runPromise(
-      Effect.provide(program, makeMemoryStore())
-    )
+    const result = await Effect.runPromise(Effect.provide(program, makeMemoryStore()))
 
     expect(Option.isSome(result)).toBe(true)
     expect(Option.getOrNull(result)).toBe("query { hello }")
@@ -30,9 +28,7 @@ describe("makeMemoryStore", () => {
       return yield* store.get("unknown-hash")
     })
 
-    const result = await Effect.runPromise(
-      Effect.provide(program, makeMemoryStore())
-    )
+    const result = await Effect.runPromise(Effect.provide(program, makeMemoryStore()))
 
     expect(Option.isNone(result)).toBe(true)
   })
@@ -49,9 +45,7 @@ describe("makeMemoryStore", () => {
       return { exists, notExists }
     })
 
-    const result = await Effect.runPromise(
-      Effect.provide(program, makeMemoryStore())
-    )
+    const result = await Effect.runPromise(Effect.provide(program, makeMemoryStore()))
 
     expect(result.exists).toBe(true)
     expect(result.notExists).toBe(false)
@@ -80,9 +74,7 @@ describe("makeMemoryStore", () => {
       return { hash1, hash2, hash3, hash4 }
     })
 
-    const result = await Effect.runPromise(
-      Effect.provide(program, makeMemoryStore({ maxSize: 3 }))
-    )
+    const result = await Effect.runPromise(Effect.provide(program, makeMemoryStore({ maxSize: 3 })))
 
     // hash1 was accessed, so it's recent
     expect(Option.isSome(result.hash1)).toBe(true)
@@ -114,9 +106,7 @@ describe("makeMemoryStore", () => {
       return { hash1Exists, hash2Exists }
     })
 
-    const result = await Effect.runPromise(
-      Effect.provide(program, makeMemoryStore({ maxSize: 3 }))
-    )
+    const result = await Effect.runPromise(Effect.provide(program, makeMemoryStore({ maxSize: 3 })))
 
     expect(result.hash1Exists).toBe(true)
     expect(result.hash2Exists).toBe(false)
@@ -125,8 +115,8 @@ describe("makeMemoryStore", () => {
 
 describe("makeSafelistStore", () => {
   const safelistQueries = {
-    "hash1": "query GetUser { user { id } }",
-    "hash2": "query GetPosts { posts { title } }",
+    hash1: "query GetUser { user { id } }",
+    hash2: "query GetPosts { posts { title } }",
   }
 
   it("should retrieve pre-registered queries", async () => {

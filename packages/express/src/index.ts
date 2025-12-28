@@ -4,8 +4,4 @@ export { toMiddleware } from "./middleware"
 export { attachWebSocket, type ExpressWSOptions } from "./ws"
 
 // SSE (Server-Sent Events) subscription support
-export {
-  sseMiddleware,
-  createSSEHandler,
-  type ExpressSSEOptions,
-} from "./sse"
+export { sseMiddleware, createSSEHandler, type ExpressSSEOptions } from "./sse"

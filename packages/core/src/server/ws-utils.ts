@@ -14,7 +14,6 @@ export interface WsWebSocket {
   on(event: "message", listener: (data: Buffer | string) => void): void
   on(event: "error", listener: (error: Error) => void): void
   on(event: "close", listener: (code: number, reason: Buffer) => void): void
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   removeListener(event: string, listener: (...args: any[]) => void): void
 }
 
@@ -60,9 +59,7 @@ export const toEffectWebSocketFromWs = (ws: WsWebSocket): EffectWebSocket => {
 
     // Set up error listener
     ws.on("error", (error) => {
-      Effect.runPromise(
-        Deferred.fail(closed, new WebSocketError({ cause: error }))
-      ).catch(() => {
+      Effect.runPromise(Deferred.fail(closed, new WebSocketError({ cause: error }))).catch(() => {
         // Already completed
       })
     })
@@ -71,9 +68,7 @@ export const toEffectWebSocketFromWs = (ws: WsWebSocket): EffectWebSocket => {
     ws.on("close", (code, reason) => {
       Effect.runPromise(
         Queue.shutdown(queue).pipe(
-          Effect.andThen(
-            Deferred.succeed(closed, { code, reason: reason.toString() })
-          )
+          Effect.andThen(Deferred.succeed(closed, { code, reason: reason.toString() }))
         )
       ).catch(() => {
         // Already completed
@@ -86,11 +81,7 @@ export const toEffectWebSocketFromWs = (ws: WsWebSocket): EffectWebSocket => {
   // Create the message stream
   const messages: Stream.Stream<string, WebSocketError> = Stream.unwrap(
     messagesEffect.pipe(
-      Effect.map(({ queue }) =>
-        Stream.fromQueue(queue).pipe(
-          Stream.catchAll(() => Stream.empty)
-        )
-      )
+      Effect.map(({ queue }) => Stream.fromQueue(queue).pipe(Stream.catchAll(() => Stream.empty)))
     )
   )
 

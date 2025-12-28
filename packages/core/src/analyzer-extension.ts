@@ -228,13 +228,19 @@ function checkThresholds(
     warnings.push(`Query depth ${result.depth} exceeds threshold ${thresholds.depth}`)
   }
   if (thresholds.complexity !== undefined && result.complexity > thresholds.complexity) {
-    warnings.push(`Query complexity ${result.complexity} exceeds threshold ${thresholds.complexity}`)
+    warnings.push(
+      `Query complexity ${result.complexity} exceeds threshold ${thresholds.complexity}`
+    )
   }
   if (thresholds.fieldCount !== undefined && result.fieldCount > thresholds.fieldCount) {
-    warnings.push(`Query field count ${result.fieldCount} exceeds threshold ${thresholds.fieldCount}`)
+    warnings.push(
+      `Query field count ${result.fieldCount} exceeds threshold ${thresholds.fieldCount}`
+    )
   }
   if (thresholds.aliasCount !== undefined && result.aliasCount > thresholds.aliasCount) {
-    warnings.push(`Query alias count ${result.aliasCount} exceeds threshold ${thresholds.aliasCount}`)
+    warnings.push(
+      `Query alias count ${result.aliasCount} exceeds threshold ${thresholds.aliasCount}`
+    )
   }
 
   if (warnings.length > 0) {

@@ -106,11 +106,7 @@ export const attachWebSocket = <R>(
     })
   })
 
-  const handleUpgrade = (
-    request: IncomingMessage,
-    socket: Duplex,
-    head: Buffer
-  ) => {
+  const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     // Check if this is the GraphQL WebSocket path
     const url = new URL(request.url ?? "/", `http://${request.headers.host}`)
     if (url.pathname !== path) {

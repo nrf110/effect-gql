@@ -97,9 +97,7 @@ export const serve = <E, R, RE>(
       onStart(`http://${host === "0.0.0.0" ? "localhost" : host}:${port}`)
     }
 
-    BunRuntime.runMain(
-      Layer.launch(Layer.provide(app, fullLayer))
-    )
+    BunRuntime.runMain(Layer.launch(Layer.provide(app, fullLayer)))
   }
 }
 
@@ -118,7 +116,7 @@ function serveWithSubscriptions<E, R, RE>(
   // Dynamically import ws module to keep it optional
   const importWs = Effect.tryPromise({
     try: () => import("./ws"),
-    catch: (error) => error as Error
+    catch: (error) => error as Error,
   })
 
   Effect.runPromise(

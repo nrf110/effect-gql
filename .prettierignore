@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+
+# TypeScript build artifacts
+*.tsbuildinfo
+
+# Generated files
+*.d.ts
+*.js.map
+*.d.ts.map
+
+# Documentation (uses its own formatting)
+docs/
+
+# Package lock
+package-lock.json
+
+# Examples (may have intentionally different formatting)
+examples/

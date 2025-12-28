@@ -9,11 +9,7 @@ import {
   buildSchema,
 } from "graphql"
 import { makeGraphQLWSHandler } from "../../../src/server/ws-adapter"
-import type {
-  EffectWebSocket,
-  WebSocketError,
-  CloseEvent,
-} from "../../../src/server/ws-types"
+import type { EffectWebSocket, WebSocketError, CloseEvent } from "../../../src/server/ws-types"
 
 /**
  * Create a mock EffectWebSocket for testing
@@ -22,7 +18,10 @@ const createMockSocket = () => {
   const messageQueue = Effect.runSync(Queue.unbounded<string>())
   const closedDeferred = Effect.runSync(Deferred.make<CloseEvent, WebSocketError>())
   const sentMessages: string[] = []
-  const closeInfo = { code: undefined as number | undefined, reason: undefined as string | undefined }
+  const closeInfo = {
+    code: undefined as number | undefined,
+    reason: undefined as string | undefined,
+  }
 
   const socket: EffectWebSocket = {
     protocol: "graphql-transport-ws",
@@ -346,7 +345,10 @@ describe("ws-adapter.ts", () => {
         onDisconnect: () =>
           Effect.sync(() => {
             throw new Error("Cleanup error")
-          }).pipe(Effect.asVoid, Effect.catchAll(() => Effect.void)),
+          }).pipe(
+            Effect.asVoid,
+            Effect.catchAll(() => Effect.void)
+          ),
       })
 
       const { socket, sendMessage, closeConnection } = createMockSocket()
@@ -557,9 +559,7 @@ describe("ws-adapter.ts", () => {
     it("should accept fieldComplexities config in handler options", async () => {
       const schema = createTestSchema()
 
-      const fieldComplexities = new Map([
-        ["Subscription.tick", 10],
-      ])
+      const fieldComplexities = new Map([["Subscription.tick", 10]])
 
       // Verify handler can be created with field complexities
       const handler = makeGraphQLWSHandler(schema, Layer.empty, {
@@ -608,9 +608,7 @@ describe("ws-adapter.ts", () => {
       closeConnection(1001, "Going away")
 
       // Handler should complete without hanging
-      const result = await Effect.runPromise(
-        Fiber.join(fiber).pipe(Effect.timeout("2 seconds"))
-      )
+      const result = await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
 
       // Should complete successfully (undefined for void return)
       expect(result).toBeUndefined()
@@ -649,9 +647,7 @@ describe("ws-adapter.ts", () => {
       // Close and verify cleanup works with multiple subscriptions
       closeConnection(1000, "Done")
 
-      const result = await Effect.runPromise(
-        Fiber.join(fiber).pipe(Effect.timeout("2 seconds"))
-      )
+      const result = await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
 
       // Handler should complete without hanging
       expect(result).toBeUndefined()

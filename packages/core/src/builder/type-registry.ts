@@ -40,9 +40,7 @@ export function getSchemaName(schema: S.Schema<any, any, any>): string | undefin
 
   // Handle TypeLiteral (TaggedStruct)
   if (ast._tag === "TypeLiteral") {
-    const tagProp = (ast as any).propertySignatures.find(
-      (p: any) => String(p.name) === "_tag"
-    )
+    const tagProp = (ast as any).propertySignatures.find((p: any) => String(p.name) === "_tag")
     if (tagProp && tagProp.type._tag === "Literal" && typeof tagProp.type.literal === "string") {
       return tagProp.type.literal
     }
@@ -141,7 +139,9 @@ const nonNullCache = new WeakMap<any, GraphQLNonNull<any>>()
 /**
  * Get or create a GraphQLNonNull wrapper (memoized)
  */
-export function getNonNull<T extends import("graphql").GraphQLNullableType>(type: T): GraphQLNonNull<T> {
+export function getNonNull<T extends import("graphql").GraphQLNullableType>(
+  type: T
+): GraphQLNonNull<T> {
   let cached = nonNullCache.get(type)
   if (!cached) {
     cached = new GraphQLNonNull(type)
@@ -292,9 +292,11 @@ function findEnumForLiteralUnion(
   for (const [enumName] of ctx.enums) {
     // Use cached sorted values instead of sorting on every comparison
     const enumValues = ctx.enumSortedValues?.get(enumName)
-    if (enumValues &&
-        literalValues.length === enumValues.length &&
-        literalValues.every((v: string, i: number) => v === enumValues[i])) {
+    if (
+      enumValues &&
+      literalValues.length === enumValues.length &&
+      literalValues.every((v: string, i: number) => v === enumValues[i])
+    ) {
       return ctx.enumRegistry.get(enumName)
     }
   }
@@ -312,9 +314,7 @@ function findRegisteredUnion(
   const memberTags: string[] = []
   for (const memberAst of types) {
     if (memberAst._tag === "TypeLiteral") {
-      const tagProp = memberAst.propertySignatures.find(
-        (p: any) => String(p.name) === "_tag"
-      )
+      const tagProp = memberAst.propertySignatures.find((p: any) => String(p.name) === "_tag")
       if (tagProp && tagProp.type._tag === "Literal") {
         memberTags.push(String(tagProp.type.literal))
       }
@@ -327,9 +327,11 @@ function findRegisteredUnion(
     for (const [unionName] of ctx.unions) {
       // Use cached sorted types instead of sorting on every comparison
       const unionTypes = ctx.unionSortedTypes?.get(unionName)
-      if (unionTypes &&
-          sortedTags.length === unionTypes.length &&
-          sortedTags.every((tag, i) => tag === unionTypes[i])) {
+      if (
+        unionTypes &&
+        sortedTags.length === unionTypes.length &&
+        sortedTags.every((tag, i) => tag === unionTypes[i])
+      ) {
         return ctx.unionRegistry.get(unionName)
       }
     }
@@ -340,10 +342,7 @@ function findRegisteredUnion(
 /**
  * Find a registered enum containing a single literal value (O(1) with reverse lookup)
  */
-function findEnumForLiteral(
-  ast: any,
-  ctx: TypeConversionContext
-): GraphQLEnumType | undefined {
+function findEnumForLiteral(ast: any, ctx: TypeConversionContext): GraphQLEnumType | undefined {
   const literalValue = String(ast.literal)
   // Use reverse lookup map for O(1) lookup instead of O(N×M) iteration
   const enumName = ctx.literalToEnumName?.get(literalValue)
@@ -513,7 +512,14 @@ export function toGraphQLInputTypeWithRegistry(
   // Handle transformations (like S.optional wrapping)
   if (ast._tag === "Transformation") {
     const toAst = (ast as any).to
-    return toGraphQLInputTypeWithRegistry(S.make(toAst), enumRegistry, inputRegistry, inputs, enums, cache)
+    return toGraphQLInputTypeWithRegistry(
+      S.make(toAst),
+      enumRegistry,
+      inputRegistry,
+      inputs,
+      enums,
+      cache
+    )
   }
 
   // Check if this schema matches a registered input type (O(1) with cache)
@@ -569,9 +575,12 @@ export function toGraphQLInputTypeWithRegistry(
 
       // Use cached sorted values if available
       for (const [enumName] of enums) {
-        const enumValues = cache?.enumSortedValues?.get(enumName) ?? [...enums.get(enumName)!.values].sort()
-        if (literalValues.length === enumValues.length &&
-            literalValues.every((v: string, i: number) => v === enumValues[i])) {
+        const enumValues =
+          cache?.enumSortedValues?.get(enumName) ?? [...enums.get(enumName)!.values].sort()
+        if (
+          literalValues.length === enumValues.length &&
+          literalValues.every((v: string, i: number) => v === enumValues[i])
+        ) {
           const result = enumRegistry.get(enumName)
           if (result) return result
         }
@@ -602,7 +611,14 @@ export function toGraphQLInputTypeWithRegistry(
   // Handle Suspend (recursive/self-referential schemas)
   if (ast._tag === "Suspend") {
     const innerAst = (ast as any).f()
-    return toGraphQLInputTypeWithRegistry(S.make(innerAst), enumRegistry, inputRegistry, inputs, enums, cache)
+    return toGraphQLInputTypeWithRegistry(
+      S.make(innerAst),
+      enumRegistry,
+      inputRegistry,
+      inputs,
+      enums,
+      cache
+    )
   }
 
   // Fall back to default toGraphQLInputType

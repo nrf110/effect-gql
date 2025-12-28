@@ -109,7 +109,7 @@ describe("graphiql.ts", () => {
       // Should NOT contain the vulnerable pattern (single-quoted url assignment)
       expect(html).not.toContain("url: '")
       // Should use JSON.stringify which produces double-quoted, escaped string
-      expect(html).toContain('url: "\'')
+      expect(html).toContain("url: \"'")
     })
   })
 })

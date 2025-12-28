@@ -1,9 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Layer, Context } from "effect"
-import {
-  GraphQLRequestContext,
-  makeRequestContextLayer,
-} from "../../src/context"
+import { GraphQLRequestContext, makeRequestContextLayer } from "../../src/context"
 import { runSyncWithLayer } from "../helpers/effect-test-utils"
 
 describe("context.ts", () => {
@@ -118,10 +115,7 @@ describe("context.ts", () => {
         getValue: () => "test-value",
       })
 
-      const combinedLayer = Layer.merge(
-        makeRequestContextLayer(requestContext),
-        testLayer
-      )
+      const combinedLayer = Layer.merge(makeRequestContextLayer(requestContext), testLayer)
 
       const program = Effect.gen(function* () {
         const ctx = yield* GraphQLRequestContext

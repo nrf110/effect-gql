@@ -12,14 +12,12 @@ export interface GraphQLRequestContext {
   }
 }
 
-export const GraphQLRequestContext = Context.GenericTag<GraphQLRequestContext>(
-  "GraphQLRequestContext"
-)
+export const GraphQLRequestContext =
+  Context.GenericTag<GraphQLRequestContext>("GraphQLRequestContext")
 
 /**
  * Create a layer from request context
  */
 export const makeRequestContextLayer = (
   context: GraphQLRequestContext
-): Layer.Layer<GraphQLRequestContext> =>
-  Layer.succeed(GraphQLRequestContext, context)
+): Layer.Layer<GraphQLRequestContext> => Layer.succeed(GraphQLRequestContext, context)

@@ -135,13 +135,9 @@ export type Profile = S.Schema.Type<typeof ProfileSchema>
 // With Refinements
 // ============================================================================
 
-export const EmailSchema = S.String.pipe(
-  S.pattern(/@/)
-)
+export const EmailSchema = S.String.pipe(S.pattern(/@/))
 
-export const PositiveIntSchema = S.Int.pipe(
-  S.positive()
-)
+export const PositiveIntSchema = S.Int.pipe(S.positive())
 
 // ============================================================================
 // Complex Nested with Optionals

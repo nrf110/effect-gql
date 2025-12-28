@@ -106,17 +106,17 @@ export interface GraphQLTracingConfig {
  * @param config - Optional tracing configuration
  * @returns A function that adds tracing to a GraphQLSchemaBuilder
  */
-export const withTracing = <R>(
-  config?: GraphQLTracingConfig
-) => (builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R> => {
-  // Add tracing extension for phase-level spans
-  let result = builder.extension(tracingExtension(config?.extension))
+export const withTracing =
+  <R>(config?: GraphQLTracingConfig) =>
+  (builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R> => {
+    // Add tracing extension for phase-level spans
+    let result = builder.extension(tracingExtension(config?.extension))
 
-  // Add resolver tracing middleware for field-level spans
-  result = result.middleware(resolverTracingMiddleware(config?.resolver))
+    // Add resolver tracing middleware for field-level spans
+    result = result.middleware(resolverTracingMiddleware(config?.resolver))
 
-  return result as GraphQLSchemaBuilder<R>
-}
+    return result as GraphQLSchemaBuilder<R>
+  }
 
 // Re-export components for individual use
 export { tracingExtension, type TracingExtensionConfig } from "./tracing-extension"

@@ -83,23 +83,24 @@ export const toGraphQLType = (schema: S.Schema<any, any, any>): GraphQLOutputTyp
   // Handle structs/objects
   if (ast._tag === "TypeLiteral") {
     const fields: GraphQLFieldConfigMap<any, any> = {}
-    
+
     for (const field of ast.propertySignatures) {
       const fieldName = String(field.name)
       const fieldSchema = S.make(field.type)
       let fieldType = toGraphQLType(fieldSchema)
-      
+
       // Make non-optional fields non-null
       if (!field.isOptional) {
         fieldType = new GraphQLNonNull(fieldType)
       }
-      
+
       fields[fieldName] = { type: fieldType }
     }
 
     // Generate a name from the schema or use a default
-    const typeName = (schema as any).annotations?.identifier || `Object_${Math.random().toString(36).slice(2, 11)}`
-    
+    const typeName =
+      (schema as any).annotations?.identifier || `Object_${Math.random().toString(36).slice(2, 11)}`
+
     return new GraphQLObjectType({
       name: typeName,
       fields,
@@ -171,22 +172,23 @@ export const toGraphQLInputType = (schema: S.Schema<any, any, any>): GraphQLInpu
   // Handle structs/objects as input types
   if (ast._tag === "TypeLiteral") {
     const fields: Record<string, { type: GraphQLInputType }> = {}
-    
+
     for (const field of ast.propertySignatures) {
       const fieldName = String(field.name)
       const fieldSchema = S.make(field.type)
       let fieldType = toGraphQLInputType(fieldSchema)
-      
+
       // Make non-optional fields non-null
       if (!field.isOptional) {
         fieldType = new GraphQLNonNull(fieldType)
       }
-      
+
       fields[fieldName] = { type: fieldType }
     }
 
-    const typeName = (schema as any).annotations?.identifier || `Input_${Math.random().toString(36).slice(2, 11)}`
-    
+    const typeName =
+      (schema as any).annotations?.identifier || `Input_${Math.random().toString(36).slice(2, 11)}`
+
     return new GraphQLInputObjectType({
       name: typeName,
       fields,
@@ -236,24 +238,24 @@ export const toGraphQLObjectType = <T>(
   additionalFields?: Record<string, AdditionalField<T, any, any, any, any>>
 ): GraphQLObjectType => {
   const ast = schema.ast
-  
+
   if (ast._tag === "TypeLiteral") {
     const fields: GraphQLFieldConfigMap<any, any> = {}
-    
+
     // Add fields from schema
     for (const field of ast.propertySignatures) {
       const fieldName = String(field.name)
       const fieldSchema = S.make(field.type)
       let fieldType = toGraphQLType(fieldSchema)
-      
+
       // Make non-optional fields non-null
       if (!field.isOptional) {
         fieldType = new GraphQLNonNull(fieldType)
       }
-      
+
       fields[fieldName] = { type: fieldType }
     }
-    
+
     // Add additional computed/relational fields
     if (additionalFields) {
       for (const [fieldName, fieldConfig] of Object.entries(additionalFields)) {
@@ -266,42 +268,40 @@ export const toGraphQLObjectType = <T>(
         }
       }
     }
-    
+
     return new GraphQLObjectType({
       name,
       fields,
     })
   }
-  
+
   throw new Error(`Schema must be an object type to convert to GraphQLObjectType`)
 }
 
 /**
  * Convert an Effect Schema to GraphQL arguments
  */
-export const toGraphQLArgs = (
-  schema: S.Schema<any, any, any>
-): GraphQLFieldConfigArgumentMap => {
+export const toGraphQLArgs = (schema: S.Schema<any, any, any>): GraphQLFieldConfigArgumentMap => {
   const ast = schema.ast
-  
+
   if (ast._tag === "TypeLiteral") {
     const args: GraphQLFieldConfigArgumentMap = {}
-    
+
     for (const field of ast.propertySignatures) {
       const fieldName = String(field.name)
       const fieldSchema = S.make(field.type)
       let fieldType = toGraphQLInputType(fieldSchema)
-      
+
       // Make non-optional fields non-null
       if (!field.isOptional) {
         fieldType = new GraphQLNonNull(fieldType)
       }
-      
+
       args[fieldName] = { type: fieldType }
     }
-    
+
     return args
   }
-  
+
   throw new Error(`Schema must be an object type to convert to GraphQL arguments`)
 }

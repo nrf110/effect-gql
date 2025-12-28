@@ -45,9 +45,7 @@ export const toMiddleware = <E, R, RE>(
       const webRequest = new Request(url, {
         method: req.method,
         headers,
-        body: ["GET", "HEAD"].includes(req.method)
-          ? undefined
-          : JSON.stringify(req.body),
+        body: ["GET", "HEAD"].includes(req.method) ? undefined : JSON.stringify(req.body),
       })
 
       // Process through Effect handler

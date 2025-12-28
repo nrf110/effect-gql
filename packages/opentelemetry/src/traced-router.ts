@@ -131,16 +131,19 @@ export const makeTracedGraphQLRouter = <R>(
         const spanOptions = createSpanOptions(traceContext, request, options)
 
         // Execute the request inside a root span
-        return yield* Effect.withSpan(rootSpanName, spanOptions)(
+        return yield* Effect.withSpan(
+          rootSpanName,
+          spanOptions
+        )(
           Effect.gen(function* () {
             // Delegate to the base app (which handles the request from context)
             const app = yield* baseApp
             const response = yield* app.pipe(
               Effect.catchTag("RouteNotFound", () =>
-                HttpServerResponse.text(
-                  JSON.stringify({ errors: [{ message: "Not Found" }] }),
-                  { status: 404, headers: { "content-type": "application/json" } }
-                )
+                HttpServerResponse.text(JSON.stringify({ errors: [{ message: "Not Found" }] }), {
+                  status: 404,
+                  headers: { "content-type": "application/json" },
+                })
               )
             )
 
@@ -216,7 +219,10 @@ export const withTracedRouter = (
           })
         }
 
-        return yield* Effect.withSpan(rootSpanName, spanOptions)(
+        return yield* Effect.withSpan(
+          rootSpanName,
+          spanOptions
+        )(
           Effect.gen(function* () {
             // Delegate to the base app (which handles the request from context)
             const app = yield* baseApp

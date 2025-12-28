@@ -1,8 +1,5 @@
 import { Effect, Runtime, Stream, Queue, Fiber, Option } from "effect"
-import {
-  GraphQLFieldConfig,
-  GraphQLResolveInfo,
-} from "graphql"
+import { GraphQLFieldConfig, GraphQLResolveInfo } from "graphql"
 import type {
   FieldRegistration,
   SubscriptionFieldRegistration,
@@ -91,7 +88,12 @@ export function buildField(
 ): GraphQLFieldConfig<any, any> {
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
-    resolve: async (_parent, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
+    resolve: async (
+      _parent,
+      args,
+      context: GraphQLEffectContext<any>,
+      info: GraphQLResolveInfo
+    ) => {
       // Apply directives first (per-field, explicit)
       let effect = applyDirectives(
         config.resolve(args),
@@ -104,7 +106,7 @@ export function buildField(
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       return await Runtime.runPromise(context.runtime)(effect)
-    }
+    },
   }
 
   if (config.args) {
@@ -146,7 +148,7 @@ export function buildObjectField(
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       return await Runtime.runPromise(context.runtime)(effect)
-    }
+    },
   }
 
   if (config.args) {
@@ -183,7 +185,12 @@ export function buildSubscriptionField(
     type: toGraphQLTypeWithRegistry(config.type, ctx),
 
     // The subscribe function returns an AsyncIterator
-    subscribe: async (_parent, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
+    subscribe: async (
+      _parent,
+      args,
+      context: GraphQLEffectContext<any>,
+      info: GraphQLResolveInfo
+    ) => {
       // Get the Stream from the subscribe Effect
       let subscribeEffect = config.subscribe(args)
 
@@ -257,9 +264,7 @@ function streamToAsyncIterator<A, E, R>(
     if (initialized) return
     initialized = true
 
-    queue = await Runtime.runPromise(runtime)(
-      Queue.unbounded<Option.Option<A>>()
-    )
+    queue = await Runtime.runPromise(runtime)(Queue.unbounded<Option.Option<A>>())
 
     // Fork a fiber to run the stream and push values to the queue
     fiber = Runtime.runFork(runtime)(
@@ -272,7 +277,9 @@ function streamToAsyncIterator<A, E, R>(
   }
 
   return {
-    [Symbol.asyncIterator]() { return this },
+    [Symbol.asyncIterator]() {
+      return this
+    },
 
     async next(): Promise<IteratorResult<A>> {
       await initialize()
@@ -282,9 +289,7 @@ function streamToAsyncIterator<A, E, R>(
       }
 
       try {
-        const optionValue = await Runtime.runPromise(runtime)(
-          Queue.take(queue)
-        )
+        const optionValue = await Runtime.runPromise(runtime)(Queue.take(queue))
 
         if (Option.isNone(optionValue)) {
           done = true
@@ -306,9 +311,7 @@ function streamToAsyncIterator<A, E, R>(
           await Runtime.runPromise(runtime)(
             Fiber.interrupt(fiber as unknown as Fiber.Fiber<any, any>)
           )
-          await Runtime.runPromise(runtime)(
-            Queue.shutdown(queue)
-          )
+          await Runtime.runPromise(runtime)(Queue.shutdown(queue))
         } catch {
           // Ignore cleanup errors
         }

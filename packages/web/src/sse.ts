@@ -76,7 +76,7 @@ export const createSSEHandler = <R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
   options?: WebSSEOptions<R>
-): (request: Request) => Promise<Response> => {
+): ((request: Request) => Promise<Response>) => {
   const sseHandler = makeGraphQLSSEHandler(schema, layer, options)
 
   return async (request: Request): Promise<Response> => {
@@ -94,7 +94,7 @@ export const createSSEHandler = <R>(
     // Read and parse the request body
     let subscriptionRequest: SSESubscriptionRequest
     try {
-      const body = await request.json() as Record<string, unknown>
+      const body = (await request.json()) as Record<string, unknown>
       if (typeof body.query !== "string") {
         throw new Error("Missing query")
       }
@@ -128,12 +128,8 @@ export const createSSEHandler = <R>(
               controller.enqueue(encoder.encode(message))
             })
           ).pipe(
-            Effect.catchAll((error) =>
-              Effect.logWarning("SSE stream error", error)
-            ),
-            Effect.ensuring(
-              Effect.sync(() => controller.close())
-            )
+            Effect.catchAll((error) => Effect.logWarning("SSE stream error", error)),
+            Effect.ensuring(Effect.sync(() => controller.close()))
           )
         )
       },

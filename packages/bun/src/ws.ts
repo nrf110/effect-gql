@@ -133,9 +133,7 @@ export const createBunWSHandlers = <R>(
               ws.close(code ?? 1000, reason ?? "")
             }),
 
-          messages: Stream.fromQueue(messageQueue).pipe(
-            Stream.catchAll(() => Stream.empty)
-          ),
+          messages: Stream.fromQueue(messageQueue).pipe(Stream.catchAll(() => Stream.empty)),
 
           closed: Deferred.await(closedDeferred),
         }
@@ -233,9 +231,7 @@ export const toBunEffectWebSocket = (
           ws.close(code ?? 1000, reason ?? "")
         }),
 
-      messages: Stream.fromQueue(messageQueue).pipe(
-        Stream.catchAll(() => Stream.empty)
-      ),
+      messages: Stream.fromQueue(messageQueue).pipe(Stream.catchAll(() => Stream.empty)),
 
       closed: Deferred.await(closedDeferred),
     }

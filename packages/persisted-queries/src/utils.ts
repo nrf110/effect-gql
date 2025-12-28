@@ -12,8 +12,7 @@ import type { HashAlgorithm } from "./config"
 export const computeHash = (
   query: string,
   algorithm: HashAlgorithm = "sha256"
-): Effect.Effect<string> =>
-  Effect.sync(() => createHash(algorithm).update(query).digest("hex"))
+): Effect.Effect<string> => Effect.sync(() => createHash(algorithm).update(query).digest("hex"))
 
 /**
  * Structure of the persisted query extension in GraphQL requests.
@@ -33,22 +32,13 @@ export interface PersistedQueryExtension {
 export const parsePersistedQueryExtension = (
   extensions: unknown
 ): PersistedQueryExtension | null => {
-  if (
-    typeof extensions !== "object" ||
-    extensions === null ||
-    !("persistedQuery" in extensions)
-  ) {
+  if (typeof extensions !== "object" || extensions === null || !("persistedQuery" in extensions)) {
     return null
   }
 
   const pq = (extensions as Record<string, unknown>).persistedQuery
 
-  if (
-    typeof pq !== "object" ||
-    pq === null ||
-    !("version" in pq) ||
-    !("sha256Hash" in pq)
-  ) {
+  if (typeof pq !== "object" || pq === null || !("version" in pq) || !("sha256Hash" in pq)) {
     return null
   }
 

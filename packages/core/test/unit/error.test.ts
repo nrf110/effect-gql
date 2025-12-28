@@ -1,11 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Exit } from "effect"
-import {
-  GraphQLError,
-  ValidationError,
-  AuthorizationError,
-  NotFoundError,
-} from "../../src/error"
+import { GraphQLError, ValidationError, AuthorizationError, NotFoundError } from "../../src/error"
 
 describe("error.ts", () => {
   // ==========================================================================
@@ -79,9 +74,7 @@ describe("error.ts", () => {
       const program = Effect.fail(
         new ValidationError({ message: "Bad value", field: "name" })
       ).pipe(
-        Effect.catchTag("ValidationError", (e) =>
-          Effect.succeed(`Field ${e.field}: ${e.message}`)
-        )
+        Effect.catchTag("ValidationError", (e) => Effect.succeed(`Field ${e.field}: ${e.message}`))
       )
       const result = Effect.runSync(program)
 
@@ -101,12 +94,8 @@ describe("error.ts", () => {
     })
 
     it("should be catchable with Effect.catchTag", () => {
-      const program = Effect.fail(
-        new AuthorizationError({ message: "Not authorized" })
-      ).pipe(
-        Effect.catchTag("AuthorizationError", (e) =>
-          Effect.succeed(`Auth error: ${e.message}`)
-        )
+      const program = Effect.fail(new AuthorizationError({ message: "Not authorized" })).pipe(
+        Effect.catchTag("AuthorizationError", (e) => Effect.succeed(`Auth error: ${e.message}`))
       )
       const result = Effect.runSync(program)
 
@@ -141,9 +130,7 @@ describe("error.ts", () => {
       const program = Effect.fail(
         new NotFoundError({ message: "Not found", resource: "Post" })
       ).pipe(
-        Effect.catchTag("NotFoundError", (e) =>
-          Effect.succeed(`${e.resource} error: ${e.message}`)
-        )
+        Effect.catchTag("NotFoundError", (e) => Effect.succeed(`${e.resource} error: ${e.message}`))
       )
       const result = Effect.runSync(program)
 

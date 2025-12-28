@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream, Runtime } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import { GraphQLSchema } from "graphql"
 import {
   makeGraphQLSSEHandler,
@@ -55,7 +55,7 @@ export const createBunSSEHandler = <R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
   options?: BunSSEOptions<R>
-): (request: Request) => Promise<Response> => {
+): ((request: Request) => Promise<Response>) => {
   const sseHandler = makeGraphQLSSEHandler(schema, layer, options)
 
   return async (request: Request): Promise<Response> => {
@@ -73,7 +73,7 @@ export const createBunSSEHandler = <R>(
     // Read and parse the request body
     let subscriptionRequest: SSESubscriptionRequest
     try {
-      const body = await request.json() as Record<string, unknown>
+      const body = (await request.json()) as Record<string, unknown>
       if (typeof body.query !== "string") {
         throw new Error("Missing query")
       }
@@ -107,12 +107,8 @@ export const createBunSSEHandler = <R>(
               controller.enqueue(encoder.encode(message))
             })
           ).pipe(
-            Effect.catchAll((error) =>
-              Effect.logWarning("SSE stream error", error)
-            ),
-            Effect.ensuring(
-              Effect.sync(() => controller.close())
-            )
+            Effect.catchAll((error) => Effect.logWarning("SSE stream error", error)),
+            Effect.ensuring(Effect.sync(() => controller.close()))
           )
         )
       },

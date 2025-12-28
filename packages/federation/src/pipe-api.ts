@@ -2,8 +2,7 @@ import { Effect } from "effect"
 import * as S from "effect/Schema"
 import type { DirectiveApplication } from "@effect-gql/core"
 import { FederatedSchemaBuilder } from "./federated-builder"
-import type { EntityRegistration, FederationDirective } from "./types"
-import { toDirectiveApplication } from "./types"
+import type { EntityRegistration } from "./types"
 
 // ============================================================================
 // Entity Registration
@@ -24,10 +23,10 @@ import { toDirectiveApplication } from "./types"
  * )
  * ```
  */
-export const entity = <A, R>(
-  config: EntityRegistration<A, R>
-) => <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
-  builder.entity(config)
+export const entity =
+  <A, R>(config: EntityRegistration<A, R>) =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+    builder.entity(config)
 
 // ============================================================================
 // Query/Mutation/Subscription
@@ -36,48 +35,54 @@ export const entity = <A, R>(
 /**
  * Add a query field
  */
-export const query = <A, E, R, Args = void>(
-  name: string,
-  config: {
-    type: S.Schema<A, any, any>
-    args?: S.Schema<Args, any, any>
-    description?: string
-    directives?: readonly DirectiveApplication[]
-    resolve: (args: Args) => Effect.Effect<A, E, R>
-  }
-) => <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
-  builder.query(name, config)
+export const query =
+  <A, E, R, Args = void>(
+    name: string,
+    config: {
+      type: S.Schema<A, any, any>
+      args?: S.Schema<Args, any, any>
+      description?: string
+      directives?: readonly DirectiveApplication[]
+      resolve: (args: Args) => Effect.Effect<A, E, R>
+    }
+  ) =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+    builder.query(name, config)
 
 /**
  * Add a mutation field
  */
-export const mutation = <A, E, R, Args = void>(
-  name: string,
-  config: {
-    type: S.Schema<A, any, any>
-    args?: S.Schema<Args, any, any>
-    description?: string
-    directives?: readonly DirectiveApplication[]
-    resolve: (args: Args) => Effect.Effect<A, E, R>
-  }
-) => <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
-  builder.mutation(name, config)
+export const mutation =
+  <A, E, R, Args = void>(
+    name: string,
+    config: {
+      type: S.Schema<A, any, any>
+      args?: S.Schema<Args, any, any>
+      description?: string
+      directives?: readonly DirectiveApplication[]
+      resolve: (args: Args) => Effect.Effect<A, E, R>
+    }
+  ) =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+    builder.mutation(name, config)
 
 /**
  * Add a subscription field
  */
-export const subscription = <A, E, R, Args = void>(
-  name: string,
-  config: {
-    type: S.Schema<A, any, any>
-    args?: S.Schema<Args, any, any>
-    description?: string
-    directives?: readonly DirectiveApplication[]
-    subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R>, E, R>
-    resolve?: (value: A, args: Args) => Effect.Effect<A, E, R>
-  }
-) => <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
-  builder.subscription(name, config)
+export const subscription =
+  <A, E, R, Args = void>(
+    name: string,
+    config: {
+      type: S.Schema<A, any, any>
+      args?: S.Schema<Args, any, any>
+      description?: string
+      directives?: readonly DirectiveApplication[]
+      subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R>, E, R>
+      resolve?: (value: A, args: Args) => Effect.Effect<A, E, R>
+    }
+  ) =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+    builder.subscription(name, config)
 
 // ============================================================================
 // Type Registration
@@ -86,73 +91,85 @@ export const subscription = <A, E, R, Args = void>(
 /**
  * Register an object type (non-entity)
  */
-export const objectType = <A>(config: {
-  name?: string
-  schema: S.Schema<A, any, any>
-  implements?: readonly string[]
-  directives?: readonly DirectiveApplication[]
-}) => <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
-  builder.objectType(config)
+export const objectType =
+  <A>(config: {
+    name?: string
+    schema: S.Schema<A, any, any>
+    implements?: readonly string[]
+    directives?: readonly DirectiveApplication[]
+  }) =>
+  <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
+    builder.objectType(config)
 
 /**
  * Register an interface type
  */
-export const interfaceType = (config: {
-  name?: string
-  schema: S.Schema<any, any, any>
-  resolveType?: (value: any) => string
-  directives?: readonly DirectiveApplication[]
-}) => <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
-  builder.interfaceType(config)
+export const interfaceType =
+  (config: {
+    name?: string
+    schema: S.Schema<any, any, any>
+    resolveType?: (value: any) => string
+    directives?: readonly DirectiveApplication[]
+  }) =>
+  <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
+    builder.interfaceType(config)
 
 /**
  * Register an enum type
  */
-export const enumType = (config: {
-  name: string
-  values: readonly string[]
-  description?: string
-  directives?: readonly DirectiveApplication[]
-}) => <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
-  builder.enumType(config)
+export const enumType =
+  (config: {
+    name: string
+    values: readonly string[]
+    description?: string
+    directives?: readonly DirectiveApplication[]
+  }) =>
+  <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
+    builder.enumType(config)
 
 /**
  * Register a union type
  */
-export const unionType = (config: {
-  name: string
-  types: readonly string[]
-  resolveType?: (value: any) => string
-  directives?: readonly DirectiveApplication[]
-}) => <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
-  builder.unionType(config)
+export const unionType =
+  (config: {
+    name: string
+    types: readonly string[]
+    resolveType?: (value: any) => string
+    directives?: readonly DirectiveApplication[]
+  }) =>
+  <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
+    builder.unionType(config)
 
 /**
  * Register an input type
  */
-export const inputType = (config: {
-  name?: string
-  schema: S.Schema<any, any, any>
-  description?: string
-  directives?: readonly DirectiveApplication[]
-}) => <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
-  builder.inputType(config)
+export const inputType =
+  (config: {
+    name?: string
+    schema: S.Schema<any, any, any>
+    description?: string
+    directives?: readonly DirectiveApplication[]
+  }) =>
+  <R>(builder: FederatedSchemaBuilder<R>): FederatedSchemaBuilder<R> =>
+    builder.inputType(config)
 
 /**
  * Add a computed/relational field to an object type
  */
-export const field = <Parent, A, E, R, Args = void>(
-  typeName: string,
-  fieldName: string,
-  config: {
-    type: S.Schema<A, any, any>
-    args?: S.Schema<Args, any, any>
-    description?: string
-    directives?: readonly DirectiveApplication[]
-    resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
-  }
-) => <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
-  builder.field(typeName, fieldName, config)
+export const field =
+  <Parent, A, E, R, Args = void>(
+    typeName: string,
+    fieldName: string,
+    config: {
+      type: S.Schema<A, any, any>
+      args?: S.Schema<Args, any, any>
+      description?: string
+      directives?: readonly DirectiveApplication[]
+      resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
+    }
+  ) =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+    builder.field(typeName, fieldName, config)
 
 // ============================================================================
 // Field-Level Federation Directive Helpers
@@ -233,12 +250,14 @@ export const overrideField = <A, E, R, Parent = any>(config: {
 } => ({
   type: config.type,
   description: config.description,
-  directives: [{
-    name: "override",
-    args: {
-      from: config.from,
-      ...(config.label !== undefined ? { label: config.label } : {}),
+  directives: [
+    {
+      name: "override",
+      args: {
+        from: config.from,
+        ...(config.label !== undefined ? { label: config.label } : {}),
+      },
     },
-  }],
+  ],
   resolve: config.resolve,
 })

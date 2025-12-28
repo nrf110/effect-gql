@@ -3,7 +3,11 @@ import { Cause, Effect, Layer, Context } from "effect"
 import * as S from "effect/Schema"
 import { HttpApp, HttpServerResponse } from "@effect/platform"
 import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
-import { makeGraphQLRouter, defaultErrorHandler, type ErrorHandler } from "../../../src/server/router"
+import {
+  makeGraphQLRouter,
+  defaultErrorHandler,
+  type ErrorHandler,
+} from "../../../src/server/router"
 import type { ComplexityConfig } from "../../../src/server/complexity"
 
 // Test service
@@ -243,19 +247,11 @@ describe("router.ts", () => {
       const schema = GraphQLSchemaBuilder.empty
         .query("serviceValue", {
           type: S.String,
-          resolve: () =>
-            TestService.pipe(
-              Effect.map((service) => service.getValue())
-            ),
+          resolve: () => TestService.pipe(Effect.map((service) => service.getValue())),
         })
         .buildSchema()
 
-      const result = await executeQuery(
-        schema,
-        testLayer,
-        {},
-        "{ serviceValue }"
-      )
+      const result = await executeQuery(schema, testLayer, {}, "{ serviceValue }")
 
       expect(result).toEqual({ data: { serviceValue: "from-service" } })
     })
@@ -287,12 +283,7 @@ describe("router.ts", () => {
         })
         .buildSchema()
 
-      const result = await executeQuery(
-        schema,
-        Layer.empty,
-        {},
-        "{ invalid syntax"
-      )
+      const result = await executeQuery(schema, Layer.empty, {}, "{ invalid syntax")
 
       expect(result.errors).toBeDefined()
     })
@@ -305,12 +296,7 @@ describe("router.ts", () => {
         })
         .buildSchema()
 
-      const result = await executeQuery(
-        schema,
-        Layer.empty,
-        {},
-        "{ unknownField }"
-      )
+      const result = await executeQuery(schema, Layer.empty, {}, "{ unknownField }")
 
       expect(result.errors).toBeDefined()
     })
@@ -342,12 +328,7 @@ describe("router.ts", () => {
         })
         .buildSchema()
 
-      const result = await getGraphiQL(
-        schema,
-        Layer.empty,
-        { graphiql: true },
-        "/graphiql"
-      )
+      const result = await getGraphiQL(schema, Layer.empty, { graphiql: true }, "/graphiql")
 
       expect(result.status).toBe(200)
       expect(result.body).toContain("GraphiQL")
@@ -592,12 +573,11 @@ describe("router.ts", () => {
     })
 
     it("should use field complexity from builder", async () => {
-      const builder = GraphQLSchemaBuilder.empty
-        .query("expensiveQuery", {
-          type: S.String,
-          complexity: 50, // High complexity cost
-          resolve: () => Effect.succeed("result"),
-        })
+      const builder = GraphQLSchemaBuilder.empty.query("expensiveQuery", {
+        type: S.String,
+        complexity: 50, // High complexity cost
+        resolve: () => Effect.succeed("result"),
+      })
 
       const schema = builder.buildSchema()
       const fieldComplexities = builder.getFieldComplexities()
@@ -628,21 +608,20 @@ describe("router.ts", () => {
     })
 
     it("should use dynamic field complexity based on arguments", async () => {
-      const builder = GraphQLSchemaBuilder.empty
-        .query("users", {
-          type: S.Array(User),
-          args: S.Struct({ limit: S.optional(S.Number) }),
-          // Complexity = limit * 2
-          complexity: (args: Record<string, unknown>) => ((args.limit as number) ?? 10) * 2,
-          resolve: (args) =>
-            Effect.succeed(
-              Array.from({ length: args.limit ?? 10 }, (_, i) => ({
-                id: String(i),
-                name: `User ${i}`,
-                email: `user${i}@example.com`,
-              }))
-            ),
-        })
+      const builder = GraphQLSchemaBuilder.empty.query("users", {
+        type: S.Array(User),
+        args: S.Struct({ limit: S.optional(S.Number) }),
+        // Complexity = limit * 2
+        complexity: (args: Record<string, unknown>) => ((args.limit as number) ?? 10) * 2,
+        resolve: (args) =>
+          Effect.succeed(
+            Array.from({ length: args.limit ?? 10 }, (_, i) => ({
+              id: String(i),
+              name: `User ${i}`,
+              email: `user${i}@example.com`,
+            }))
+          ),
+      })
 
       const schema = builder.buildSchema()
       const fieldComplexities = builder.getFieldComplexities()
@@ -858,12 +837,7 @@ describe("router.ts", () => {
         })
         .buildSchema()
 
-      const result = await executeQuery(
-        schema,
-        Layer.empty,
-        {},
-        "{ __schema { types { name } } }"
-      )
+      const result = await executeQuery(schema, Layer.empty, {}, "{ __schema { types { name } } }")
 
       expect(result.data).toBeDefined()
       expect(result.data.__schema).toBeDefined()
@@ -944,12 +918,7 @@ describe("router.ts", () => {
         })
         .buildSchema()
 
-      const result = await executeQuery(
-        schema,
-        Layer.empty,
-        { introspection: false },
-        "{ hello }"
-      )
+      const result = await executeQuery(schema, Layer.empty, { introspection: false }, "{ hello }")
 
       expect(result).toEqual({ data: { hello: "world" } })
     })

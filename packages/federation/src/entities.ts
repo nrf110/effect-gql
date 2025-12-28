@@ -33,9 +33,7 @@ export function createEntityUnion(
  *
  * Uses Effect.all with unbounded concurrency to resolve all entities in parallel.
  */
-export function createEntitiesResolver<R>(
-  entities: Map<string, EntityRegistration<any, R>>
-) {
+export function createEntitiesResolver<R>(entities: Map<string, EntityRegistration<any, R>>) {
   return async (
     _parent: any,
     args: { representations: readonly EntityRepresentation[] },
@@ -59,16 +57,12 @@ export function createEntitiesResolver<R>(
         }),
         // Catch individual entity resolution errors and return null
         Effect.catchAll((error) =>
-          Effect.logError(`Failed to resolve entity ${entityName}`, error).pipe(
-            Effect.as(null)
-          )
+          Effect.logError(`Failed to resolve entity ${entityName}`, error).pipe(Effect.as(null))
         )
       )
     })
 
-    return Runtime.runPromise(context.runtime)(
-      Effect.all(effects, { concurrency: "unbounded" })
-    )
+    return Runtime.runPromise(context.runtime)(Effect.all(effects, { concurrency: "unbounded" }))
   }
 }
 

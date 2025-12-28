@@ -26,8 +26,4 @@
  * ```
  */
 
-export {
-  generateSDL,
-  generateSDLFromModule,
-  loadSchema,
-} from "./commands/generate-schema"
+export { generateSDL, generateSDLFromModule, loadSchema } from "./commands/generate-schema"

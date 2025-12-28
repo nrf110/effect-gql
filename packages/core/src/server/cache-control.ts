@@ -1,4 +1,4 @@
-import { Effect, Option, Config } from "effect"
+import { Effect, Config } from "effect"
 import {
   DocumentNode,
   OperationDefinitionNode,
@@ -166,8 +166,7 @@ export const computeCachePolicyFromQuery = (
     const operation = yield* Effect.try({
       try: () => {
         const operations = document.definitions.filter(
-          (d): d is OperationDefinitionNode =>
-            d.kind === Kind.OPERATION_DEFINITION
+          (d): d is OperationDefinitionNode => d.kind === Kind.OPERATION_DEFINITION
         )
 
         if (operations.length === 0) {
@@ -258,14 +257,9 @@ function getNamedType(
 /**
  * Check if a type is a scalar or enum (leaf type)
  */
-function isLeafType(
-  type: GraphQLOutputType
-): boolean {
+function isLeafType(type: GraphQLOutputType): boolean {
   const namedType = getNamedType(type)
-  return (
-    namedType instanceof GraphQLScalarType ||
-    namedType instanceof GraphQLEnumType
-  )
+  return namedType instanceof GraphQLScalarType || namedType instanceof GraphQLEnumType
 }
 
 /**
@@ -328,13 +322,7 @@ function analyzeFragmentSpread(
   const newVisited = new Set(visitedFragments)
   newVisited.add(fragmentName)
 
-  return analyzeSelectionSet(
-    fragment.selectionSet,
-    fragmentType,
-    ctx,
-    parentMaxAge,
-    newVisited
-  )
+  return analyzeSelectionSet(fragment.selectionSet, fragmentType, ctx, parentMaxAge, newVisited)
 }
 
 /**
@@ -423,7 +411,7 @@ function analyzeSelectionSet(
   ctx: AnalysisContext,
   parentMaxAge: number | undefined,
   visitedFragments: Set<string>
-): CachePolicy;
+): CachePolicy
 function analyzeSelectionSet(
   selectionSet: SelectionSetNode,
   parentType: GraphQLObjectType,
@@ -434,7 +422,7 @@ function analyzeSelectionSet(
   defaultScope: CacheControlScope,
   parentMaxAge: number | undefined,
   visitedFragments: Set<string>
-): CachePolicy;
+): CachePolicy
 function analyzeSelectionSet(
   selectionSet: SelectionSetNode,
   parentType: GraphQLObjectType,
@@ -476,15 +464,32 @@ function analyzeSelectionSet(
 
     switch (selection.kind) {
       case Kind.FIELD:
-        fieldPolicy = analyzeField(selection, parentType, ctx, actualParentMaxAge, actualVisitedFragments)
+        fieldPolicy = analyzeField(
+          selection,
+          parentType,
+          ctx,
+          actualParentMaxAge,
+          actualVisitedFragments
+        )
         break
 
       case Kind.FRAGMENT_SPREAD:
-        fieldPolicy = analyzeFragmentSpread(selection.name.value, ctx, actualParentMaxAge, actualVisitedFragments)
+        fieldPolicy = analyzeFragmentSpread(
+          selection.name.value,
+          ctx,
+          actualParentMaxAge,
+          actualVisitedFragments
+        )
         break
 
       case Kind.INLINE_FRAGMENT:
-        fieldPolicy = analyzeInlineFragment(selection, parentType, ctx, actualParentMaxAge, actualVisitedFragments)
+        fieldPolicy = analyzeInlineFragment(
+          selection,
+          parentType,
+          ctx,
+          actualParentMaxAge,
+          actualVisitedFragments
+        )
         break
     }
 
@@ -531,7 +536,12 @@ function analyzeField(
   )
 
   // Compute field maxAge
-  const fieldMaxAge = computeFieldMaxAge(effectiveHint, schemaField.type, parentMaxAge, ctx.defaultMaxAge)
+  const fieldMaxAge = computeFieldMaxAge(
+    effectiveHint,
+    schemaField.type,
+    parentMaxAge,
+    ctx.defaultMaxAge
+  )
   const fieldScope: CacheControlScope = effectiveHint?.scope ?? ctx.defaultScope
 
   // If the field has a selection set, analyze it
@@ -567,19 +577,14 @@ function analyzeField(
  * - GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE: Default scope (PUBLIC or PRIVATE, default: PUBLIC)
  * - GRAPHQL_CACHE_CONTROL_HTTP_HEADERS: Set HTTP headers (default: true)
  */
-export const CacheControlConfigFromEnv: Config.Config<CacheControlConfig> =
-  Config.all({
-    enabled: Config.boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(
-      Config.withDefault(true)
-    ),
-    defaultMaxAge: Config.number("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(
-      Config.withDefault(0)
-    ),
-    defaultScope: Config.string("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
-      Config.withDefault("PUBLIC"),
-      Config.map((s) => (s === "PRIVATE" ? "PRIVATE" : "PUBLIC") as CacheControlScope)
-    ),
-    calculateHttpHeaders: Config.boolean("GRAPHQL_CACHE_CONTROL_HTTP_HEADERS").pipe(
-      Config.withDefault(true)
-    ),
-  })
+export const CacheControlConfigFromEnv: Config.Config<CacheControlConfig> = Config.all({
+  enabled: Config.boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(Config.withDefault(true)),
+  defaultMaxAge: Config.number("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(Config.withDefault(0)),
+  defaultScope: Config.string("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
+    Config.withDefault("PUBLIC"),
+    Config.map((s) => (s === "PRIVATE" ? "PRIVATE" : "PUBLIC") as CacheControlScope)
+  ),
+  calculateHttpHeaders: Config.boolean("GRAPHQL_CACHE_CONTROL_HTTP_HEADERS").pipe(
+    Config.withDefault(true)
+  ),
+})

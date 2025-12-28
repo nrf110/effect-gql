@@ -132,10 +132,7 @@ export const tracingExtension = (
       yield* Effect.annotateCurrentSpan("graphql.operation.type", operationType)
 
       if (config?.includeVariables && args.variableValues) {
-        yield* Effect.annotateCurrentSpan(
-          "graphql.variables",
-          JSON.stringify(args.variableValues)
-        )
+        yield* Effect.annotateCurrentSpan("graphql.variables", JSON.stringify(args.variableValues))
       }
 
       // Expose trace ID in response extensions if configured

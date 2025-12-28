@@ -19,9 +19,7 @@ export interface PersistedQueryGraphQLError {
  * Apollo clients recognize this error and automatically retry with the full query.
  * This is the expected flow for Automatic Persisted Queries (APQ).
  */
-export class PersistedQueryNotFoundError extends Data.TaggedError(
-  "PersistedQueryNotFoundError"
-)<{
+export class PersistedQueryNotFoundError extends Data.TaggedError("PersistedQueryNotFoundError")<{
   readonly hash: string
 }> {
   /**
@@ -42,9 +40,7 @@ export class PersistedQueryNotFoundError extends Data.TaggedError(
  *
  * Currently only version 1 is supported, which uses SHA-256 hashing.
  */
-export class PersistedQueryVersionError extends Data.TaggedError(
-  "PersistedQueryVersionError"
-)<{
+export class PersistedQueryVersionError extends Data.TaggedError("PersistedQueryVersionError")<{
   readonly version: number
 }> {
   toGraphQLError(): PersistedQueryGraphQLError {

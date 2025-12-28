@@ -1,8 +1,5 @@
 import { describe, it, expect } from "vitest"
-import {
-  defaultConfig,
-  normalizeConfig,
-} from "../../../src/server/config"
+import { defaultConfig, normalizeConfig } from "../../../src/server/config"
 
 describe("config.ts", () => {
   // ==========================================================================

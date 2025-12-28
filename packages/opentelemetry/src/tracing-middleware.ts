@@ -58,10 +58,7 @@ export interface ResolverTracingConfig {
 /**
  * Check if a field should be traced based on configuration
  */
-const shouldTraceField = (
-  info: GraphQLResolveInfo,
-  config?: ResolverTracingConfig
-): boolean => {
+const shouldTraceField = (info: GraphQLResolveInfo, config?: ResolverTracingConfig): boolean => {
   // Skip introspection fields unless explicitly enabled
   if (!config?.traceIntrospection && isIntrospectionField(info)) {
     return false

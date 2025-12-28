@@ -2,11 +2,7 @@ import { describe, it, expect } from "vitest"
 import { Effect } from "effect"
 import * as S from "effect/Schema"
 import { GraphQLSchemaBuilder } from "@effect-gql/core"
-import {
-  tracingExtension,
-  resolverTracingMiddleware,
-  withTracing,
-} from "../../src"
+import { tracingExtension, resolverTracingMiddleware, withTracing } from "../../src"
 
 describe("tracing", () => {
   describe("tracingExtension", () => {
@@ -32,9 +28,7 @@ describe("tracing", () => {
     })
 
     it("should be registerable on a schema builder", () => {
-      const builder = GraphQLSchemaBuilder.empty.pipe((b) =>
-        b.extension(tracingExtension())
-      )
+      const builder = GraphQLSchemaBuilder.empty.pipe((b) => b.extension(tracingExtension()))
 
       // Should not throw
       expect(builder).toBeDefined()

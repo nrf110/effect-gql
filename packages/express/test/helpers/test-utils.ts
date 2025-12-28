@@ -30,70 +30,70 @@ export const createTestSchema = () => {
     authorId: S.String,
   })
 
-  return GraphQLSchemaBuilder.empty
-    // Simple query
-    .query("hello", {
-      type: S.String,
-      resolve: () => Effect.succeed("world"),
-    })
-    // Query with arguments
-    .query("echo", {
-      type: S.String,
-      args: S.Struct({ message: S.String }),
-      resolve: (args) => Effect.succeed(args.message),
-    })
-    // Mutation
-    .mutation("createUser", {
-      type: UserSchema,
-      args: S.Struct({ name: S.String }),
-      resolve: (args) => Effect.succeed({ id: "1", name: args.name }),
-    })
-    // Object types for nested queries
-    .objectType({ name: "User", schema: UserSchema })
-    .objectType({ name: "Post", schema: PostSchema })
-    // Computed field on User type
-    .field("User", "posts", {
-      type: S.Array(PostSchema),
-      resolve: (user: { id: string; name: string }) =>
-        Effect.succeed([
-          { id: "1", title: "First Post", authorId: user.id },
-          { id: "2", title: "Second Post", authorId: user.id },
-        ]),
-    })
-    // Query that returns a User (for nested query testing)
-    .query("user", {
-      type: UserSchema,
-      args: S.Struct({ id: S.String }),
-      resolve: (args) => Effect.succeed({ id: args.id, name: "Test User" }),
-    })
-    // Subscription
-    .subscription("countdown", {
-      type: S.Int,
-      args: S.Struct({ from: S.Int }),
-      subscribe: (args) =>
-        Effect.succeed(
-          Stream.fromIterable(
-            Array.from({ length: args.from }, (_, i) => args.from - i)
-          )
-        ),
-    })
-    // Directive
-    .directive({
-      name: "upper",
-      description: "Transforms string result to uppercase",
-      locations: [DirectiveLocation.FIELD_DEFINITION],
-      apply: () => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-        Effect.map(effect, (v) =>
-          (typeof v === "string" ? v.toUpperCase() : v) as A
-        ),
-    })
-    // Query that uses the directive
-    .query("greeting", {
-      type: S.String,
-      directives: [{ name: "upper" }],
-      resolve: () => Effect.succeed("hello"),
-    })
-    .buildSchema()
+  return (
+    GraphQLSchemaBuilder.empty
+      // Simple query
+      .query("hello", {
+        type: S.String,
+        resolve: () => Effect.succeed("world"),
+      })
+      // Query with arguments
+      .query("echo", {
+        type: S.String,
+        args: S.Struct({ message: S.String }),
+        resolve: (args) => Effect.succeed(args.message),
+      })
+      // Mutation
+      .mutation("createUser", {
+        type: UserSchema,
+        args: S.Struct({ name: S.String }),
+        resolve: (args) => Effect.succeed({ id: "1", name: args.name }),
+      })
+      // Object types for nested queries
+      .objectType({ name: "User", schema: UserSchema })
+      .objectType({ name: "Post", schema: PostSchema })
+      // Computed field on User type
+      .field("User", "posts", {
+        type: S.Array(PostSchema),
+        resolve: (user: { id: string; name: string }) =>
+          Effect.succeed([
+            { id: "1", title: "First Post", authorId: user.id },
+            { id: "2", title: "Second Post", authorId: user.id },
+          ]),
+      })
+      // Query that returns a User (for nested query testing)
+      .query("user", {
+        type: UserSchema,
+        args: S.Struct({ id: S.String }),
+        resolve: (args) => Effect.succeed({ id: args.id, name: "Test User" }),
+      })
+      // Subscription
+      .subscription("countdown", {
+        type: S.Int,
+        args: S.Struct({ from: S.Int }),
+        subscribe: (args) =>
+          Effect.succeed(
+            Stream.fromIterable(Array.from({ length: args.from }, (_, i) => args.from - i))
+          ),
+      })
+      // Directive
+      .directive({
+        name: "upper",
+        description: "Transforms string result to uppercase",
+        locations: [DirectiveLocation.FIELD_DEFINITION],
+        apply:
+          () =>
+          <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (v) => (typeof v === "string" ? v.toUpperCase() : v) as A),
+      })
+      // Query that uses the directive
+      .query("greeting", {
+        type: S.String,
+        directives: [{ name: "upper" }],
+        resolve: () => Effect.succeed("hello"),
+      })
+      .buildSchema()
+  )
 }
 
 /**
@@ -147,9 +147,7 @@ export const executeQuery = async (
 /**
  * Fetch the GraphiQL page.
  */
-export const getGraphiQL = async (
-  port: number
-): Promise<{ status: number; body: string }> => {
+export const getGraphiQL = async (port: number): Promise<{ status: number; body: string }> => {
   const response = await fetch(`http://localhost:${port}/graphiql`, {
     method: "GET",
   })

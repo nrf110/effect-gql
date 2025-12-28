@@ -3,8 +3,7 @@ import { Effect, Layer, Runtime, Context, Exit } from "effect"
 /**
  * Run an Effect synchronously for tests (simple cases with no requirements)
  */
-export const runSync = <A>(effect: Effect.Effect<A, never, never>): A =>
-  Effect.runSync(effect)
+export const runSync = <A>(effect: Effect.Effect<A, never, never>): A => Effect.runSync(effect)
 
 /**
  * Run an Effect as Promise for async tests
@@ -24,8 +23,7 @@ export const runExit = <A, E>(effect: Effect.Effect<A, E, never>): Exit.Exit<A, 
 export const runWithLayer = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   layer: Layer.Layer<R, never, never>
-): Promise<A> =>
-  Effect.runPromise(Effect.provide(effect, layer))
+): Promise<A> => Effect.runPromise(Effect.provide(effect, layer))
 
 /**
  * Run an Effect with a test layer synchronously
@@ -33,8 +31,7 @@ export const runWithLayer = <A, E, R>(
 export const runSyncWithLayer = <A, R>(
   effect: Effect.Effect<A, never, R>,
   layer: Layer.Layer<R, never, never>
-): A =>
-  Effect.runSync(Effect.provide(effect, layer))
+): A => Effect.runSync(Effect.provide(effect, layer))
 
 /**
  * Create a mock service layer
@@ -42,16 +39,14 @@ export const runSyncWithLayer = <A, R>(
 export const mockService = <I, S extends I>(
   tag: Context.Tag<I, S>,
   implementation: S
-): Layer.Layer<I, never, never> =>
-  Layer.succeed(tag, implementation)
+): Layer.Layer<I, never, never> => Layer.succeed(tag, implementation)
 
 /**
  * Create a test runtime with services
  */
 export const createTestRuntime = <R>(
   layer: Layer.Layer<R, never, never>
-): Effect.Effect<Runtime.Runtime<R>, never, never> =>
-  Effect.scoped(Layer.toRuntime(layer))
+): Effect.Effect<Runtime.Runtime<R>, never, never> => Effect.scoped(Layer.toRuntime(layer))
 
 /**
  * Helper to test async iterator behavior (for subscriptions)
@@ -104,9 +99,7 @@ export const assertSucceedsWith = <A>(
     effect.pipe(
       Effect.map((actual) => {
         if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-          throw new Error(
-            `Expected ${JSON.stringify(expected)} but got ${JSON.stringify(actual)}`
-          )
+          throw new Error(`Expected ${JSON.stringify(expected)} but got ${JSON.stringify(actual)}`)
         }
       })
     )

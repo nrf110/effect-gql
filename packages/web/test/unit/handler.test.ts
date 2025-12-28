@@ -39,7 +39,8 @@ describe("handler.ts", () => {
 
     it("should handle POST requests with JSON body", async () => {
       const router = HttpRouter.empty.pipe(
-        HttpRouter.post("/graphql",
+        HttpRouter.post(
+          "/graphql",
           Effect.gen(function* () {
             return yield* HttpServerResponse.json({ data: { test: true } })
           })
@@ -92,7 +93,8 @@ describe("handler.ts", () => {
       })
 
       const router = HttpRouter.empty.pipe(
-        HttpRouter.get("/test",
+        HttpRouter.get(
+          "/test",
           Effect.gen(function* () {
             const service = yield* TestService
             return yield* HttpServerResponse.text(service.getValue())
@@ -118,7 +120,8 @@ describe("handler.ts", () => {
       let requestCount = 0
 
       const router = HttpRouter.empty.pipe(
-        HttpRouter.get("/count",
+        HttpRouter.get(
+          "/count",
           Effect.gen(function* () {
             requestCount++
             return yield* HttpServerResponse.text(`Request ${requestCount}`)
@@ -145,9 +148,7 @@ describe("handler.ts", () => {
 
   describe("WebHandler interface", () => {
     it("should properly dispose of resources", async () => {
-      const router = HttpRouter.empty.pipe(
-        HttpRouter.get("/", HttpServerResponse.text("test"))
-      )
+      const router = HttpRouter.empty.pipe(HttpRouter.get("/", HttpServerResponse.text("test")))
 
       const webHandler = toHandler(router, Layer.empty)
 

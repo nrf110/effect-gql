@@ -9,10 +9,7 @@ import type {
   CloseEvent,
   WebSocketError,
 } from "./ws-types"
-import {
-  validateComplexity,
-  type FieldComplexityMap,
-} from "./complexity"
+import { validateComplexity, type FieldComplexityMap } from "./complexity"
 
 /**
  * Extra context passed through graphql-ws.
@@ -175,10 +172,7 @@ const makeOnErrorHandler = <R>(
 /**
  * Create a graphql-ws compatible socket adapter from an EffectWebSocket.
  */
-const createGraphqlWsSocketAdapter = <R>(
-  socket: EffectWebSocket,
-  runtime: Runtime.Runtime<R>
-) => {
+const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, runtime: Runtime.Runtime<R>) => {
   let messageCallback: ((message: string) => Promise<void>) | null = null
 
   return {
@@ -187,9 +181,9 @@ const createGraphqlWsSocketAdapter = <R>(
 
       send: (data: string) =>
         Runtime.runPromise(runtime)(
-          socket.send(data).pipe(
-            Effect.catchAll((error) => Effect.logError("WebSocket send error", error))
-          )
+          socket
+            .send(data)
+            .pipe(Effect.catchAll((error) => Effect.logError("WebSocket send error", error)))
         ),
 
       close: (code?: number, reason?: string) => {
@@ -315,7 +309,7 @@ export const makeGraphQLWSHandler = <R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
   options?: GraphQLWSOptions<R>
-): (socket: EffectWebSocket) => Effect.Effect<void, never, never> => {
+): ((socket: EffectWebSocket) => Effect.Effect<void, never, never>) => {
   const complexityConfig = options?.complexity
   const fieldComplexities: FieldComplexityMap = options?.fieldComplexities ?? new Map()
 

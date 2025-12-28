@@ -6,9 +6,14 @@ import { Context, Effect, Layer, Stream, Queue, Ref } from "effect"
 
 export interface MockDatabase {
   readonly getUser: (id: string) => Effect.Effect<{ id: string; name: string } | null>
-  readonly getUsers: (ids: readonly string[]) => Effect.Effect<readonly { id: string; name: string }[]>
+  readonly getUsers: (
+    ids: readonly string[]
+  ) => Effect.Effect<readonly { id: string; name: string }[]>
   readonly createUser: (data: { name: string }) => Effect.Effect<{ id: string; name: string }>
-  readonly updateUser: (id: string, data: { name?: string }) => Effect.Effect<{ id: string; name: string } | null>
+  readonly updateUser: (
+    id: string,
+    data: { name?: string }
+  ) => Effect.Effect<{ id: string; name: string } | null>
   readonly deleteUser: (id: string) => Effect.Effect<boolean>
 }
 
@@ -30,7 +35,9 @@ export const createMockDatabaseLayer = (
     getUser: (id) => Effect.succeed(data.get(id) ?? null),
     getUsers: (ids) =>
       Effect.succeed(
-        ids.map((id) => data.get(id)).filter((u): u is { id: string; name: string } => u !== undefined)
+        ids
+          .map((id) => data.get(id))
+          .filter((u): u is { id: string; name: string } => u !== undefined)
       ),
     createUser: (input) =>
       Effect.sync(() => {
@@ -69,10 +76,7 @@ export class AuthError {
   constructor(readonly message: string) {}
 }
 
-export class MockAuthService extends Context.Tag("MockAuth")<
-  MockAuthService,
-  MockAuth
->() {}
+export class MockAuthService extends Context.Tag("MockAuth")<MockAuthService, MockAuth>() {}
 
 /**
  * Create a mock auth layer with a specific user
@@ -105,10 +109,7 @@ export interface MockLogger {
   readonly clear: () => Effect.Effect<void>
 }
 
-export class MockLoggerService extends Context.Tag("MockLogger")<
-  MockLoggerService,
-  MockLogger
->() {}
+export class MockLoggerService extends Context.Tag("MockLogger")<MockLoggerService, MockLogger>() {}
 
 /**
  * Create a mock logger layer that captures logs
@@ -120,8 +121,7 @@ export const createMockLoggerLayer = (): Layer.Layer<MockLoggerService> =>
       const logs = yield* Ref.make<readonly string[]>([])
 
       return {
-        log: (message: string) =>
-          Ref.update(logs, (current) => [...current, message]),
+        log: (message: string) => Ref.update(logs, (current) => [...current, message]),
         getLogs: () => Ref.get(logs),
         clear: () => Ref.set(logs, []),
       }

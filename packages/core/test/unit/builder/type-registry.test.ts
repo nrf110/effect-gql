@@ -370,13 +370,7 @@ describe("type-registry.ts", () => {
         email: S.String,
       })
 
-      const fields = schemaToInputFields(
-        InputSchema,
-        new Map(),
-        new Map(),
-        new Map(),
-        new Map()
-      )
+      const fields = schemaToInputFields(InputSchema, new Map(), new Map(), new Map(), new Map())
 
       expect(fields.name).toBeDefined()
       expect(fields.email).toBeDefined()
@@ -385,13 +379,7 @@ describe("type-registry.ts", () => {
     it("should wrap required fields in NonNull", () => {
       const InputSchema = S.Struct({ name: S.String })
 
-      const fields = schemaToInputFields(
-        InputSchema,
-        new Map(),
-        new Map(),
-        new Map(),
-        new Map()
-      )
+      const fields = schemaToInputFields(InputSchema, new Map(), new Map(), new Map(), new Map())
 
       expect(isNonNullType(fields.name.type)).toBe(true)
     })
@@ -399,25 +387,13 @@ describe("type-registry.ts", () => {
     it("should not wrap optional fields in NonNull", () => {
       const InputSchema = S.Struct({ name: S.optional(S.String) })
 
-      const fields = schemaToInputFields(
-        InputSchema,
-        new Map(),
-        new Map(),
-        new Map(),
-        new Map()
-      )
+      const fields = schemaToInputFields(InputSchema, new Map(), new Map(), new Map(), new Map())
 
       expect(isNonNullType(fields.name.type)).toBe(false)
     })
 
     it("should return empty object for non-TypeLiteral", () => {
-      const fields = schemaToInputFields(
-        S.String,
-        new Map(),
-        new Map(),
-        new Map(),
-        new Map()
-      )
+      const fields = schemaToInputFields(S.String, new Map(), new Map(), new Map(), new Map())
       expect(Object.keys(fields)).toHaveLength(0)
     })
 
@@ -439,13 +415,7 @@ describe("type-registry.ts", () => {
         address: AddressInput,
       })
 
-      const fields = schemaToInputFields(
-        UserInput,
-        new Map(),
-        inputRegistry,
-        inputs,
-        new Map()
-      )
+      const fields = schemaToInputFields(UserInput, new Map(), inputRegistry, inputs, new Map())
 
       const addressFieldType = isNonNullType(fields.address.type)
         ? (fields.address.type as any).ofType
@@ -584,13 +554,7 @@ describe("type-registry.ts", () => {
         limit: S.Int,
       })
 
-      const args = toGraphQLArgsWithRegistry(
-        ArgsSchema,
-        new Map(),
-        new Map(),
-        new Map(),
-        new Map()
-      )
+      const args = toGraphQLArgsWithRegistry(ArgsSchema, new Map(), new Map(), new Map(), new Map())
 
       expect(args.id).toBeDefined()
       expect(args.limit).toBeDefined()
@@ -599,13 +563,7 @@ describe("type-registry.ts", () => {
     it("should wrap required args in NonNull", () => {
       const ArgsSchema = S.Struct({ id: S.String })
 
-      const args = toGraphQLArgsWithRegistry(
-        ArgsSchema,
-        new Map(),
-        new Map(),
-        new Map(),
-        new Map()
-      )
+      const args = toGraphQLArgsWithRegistry(ArgsSchema, new Map(), new Map(), new Map(), new Map())
 
       expect(isNonNullType(args.id.type)).toBe(true)
     })
@@ -613,13 +571,7 @@ describe("type-registry.ts", () => {
     it("should not wrap optional args in NonNull", () => {
       const ArgsSchema = S.Struct({ limit: S.optional(S.Int) })
 
-      const args = toGraphQLArgsWithRegistry(
-        ArgsSchema,
-        new Map(),
-        new Map(),
-        new Map(),
-        new Map()
-      )
+      const args = toGraphQLArgsWithRegistry(ArgsSchema, new Map(), new Map(), new Map(), new Map())
 
       expect(isNonNullType(args.limit.type)).toBe(false)
     })
@@ -643,13 +595,7 @@ describe("type-registry.ts", () => {
         status: S.Literal("ACTIVE", "INACTIVE"),
       })
 
-      const args = toGraphQLArgsWithRegistry(
-        ArgsSchema,
-        enumRegistry,
-        new Map(),
-        new Map(),
-        enums
-      )
+      const args = toGraphQLArgsWithRegistry(ArgsSchema, enumRegistry, new Map(), new Map(), enums)
 
       const statusType = isNonNullType(args.status.type)
         ? (args.status.type as any).ofType
@@ -693,13 +639,7 @@ describe("type-registry.ts", () => {
     it("should fall back to toGraphQLArgs for non-struct", () => {
       // This should throw or return empty based on toGraphQLArgs behavior
       expect(() => {
-        toGraphQLArgsWithRegistry(
-          S.String,
-          new Map(),
-          new Map(),
-          new Map(),
-          new Map()
-        )
+        toGraphQLArgsWithRegistry(S.String, new Map(), new Map(), new Map(), new Map())
       }).toThrow()
     })
   })
@@ -757,10 +697,7 @@ describe("type-registry.ts", () => {
       ctx.typeRegistry.set("Item", itemType)
 
       // Array of suspended items
-      const result = toGraphQLTypeWithRegistry(
-        S.Array(S.suspend(() => ItemSchema)),
-        ctx
-      )
+      const result = toGraphQLTypeWithRegistry(S.Array(S.suspend(() => ItemSchema)), ctx)
 
       expect(isListType(result)).toBe(true)
       expect((result as any).ofType).toBe(itemType)
@@ -877,13 +814,7 @@ describe("type-registry.ts", () => {
         filter: FilterInput,
       })
 
-      const args = toGraphQLArgsWithRegistry(
-        ArgsSchema,
-        enumRegistry,
-        inputRegistry,
-        inputs,
-        enums
-      )
+      const args = toGraphQLArgsWithRegistry(ArgsSchema, enumRegistry, inputRegistry, inputs, enums)
 
       const statusType = isNonNullType(args.status.type)
         ? (args.status.type as any).ofType

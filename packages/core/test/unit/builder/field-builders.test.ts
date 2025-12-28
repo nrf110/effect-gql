@@ -36,11 +36,11 @@ const createFieldBuilderContext = (): FieldBuilderContext => ({
 })
 
 // Helper to create test runtime context
-const createTestContext = <R>(layer: Layer.Layer<R, never, never>): Promise<GraphQLEffectContext<R>> =>
+const createTestContext = <R>(
+  layer: Layer.Layer<R, never, never>
+): Promise<GraphQLEffectContext<R>> =>
   Effect.runPromise(
-    Effect.scoped(Layer.toRuntime(layer)).pipe(
-      Effect.map((runtime) => ({ runtime }))
-    )
+    Effect.scoped(Layer.toRuntime(layer)).pipe(Effect.map((runtime) => ({ runtime })))
   )
 
 // Simple test context for effects with no requirements
@@ -222,8 +222,10 @@ describe("field-builders.ts", () => {
       ctx.directiveRegistrations.set("prefix", {
         name: "prefix",
         locations: [],
-        apply: (args: { text: string }) => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.map(effect, (value) => `${args.text}${value}` as unknown as A),
+        apply:
+          (args: { text: string }) =>
+          <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => `${args.text}${value}` as unknown as A),
       })
 
       const config = buildField(
@@ -246,24 +248,25 @@ describe("field-builders.ts", () => {
       ctx.directiveRegistrations.set("wrap1", {
         name: "wrap1",
         locations: [],
-        apply: () => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.map(effect, (value) => `[1:${value}]` as unknown as A),
+        apply:
+          () =>
+          <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => `[1:${value}]` as unknown as A),
       })
 
       ctx.directiveRegistrations.set("wrap2", {
         name: "wrap2",
         locations: [],
-        apply: () => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.map(effect, (value) => `[2:${value}]` as unknown as A),
+        apply:
+          () =>
+          <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => `[2:${value}]` as unknown as A),
       })
 
       const config = buildField(
         {
           type: S.String,
-          directives: [
-            { name: "wrap1" },
-            { name: "wrap2" },
-          ],
+          directives: [{ name: "wrap1" }, { name: "wrap2" }],
           resolve: () => Effect.succeed("value"),
         },
         ctx
@@ -360,8 +363,10 @@ describe("field-builders.ts", () => {
       ctx.directiveRegistrations.set("uppercase", {
         name: "uppercase",
         locations: [],
-        apply: () => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.map(effect, (value) => String(value).toUpperCase() as unknown as A),
+        apply:
+          () =>
+          <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => String(value).toUpperCase() as unknown as A),
       })
 
       const config = buildObjectField(
@@ -642,11 +647,13 @@ describe("field-builders.ts", () => {
       const ctx = createFieldBuilderContext()
 
       // Register a middleware that transforms the result
-      ctx.middlewares = [{
-        name: "uppercase",
-        apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.map(effect, (value) => String(value).toUpperCase() as unknown as A),
-      }]
+      ctx.middlewares = [
+        {
+          name: "uppercase",
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => String(value).toUpperCase() as unknown as A),
+        },
+      ]
 
       const config = buildField(
         {
@@ -697,12 +704,14 @@ describe("field-builders.ts", () => {
     it("should apply middleware only to matching fields when match is provided", async () => {
       const ctx = createFieldBuilderContext()
 
-      ctx.middlewares = [{
-        name: "adminOnly",
-        match: (info) => info.fieldName.startsWith("admin"),
-        apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.map(effect, (value) => `ADMIN:${value}` as unknown as A),
-      }]
+      ctx.middlewares = [
+        {
+          name: "adminOnly",
+          match: (info) => info.fieldName.startsWith("admin"),
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => `ADMIN:${value}` as unknown as A),
+        },
+      ]
 
       const config = buildField(
         {
@@ -729,13 +738,15 @@ describe("field-builders.ts", () => {
       const ctx = createFieldBuilderContext()
 
       let capturedContext: any = null
-      ctx.middlewares = [{
-        name: "capture",
-        apply: <A, E, R>(effect: Effect.Effect<A, E, R>, context: any) => {
-          capturedContext = context
-          return effect
+      ctx.middlewares = [
+        {
+          name: "capture",
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>, context: any) => {
+            capturedContext = context
+            return effect
+          },
         },
-      }]
+      ]
 
       const config = buildField(
         {
@@ -763,16 +774,20 @@ describe("field-builders.ts", () => {
       ctx.directiveRegistrations.set("prefix", {
         name: "prefix",
         locations: [],
-        apply: (args: { text: string }) => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.map(effect, (value) => `${args.text}${value}` as unknown as A),
+        apply:
+          (args: { text: string }) =>
+          <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => `${args.text}${value}` as unknown as A),
       })
 
       // Middleware wraps second (outermost)
-      ctx.middlewares = [{
-        name: "wrap",
-        apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.map(effect, (value) => `[${value}]` as unknown as A),
-      }]
+      ctx.middlewares = [
+        {
+          name: "wrap",
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.map(effect, (value) => `[${value}]` as unknown as A),
+        },
+      ]
 
       const config = buildField(
         {
@@ -817,13 +832,15 @@ describe("field-builders.ts", () => {
       const ctx = createFieldBuilderContext()
 
       let capturedParent: any = null
-      ctx.middlewares = [{
-        name: "captureParent",
-        apply: <A, E, R>(effect: Effect.Effect<A, E, R>, context: any) => {
-          capturedParent = context.parent
-          return effect
+      ctx.middlewares = [
+        {
+          name: "captureParent",
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>, context: any) => {
+            capturedParent = context.parent
+            return effect
+          },
         },
-      }]
+      ]
 
       const config = buildObjectField(
         {
@@ -848,11 +865,13 @@ describe("field-builders.ts", () => {
     it("should propagate errors thrown by middleware", async () => {
       const ctx = createFieldBuilderContext()
 
-      ctx.middlewares = [{
-        name: "errorMiddleware",
-        apply: <A, E, R2>(_effect: Effect.Effect<A, E, R2>) =>
-          Effect.fail(new Error("Middleware error")) as unknown as Effect.Effect<A, E, R2>,
-      }]
+      ctx.middlewares = [
+        {
+          name: "errorMiddleware",
+          apply: <A, E, R2>(_effect: Effect.Effect<A, E, R2>) =>
+            Effect.fail(new Error("Middleware error")) as unknown as Effect.Effect<A, E, R2>,
+        },
+      ]
 
       const config = buildField(
         {
@@ -865,23 +884,27 @@ describe("field-builders.ts", () => {
       const testContext = createSimpleContext()
       const mockInfo = { fieldName: "test", parentType: { name: "Query" } } as any
 
-      await expect(config.resolve!(null, {}, testContext, mockInfo)).rejects.toThrow("Middleware error")
+      await expect(config.resolve!(null, {}, testContext, mockInfo)).rejects.toThrow(
+        "Middleware error"
+      )
     })
 
     it("should handle Effect-based middleware operations", async () => {
       const ctx = createFieldBuilderContext()
       const operationOrder: string[] = []
 
-      ctx.middlewares = [{
-        name: "loggingMiddleware",
-        apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.gen(function* () {
-            operationOrder.push("before")
-            const result = yield* effect
-            operationOrder.push("after")
-            return result
-          }) as Effect.Effect<A, E, R>,
-      }]
+      ctx.middlewares = [
+        {
+          name: "loggingMiddleware",
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.gen(function* () {
+              operationOrder.push("before")
+              const result = yield* effect
+              operationOrder.push("after")
+              return result
+            }) as Effect.Effect<A, E, R>,
+        },
+      ]
 
       const config = buildField(
         {
@@ -907,11 +930,13 @@ describe("field-builders.ts", () => {
       const ctx = createFieldBuilderContext()
       let resolverEffectRan = false
 
-      ctx.middlewares = [{
-        name: "shortCircuit",
-        apply: <A, E, R>(_effect: Effect.Effect<A, E, R>) =>
-          Effect.succeed("cached" as unknown as A),
-      }]
+      ctx.middlewares = [
+        {
+          name: "shortCircuit",
+          apply: <A, E, R>(_effect: Effect.Effect<A, E, R>) =>
+            Effect.succeed("cached" as unknown as A),
+        },
+      ]
 
       const config = buildField(
         {
@@ -937,10 +962,12 @@ describe("field-builders.ts", () => {
     it("should preserve error type through middleware chain", async () => {
       const ctx = createFieldBuilderContext()
 
-      ctx.middlewares = [{
-        name: "passthrough",
-        apply: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
-      }]
+      ctx.middlewares = [
+        {
+          name: "passthrough",
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
+        },
+      ]
 
       const config = buildField(
         {
@@ -959,11 +986,13 @@ describe("field-builders.ts", () => {
     it("should handle middleware that recovers from errors", async () => {
       const ctx = createFieldBuilderContext()
 
-      ctx.middlewares = [{
-        name: "fallbackMiddleware",
-        apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.catchAll(effect, () => Effect.succeed("fallback" as unknown as A)),
-      }]
+      ctx.middlewares = [
+        {
+          name: "fallbackMiddleware",
+          apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.catchAll(effect, () => Effect.succeed("fallback" as unknown as A)),
+        },
+      ]
 
       const config = buildField(
         {

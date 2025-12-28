@@ -1,15 +1,7 @@
 // Configuration types and utilities
-export type {
-  GraphiQLConfig,
-  GraphQLRouterConfig,
-  GraphQLRouterConfigInput,
-} from "./config"
+export type { GraphiQLConfig, GraphQLRouterConfig, GraphQLRouterConfigInput } from "./config"
 
-export {
-  defaultConfig,
-  normalizeConfig,
-  GraphQLRouterConfigFromEnv,
-} from "./config"
+export { defaultConfig, normalizeConfig, GraphQLRouterConfigFromEnv } from "./config"
 
 // GraphiQL HTML generator
 export { graphiqlHtml } from "./graphiql"
@@ -101,7 +93,4 @@ export {
   formatSSEMessage,
 } from "./sse-types"
 
-export {
-  makeSSESubscriptionStream,
-  makeGraphQLSSEHandler,
-} from "./sse-adapter"
+export { makeSSESubscriptionStream, makeGraphQLSSEHandler } from "./sse-adapter"

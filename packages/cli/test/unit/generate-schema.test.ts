@@ -131,18 +131,15 @@ describe("generate-schema", () => {
       // Define a service that would normally require a layer
       class DatabaseService extends Effect.Service<DatabaseService>()("@app/DatabaseService", {
         effect: Effect.succeed({
-          getUsers: () => Effect.succeed([] as readonly string[])
-        })
+          getUsers: () => Effect.succeed([] as readonly string[]),
+        }),
       }) {}
 
       const builder = GraphQLSchemaBuilder.empty.pipe(
         query("users", {
           type: S.Array(S.String),
           // This resolver requires DatabaseService, but schema building doesn't run it
-          resolve: () =>
-            DatabaseService.pipe(
-              Effect.flatMap((db) => db.getUsers())
-            ),
+          resolve: () => DatabaseService.pipe(Effect.flatMap((db) => db.getUsers())),
         })
       )
 

@@ -4,9 +4,7 @@ import { parseTraceParent, formatTraceParent, isSampled } from "../../src/contex
 describe("context-propagation.ts", () => {
   describe("parseTraceParent", () => {
     it("should parse a valid traceparent header", () => {
-      const result = parseTraceParent(
-        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-      )
+      const result = parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 
       expect(result).not.toBeNull()
       expect(result!.version).toBe("00")
@@ -16,36 +14,28 @@ describe("context-propagation.ts", () => {
     })
 
     it("should parse sampled flag correctly (sampled)", () => {
-      const result = parseTraceParent(
-        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-      )
+      const result = parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 
       expect(result).not.toBeNull()
       expect(isSampled(result!)).toBe(true)
     })
 
     it("should parse sampled flag correctly (not sampled)", () => {
-      const result = parseTraceParent(
-        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"
-      )
+      const result = parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 
       expect(result).not.toBeNull()
       expect(isSampled(result!)).toBe(false)
     })
 
     it("should handle uppercase hex values", () => {
-      const result = parseTraceParent(
-        "00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01"
-      )
+      const result = parseTraceParent("00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01")
 
       expect(result).not.toBeNull()
       expect(result!.traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736")
     })
 
     it("should handle whitespace around the header", () => {
-      const result = parseTraceParent(
-        "  00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01  "
-      )
+      const result = parseTraceParent("  00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01  ")
 
       expect(result).not.toBeNull()
       expect(result!.traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736")
@@ -57,16 +47,12 @@ describe("context-propagation.ts", () => {
 
     it("should return null for invalid format (too many parts)", () => {
       expect(
-        parseTraceParent(
-          "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-extra"
-        )
+        parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-extra")
       ).toBeNull()
     })
 
     it("should return null for invalid version (too short)", () => {
-      expect(
-        parseTraceParent("0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
-      ).toBeNull()
+      expect(parseTraceParent("0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")).toBeNull()
     })
 
     it("should return null for invalid trace ID (too short)", () => {
@@ -74,39 +60,23 @@ describe("context-propagation.ts", () => {
     })
 
     it("should return null for invalid trace ID (all zeros)", () => {
-      expect(
-        parseTraceParent(
-          "00-00000000000000000000000000000000-00f067aa0ba902b7-01"
-        )
-      ).toBeNull()
+      expect(parseTraceParent("00-00000000000000000000000000000000-00f067aa0ba902b7-01")).toBeNull()
     })
 
     it("should return null for invalid span ID (too short)", () => {
-      expect(
-        parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa-01")
-      ).toBeNull()
+      expect(parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa-01")).toBeNull()
     })
 
     it("should return null for invalid span ID (all zeros)", () => {
-      expect(
-        parseTraceParent(
-          "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01"
-        )
-      ).toBeNull()
+      expect(parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01")).toBeNull()
     })
 
     it("should return null for invalid trace flags (too short)", () => {
-      expect(
-        parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-1")
-      ).toBeNull()
+      expect(parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-1")).toBeNull()
     })
 
     it("should return null for non-hex characters in trace ID", () => {
-      expect(
-        parseTraceParent(
-          "00-4bf92f3577b34da6a3ce929d0e0g4736-00f067aa0ba902b7-01"
-        )
-      ).toBeNull()
+      expect(parseTraceParent("00-4bf92f3577b34da6a3ce929d0e0g4736-00f067aa0ba902b7-01")).toBeNull()
     })
   })
 

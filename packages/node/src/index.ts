@@ -12,8 +12,4 @@ export {
 } from "./ws"
 
 // SSE (Server-Sent Events) subscription support
-export {
-  createSSEHandler,
-  createSSEServer,
-  type NodeSSEOptions,
-} from "./sse"
+export { createSSEHandler, createSSEServer, type NodeSSEOptions } from "./sse"

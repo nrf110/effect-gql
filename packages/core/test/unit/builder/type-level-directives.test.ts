@@ -20,10 +20,7 @@ describe("type-level directives", () => {
         .objectType({
           name: "User",
           schema: S.Struct({ id: S.String, name: S.String }),
-          directives: [
-            { name: "key", args: { fields: "id" } },
-            { name: "shareable" },
-          ],
+          directives: [{ name: "key", args: { fields: "id" } }, { name: "shareable" }],
         })
         .query("user", {
           type: S.Struct({ id: S.String, name: S.String }),
@@ -86,9 +83,7 @@ describe("type-level directives", () => {
 
       expect(nodeType).toBeDefined()
       expect(nodeType.extensions).toBeDefined()
-      expect(nodeType.extensions?.directives).toEqual([
-        { name: "key", args: { fields: "id" } },
-      ])
+      expect(nodeType.extensions?.directives).toEqual([{ name: "key", args: { fields: "id" } }])
     })
 
     it("should not add extensions when no directives specified", () => {
@@ -131,9 +126,7 @@ describe("type-level directives", () => {
 
       expect(statusType).toBeDefined()
       expect(statusType.extensions).toBeDefined()
-      expect(statusType.extensions?.directives).toEqual([
-        { name: "inaccessible" },
-      ])
+      expect(statusType.extensions?.directives).toEqual([{ name: "inaccessible" }])
     })
 
     it("should not add extensions when no directives specified", () => {
@@ -184,9 +177,7 @@ describe("type-level directives", () => {
 
       expect(petType).toBeDefined()
       expect(petType.extensions).toBeDefined()
-      expect(petType.extensions?.directives).toEqual([
-        { name: "tag", args: { name: "public" } },
-      ])
+      expect(petType.extensions?.directives).toEqual([{ name: "tag", args: { name: "public" } }])
     })
 
     it("should not add extensions when no directives specified", () => {
@@ -237,9 +228,7 @@ describe("type-level directives", () => {
 
       expect(inputType).toBeDefined()
       expect(inputType.extensions).toBeDefined()
-      expect(inputType.extensions?.directives).toEqual([
-        { name: "inaccessible" },
-      ])
+      expect(inputType.extensions?.directives).toEqual([{ name: "inaccessible" }])
     })
 
     it("should not add extensions when no directives specified", () => {
@@ -315,20 +304,16 @@ describe("type-level directives", () => {
         query("user", {
           type: S.Struct({ id: S.String }),
           resolve: () => Effect.succeed({ id: "1" }),
-        }),
+        })
       )
 
       const schema = builder.buildSchema()
 
       const userType = schema.getType("User") as GraphQLObjectType
-      expect(userType.extensions?.directives).toEqual([
-        { name: "key", args: { fields: "id" } },
-      ])
+      expect(userType.extensions?.directives).toEqual([{ name: "key", args: { fields: "id" } }])
 
       const roleType = schema.getType("Role") as GraphQLEnumType
-      expect(roleType.extensions?.directives).toEqual([
-        { name: "shareable" },
-      ])
+      expect(roleType.extensions?.directives).toEqual([{ name: "shareable" }])
     })
   })
 })

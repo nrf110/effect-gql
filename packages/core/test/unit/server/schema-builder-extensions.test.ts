@@ -96,10 +96,7 @@ describe("schema-builder-extensions.ts", () => {
     it("should pass layer to the router for service resolution", async () => {
       const builder = GraphQLSchemaBuilder.empty.query("message", {
         type: S.String,
-        resolve: () =>
-          TestService.pipe(
-            Effect.map((service) => service.getMessage())
-          ),
+        resolve: () => TestService.pipe(Effect.map((service) => service.getMessage())),
       })
 
       const result = await executeQuery(builder, testLayer, {}, "{ message }")
@@ -118,12 +115,7 @@ describe("schema-builder-extensions.ts", () => {
         resolve: () => Effect.succeed("test"),
       })
 
-      const result = await executeQuery(
-        builder,
-        Layer.empty,
-        { path: "/api/gql" },
-        "{ test }"
-      )
+      const result = await executeQuery(builder, Layer.empty, { path: "/api/gql" }, "{ test }")
 
       expect(result).toEqual({ data: { test: "test" } })
     })
@@ -134,12 +126,7 @@ describe("schema-builder-extensions.ts", () => {
         resolve: () => Effect.succeed("test"),
       })
 
-      const result = await getGraphiQL(
-        builder,
-        Layer.empty,
-        { graphiql: true },
-        "/graphiql"
-      )
+      const result = await getGraphiQL(builder, Layer.empty, { graphiql: true }, "/graphiql")
 
       expect(result.status).toBe(200)
       expect(result.body).toContain("GraphiQL")
@@ -228,12 +215,7 @@ describe("schema-builder-extensions.ts", () => {
             }),
         })
 
-      const result = await executeQuery(
-        builder,
-        Layer.empty,
-        {},
-        "{ user { id name } }"
-      )
+      const result = await executeQuery(builder, Layer.empty, {}, "{ user { id name } }")
 
       expect(result).toEqual({
         data: {

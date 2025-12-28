@@ -1,4 +1,4 @@
-import { Effect, Layer, Runtime, Stream, Queue, Fiber, Deferred, Scope } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import {
   GraphQLSchema,
   parse,
@@ -21,11 +21,7 @@ import {
   formatErrorEvent,
   formatCompleteEvent,
 } from "./sse-types"
-import {
-  validateComplexity,
-  ComplexityLimitExceededError,
-  type FieldComplexityMap,
-} from "./complexity"
+import { validateComplexity, type FieldComplexityMap } from "./complexity"
 
 /**
  * Create a subscription event stream for SSE.
@@ -78,11 +74,8 @@ export const makeSSESubscriptionStream = <R>(
       let connectionContext: Record<string, unknown> = {}
       if (options?.onConnect) {
         try {
-          connectionContext = yield* Effect.provide(
-            options.onConnect(request, headers),
-            layer
-          )
-        } catch (error) {
+          connectionContext = yield* Effect.provide(options.onConnect(request, headers), layer)
+        } catch {
           // Connection rejected
           return Stream.make(
             formatErrorEvent([
@@ -100,19 +93,13 @@ export const makeSSESubscriptionStream = <R>(
       try {
         document = parse(request.query)
       } catch (syntaxError) {
-        return Stream.make(
-          formatErrorEvent([syntaxError]),
-          formatCompleteEvent()
-        )
+        return Stream.make(formatErrorEvent([syntaxError]), formatCompleteEvent())
       }
 
       // Validate the query
       const validationErrors = validate(schema, document)
       if (validationErrors.length > 0) {
-        return Stream.make(
-          formatErrorEvent(validationErrors),
-          formatCompleteEvent()
-        )
+        return Stream.make(formatErrorEvent(validationErrors), formatCompleteEvent())
       }
 
       // Find the subscription operation
@@ -126,9 +113,7 @@ export const makeSSESubscriptionStream = <R>(
 
       if (!operation) {
         return Stream.make(
-          formatErrorEvent([
-            new GraphQLError("No operation found in query"),
-          ]),
+          formatErrorEvent([new GraphQLError("No operation found in query")]),
           formatCompleteEvent()
         )
       }
@@ -177,10 +162,7 @@ export const makeSSESubscriptionStream = <R>(
         )
 
         if (complexityResult) {
-          return Stream.make(
-            formatErrorEvent([complexityResult]),
-            formatCompleteEvent()
-          )
+          return Stream.make(formatErrorEvent([complexityResult]), formatCompleteEvent())
         }
       }
 
@@ -221,16 +203,10 @@ export const makeSSESubscriptionStream = <R>(
         // It's an ExecutionResult with errors
         const result = subscriptionResult as ExecutionResult
         if (result.errors) {
-          return Stream.make(
-            formatErrorEvent(result.errors),
-            formatCompleteEvent()
-          )
+          return Stream.make(formatErrorEvent(result.errors), formatCompleteEvent())
         }
         // Shouldn't happen, but handle gracefully
-        return Stream.make(
-          formatNextEvent(result),
-          formatCompleteEvent()
-        )
+        return Stream.make(formatNextEvent(result), formatCompleteEvent())
       }
 
       // Create a stream from the async iterator
@@ -297,10 +273,9 @@ export const makeSSESubscriptionStream = <R>(
         Effect.succeed(
           Stream.make(
             formatErrorEvent([
-              new GraphQLError(
-                error instanceof Error ? error.message : "Internal error",
-                { extensions: { code: "INTERNAL_ERROR" } }
-              ),
+              new GraphQLError(error instanceof Error ? error.message : "Internal error", {
+                extensions: { code: "INTERNAL_ERROR" },
+              }),
             ]),
             formatCompleteEvent()
           )
@@ -340,21 +315,13 @@ export const makeGraphQLSSEHandler = <R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
   options?: GraphQLSSEOptions<R>
-): (
-  request: SSESubscriptionRequest,
-  headers: Headers
-) => Stream.Stream<SSEEvent, SSEError> => {
-  return (request, headers) =>
-    makeSSESubscriptionStream(schema, layer, request, headers, options)
+): ((request: SSESubscriptionRequest, headers: Headers) => Stream.Stream<SSEEvent, SSEError>) => {
+  return (request, headers) => makeSSESubscriptionStream(schema, layer, request, headers, options)
 }
 
 /**
  * Type guard to check if a value is an AsyncIterable (subscription result)
  */
 function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Symbol.asyncIterator in value
-  )
+  return typeof value === "object" && value !== null && Symbol.asyncIterator in value
 }

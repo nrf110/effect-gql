@@ -14,9 +14,7 @@ describe("analyzer-extension.ts", () => {
     it("should include complexity and depth by default", async () => {
       const analyzer = createAnalyzerExtension()
 
-      const builder = GraphQLSchemaBuilder.empty.pipe(
-        extension(analyzer)
-      ).query("test", {
+      const builder = GraphQLSchemaBuilder.empty.pipe(extension(analyzer)).query("test", {
         type: S.String,
         resolve: () => Effect.succeed("result"),
       })
@@ -24,9 +22,7 @@ describe("analyzer-extension.ts", () => {
       const schema = builder.buildSchema()
       const extensions = builder.getExtensions()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ test }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ test }"))
 
       expect(result.data).toEqual({ test: "result" })
       expect(result.extensions).toBeDefined()
@@ -93,9 +89,7 @@ describe("analyzer-extension.ts", () => {
       const schema = builder.buildSchema()
       const extensions = builder.getExtensions()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ a b c }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ a b c }"))
 
       expect(result.extensions?.analyzer?.fieldCount).toBe(3)
     })
@@ -131,9 +125,7 @@ describe("analyzer-extension.ts", () => {
       const schema = builder.buildSchema()
       const extensions = builder.getExtensions()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ test }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ test }"))
 
       expect(result.extensions?.queryStats).toBeDefined()
       expect(result.extensions?.analyzer).toBeUndefined()
@@ -154,9 +146,7 @@ describe("analyzer-extension.ts", () => {
       const schema = builder.buildSchema()
       const extensions = builder.getExtensions()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ test }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ test }"))
 
       const analyzerOutput = result.extensions?.analyzer
       expect(analyzerOutput).not.toHaveProperty("complexity")
@@ -181,9 +171,7 @@ describe("analyzer-extension.ts", () => {
       const schema = builder.buildSchema()
       const extensions = builder.getExtensions()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ a b }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ a b }"))
 
       expect(result.extensions?.analyzer?.complexity).toBe(2)
     })
@@ -201,9 +189,7 @@ describe("analyzer-extension.ts", () => {
       const schema = builder.buildSchema()
       const extensions = builder.getExtensions()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ a b }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ a b }"))
 
       expect(result.extensions?.analyzer?.complexity).toBe(10)
     })
@@ -256,9 +242,7 @@ describe("analyzer-extension.ts", () => {
       const schema = builder.buildSchema()
       const extensions = builder.getExtensions()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ test }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ test }"))
 
       expect(result.data).toEqual({ test: "value" })
       expect(result.extensions?.analyzer).toBeDefined()
@@ -330,9 +314,7 @@ describe("analyzer-extension.ts", () => {
         }
       `
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)(query)
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)(query))
 
       expect(result.data).toEqual({ user: { id: "1", name: "Test" } })
       expect(result.extensions?.analyzer).toBeDefined()
@@ -342,13 +324,11 @@ describe("analyzer-extension.ts", () => {
     it("should handle queries with variables", async () => {
       const analyzer = createAnalyzerExtension()
 
-      const builder = GraphQLSchemaBuilder.empty
-        .pipe(extension(analyzer))
-        .query("greeting", {
-          type: S.String,
-          args: S.Struct({ name: S.String }),
-          resolve: ({ name }) => Effect.succeed(`Hello, ${name}!`),
-        })
+      const builder = GraphQLSchemaBuilder.empty.pipe(extension(analyzer)).query("greeting", {
+        type: S.String,
+        args: S.Struct({ name: S.String }),
+        resolve: ({ name }) => Effect.succeed(`Hello, ${name}!`),
+      })
 
       const schema = builder.buildSchema()
       const extensions = builder.getExtensions()
@@ -398,11 +378,7 @@ describe("analyzer-extension.ts", () => {
       const extensions = builder.getExtensions()
 
       const result = await Effect.runPromise(
-        execute(
-          schema,
-          Layer.empty,
-          extensions
-        )("query MyQuery { test }", undefined, "MyQuery")
+        execute(schema, Layer.empty, extensions)("query MyQuery { test }", undefined, "MyQuery")
       )
 
       expect(result.data).toEqual({ test: "value" })

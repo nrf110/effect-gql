@@ -114,9 +114,7 @@ describe("extensions.ts", () => {
       ]
 
       const document = parse("{ test }")
-      await Effect.runPromise(
-        runParseHooks(extensions, "{ test }", document)
-      )
+      await Effect.runPromise(runParseHooks(extensions, "{ test }", document))
 
       expect(order).toEqual(["first", "second", "third"])
     })
@@ -138,9 +136,7 @@ describe("extensions.ts", () => {
       const schema = buildSchema("type Query { test: String }")
       const errors = validate(schema, document)
 
-      await Effect.runPromise(
-        runValidateHooks(extensions, document, errors)
-      )
+      await Effect.runPromise(runValidateHooks(extensions, document, errors))
 
       expect(hookRan.value).toBe(true)
     })
@@ -292,9 +288,7 @@ describe("extensions.ts", () => {
         },
       ]
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ test }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ test }"))
 
       expect(result.data).toEqual({ test: "result" })
       expect(phases).toEqual(["parse", "validate", "executeStart", "executeEnd"])
@@ -324,9 +318,7 @@ describe("extensions.ts", () => {
         },
       ]
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ test }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ test }"))
 
       expect(result.data).toEqual({ test: "result" })
       expect(result.extensions).toEqual({
@@ -361,9 +353,7 @@ describe("extensions.ts", () => {
         },
       ]
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ test }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ test }"))
 
       expect(result.extensions).toEqual({
         timing: { duration: 100 },
@@ -386,9 +376,7 @@ describe("extensions.ts", () => {
         },
       ]
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty, extensions)("{ test }")
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty, extensions)("{ test }"))
 
       expect(result.data).toEqual({ test: "result" })
       expect(result.extensions).toBeUndefined()

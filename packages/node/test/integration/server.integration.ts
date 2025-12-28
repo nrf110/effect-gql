@@ -37,11 +37,9 @@ describe("Node Server Integration", () => {
     })
 
     it("should execute a query with variables", async () => {
-      const result = await executeQuery(
-        port,
-        "query Echo($msg: String!) { echo(message: $msg) }",
-        { msg: "hello from variables" }
-      )
+      const result = await executeQuery(port, "query Echo($msg: String!) { echo(message: $msg) }", {
+        msg: "hello from variables",
+      })
       expect(result).toEqual({ data: { echo: "hello from variables" } })
     })
 
@@ -57,10 +55,7 @@ describe("Node Server Integration", () => {
   // ==========================================================================
   describe("mutations", () => {
     it("should execute a simple mutation", async () => {
-      const result = await executeQuery(
-        port,
-        'mutation { createUser(name: "Alice") { id name } }'
-      )
+      const result = await executeQuery(port, 'mutation { createUser(name: "Alice") { id name } }')
       expect(result).toEqual({
         data: {
           createUser: { id: "1", name: "Alice" },
@@ -87,10 +82,7 @@ describe("Node Server Integration", () => {
   // ==========================================================================
   describe("nested queries", () => {
     it("should resolve nested object fields", async () => {
-      const result = await executeQuery(
-        port,
-        '{ user(id: "123") { id name posts { id title } } }'
-      )
+      const result = await executeQuery(port, '{ user(id: "123") { id name posts { id title } } }')
       expect(result.data).toBeDefined()
       const data = result.data as { user: { id: string; name: string; posts: unknown[] } }
       expect(data.user.id).toBe("123")
@@ -99,10 +91,7 @@ describe("Node Server Integration", () => {
     })
 
     it("should handle partial selection on nested fields", async () => {
-      const result = await executeQuery(
-        port,
-        '{ user(id: "456") { name posts { title } } }'
-      )
+      const result = await executeQuery(port, '{ user(id: "456") { name posts { title } } }')
       expect(result.data).toBeDefined()
       const data = result.data as { user: { name: string; posts: { title: string }[] } }
       expect(data.user.name).toBe("Test User")

@@ -54,9 +54,7 @@ describe("ResolverContext", () => {
         return yield* ResolverContext.get(slot)
       })
 
-      const result = await Effect.runPromise(
-        Effect.provide(effect, storeLayer)
-      )
+      const result = await Effect.runPromise(Effect.provide(effect, storeLayer))
       expect(result).toBe(42)
     })
 
@@ -65,9 +63,7 @@ describe("ResolverContext", () => {
 
       const effect = ResolverContext.get(slot)
 
-      const result = await Effect.runPromise(
-        Effect.provide(effect, storeLayer).pipe(Effect.either)
-      )
+      const result = await Effect.runPromise(Effect.provide(effect, storeLayer).pipe(Effect.either))
 
       expect(result._tag).toBe("Left")
       if (result._tag === "Left") {
@@ -93,9 +89,7 @@ describe("ResolverContext", () => {
         return yield* ResolverContext.getOption(slot)
       })
 
-      const result = await Effect.runPromise(
-        Effect.provide(effect, storeLayer)
-      )
+      const result = await Effect.runPromise(Effect.provide(effect, storeLayer))
       expect(Option.isSome(result)).toBe(true)
       expect(Option.getOrThrow(result)).toBe("value")
     })
@@ -110,9 +104,7 @@ describe("ResolverContext", () => {
         return { before, after }
       })
 
-      const result = await Effect.runPromise(
-        Effect.provide(effect, storeLayer)
-      )
+      const result = await Effect.runPromise(Effect.provide(effect, storeLayer))
       expect(result.before).toBe(false)
       expect(result.after).toBe(true)
     })
@@ -127,9 +119,7 @@ describe("ResolverContext", () => {
         return { before, after }
       })
 
-      const result = await Effect.runPromise(
-        Effect.provide(effect, storeLayer)
-      )
+      const result = await Effect.runPromise(Effect.provide(effect, storeLayer))
       expect(result.before).toBe("default")
       expect(result.after).toBe("actual")
     })
@@ -148,9 +138,7 @@ describe("ResolverContext", () => {
         return [v1, v2] as const
       })
 
-      const [v1, v2] = await Effect.runPromise(
-        Effect.provide(effect, storeLayer)
-      )
+      const [v1, v2] = await Effect.runPromise(Effect.provide(effect, storeLayer))
       expect(v1).toBe("hello")
       expect(v2).toBe(123)
     })
@@ -171,9 +159,7 @@ describe("ResolverContext", () => {
         return yield* ResolverContext.get(slot)
       })
 
-      const result = await Effect.runPromise(
-        Effect.provide(effect, storeLayer)
-      )
+      const result = await Effect.runPromise(Effect.provide(effect, storeLayer))
       expect(result).toBe("set-early")
     })
 
@@ -188,9 +174,7 @@ describe("ResolverContext", () => {
         return { first, second }
       })
 
-      const result = await Effect.runPromise(
-        Effect.provide(effect, storeLayer)
-      )
+      const result = await Effect.runPromise(Effect.provide(effect, storeLayer))
       expect(result).toEqual({ first: "first", second: "second" })
     })
   })
@@ -206,19 +190,14 @@ describe("ResolverContext", () => {
         yield* ResolverContext.set(slot, "outer")
         const outer = yield* ResolverContext.get(slot)
 
-        const inner = yield* ResolverContext.scoped(
-          slot,
-          "inner"
-        )(ResolverContext.get(slot))
+        const inner = yield* ResolverContext.scoped(slot, "inner")(ResolverContext.get(slot))
 
         const afterInner = yield* ResolverContext.get(slot)
 
         return { outer, inner, afterInner }
       })
 
-      const result = await Effect.runPromise(
-        Effect.provide(effect, storeLayer)
-      )
+      const result = await Effect.runPromise(Effect.provide(effect, storeLayer))
       expect(result).toEqual({
         outer: "outer",
         inner: "inner",
@@ -317,7 +296,10 @@ describe("ResolverContext", () => {
         .buildSchema()
 
       const result = await Effect.runPromise(
-        execute(schema, storeLayer)(`
+        execute(
+          schema,
+          storeLayer
+        )(`
           query {
             me {
               id
@@ -354,9 +336,7 @@ describe("ResolverContext", () => {
         })
         .buildSchema()
 
-      const result = await Effect.runPromise(
-        execute(schema, storeLayer)(`query { protected }`)
-      )
+      const result = await Effect.runPromise(execute(schema, storeLayer)(`query { protected }`))
 
       expect(result.errors).toBeDefined()
       expect(result.errors![0].message).toContain("AuthPrincipal")
@@ -401,9 +381,7 @@ describe("ResolverContext", () => {
         })
         .buildSchema()
 
-      const guestResult = await Effect.runPromise(
-        execute(schema, storeLayer)(`query { greeting }`)
-      )
+      const guestResult = await Effect.runPromise(execute(schema, storeLayer)(`query { greeting }`))
       expect(guestResult.data).toEqual({ greeting: "Hello, Guest!" })
 
       const authResult = await Effect.runPromise(
@@ -456,7 +434,10 @@ describe("ResolverContext", () => {
         .buildSchema()
 
       const result = await Effect.runPromise(
-        execute(schema, storeLayer)(`
+        execute(
+          schema,
+          storeLayer
+        )(`
           query { contextInfo { userId tenantId requestId } }
         `)
       )
@@ -493,15 +474,9 @@ describe("ResolverContext", () => {
         .buildSchema()
 
       // Each request should start fresh
-      const result1 = await Effect.runPromise(
-        execute(schema, storeLayer)(`query { increment }`)
-      )
-      const result2 = await Effect.runPromise(
-        execute(schema, storeLayer)(`query { increment }`)
-      )
-      const result3 = await Effect.runPromise(
-        execute(schema, storeLayer)(`query { increment }`)
-      )
+      const result1 = await Effect.runPromise(execute(schema, storeLayer)(`query { increment }`))
+      const result2 = await Effect.runPromise(execute(schema, storeLayer)(`query { increment }`))
+      const result3 = await Effect.runPromise(execute(schema, storeLayer)(`query { increment }`))
 
       // Each should be 1 because storeLayer creates a fresh store per request
       expect(result1.data).toEqual({ increment: 1 })

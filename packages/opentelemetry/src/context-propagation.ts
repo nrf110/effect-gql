@@ -135,18 +135,14 @@ export const extractTraceContext: Effect.Effect<
   const headers = request.headers
 
   // Get traceparent header (case-insensitive)
-  const traceparentKey = Object.keys(headers).find(
-    (k) => k.toLowerCase() === TRACEPARENT_HEADER
-  )
+  const traceparentKey = Object.keys(headers).find((k) => k.toLowerCase() === TRACEPARENT_HEADER)
 
   if (!traceparentKey) {
     return null
   }
 
   const traceparentValue = headers[traceparentKey]
-  const traceparent = Array.isArray(traceparentValue)
-    ? traceparentValue[0]
-    : traceparentValue
+  const traceparent = Array.isArray(traceparentValue) ? traceparentValue[0] : traceparentValue
 
   if (!traceparent) {
     return null
@@ -158,15 +154,11 @@ export const extractTraceContext: Effect.Effect<
   }
 
   // Get optional tracestate header
-  const tracestateKey = Object.keys(headers).find(
-    (k) => k.toLowerCase() === TRACESTATE_HEADER
-  )
+  const tracestateKey = Object.keys(headers).find((k) => k.toLowerCase() === TRACESTATE_HEADER)
 
   if (tracestateKey) {
     const tracestateValue = headers[tracestateKey]
-    const tracestate = Array.isArray(tracestateValue)
-      ? tracestateValue[0]
-      : tracestateValue
+    const tracestate = Array.isArray(tracestateValue) ? tracestateValue[0] : tracestateValue
 
     if (tracestate) {
       return { ...context, traceState: tracestate }

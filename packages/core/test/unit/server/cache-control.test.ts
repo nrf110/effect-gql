@@ -1,7 +1,14 @@
 import { describe, it, expect } from "vitest"
 import { Effect } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLSchema, GraphQLObjectType, GraphQLString, GraphQLNonNull, parse, Kind } from "graphql"
+import {
+  GraphQLSchema,
+  GraphQLObjectType,
+  GraphQLString,
+  GraphQLNonNull,
+  parse,
+  Kind,
+} from "graphql"
 import type { OperationDefinitionNode } from "graphql"
 import {
   computeCachePolicy,
@@ -87,9 +94,7 @@ describe("cache-control.ts", () => {
       const document = parse("{ publicData }")
       const operation = parseOperation("{ publicData }")
 
-      const cacheHints: CacheHintMap = new Map([
-        ["Query.publicData", { maxAge: 3600 }],
-      ])
+      const cacheHints: CacheHintMap = new Map([["Query.publicData", { maxAge: 3600 }]])
 
       const result = await Effect.runPromise(
         computeCachePolicy({
@@ -110,9 +115,7 @@ describe("cache-control.ts", () => {
       const document = parse("{ user { id name } }")
       const operation = parseOperation("{ user { id name } }")
 
-      const cacheHints: CacheHintMap = new Map([
-        ["User", { maxAge: 1800 }],
-      ])
+      const cacheHints: CacheHintMap = new Map([["User", { maxAge: 1800 }]])
 
       const result = await Effect.runPromise(
         computeCachePolicy({
@@ -216,9 +219,7 @@ describe("cache-control.ts", () => {
       const document = parse("{ __typename publicData }")
       const operation = parseOperation("{ __typename publicData }")
 
-      const cacheHints: CacheHintMap = new Map([
-        ["Query.publicData", { maxAge: 3600 }],
-      ])
+      const cacheHints: CacheHintMap = new Map([["Query.publicData", { maxAge: 3600 }]])
 
       const result = await Effect.runPromise(
         computeCachePolicy({
@@ -247,18 +248,10 @@ describe("cache-control.ts", () => {
 
     it("should compute cache policy from query string", async () => {
       const schema = createTestSchema()
-      const cacheHints: CacheHintMap = new Map([
-        ["Query.hello", { maxAge: 3600 }],
-      ])
+      const cacheHints: CacheHintMap = new Map([["Query.hello", { maxAge: 3600 }]])
 
       const result = await Effect.runPromise(
-        computeCachePolicyFromQuery(
-          "{ hello }",
-          undefined,
-          schema,
-          cacheHints,
-          {}
-        )
+        computeCachePolicyFromQuery("{ hello }", undefined, schema, cacheHints, {})
       )
 
       expect(result.maxAge).toBe(3600)
@@ -267,18 +260,10 @@ describe("cache-control.ts", () => {
 
     it("should handle named operations", async () => {
       const schema = createTestSchema()
-      const cacheHints: CacheHintMap = new Map([
-        ["Query.hello", { maxAge: 3600 }],
-      ])
+      const cacheHints: CacheHintMap = new Map([["Query.hello", { maxAge: 3600 }]])
 
       const result = await Effect.runPromise(
-        computeCachePolicyFromQuery(
-          "query GetHello { hello }",
-          "GetHello",
-          schema,
-          cacheHints,
-          {}
-        )
+        computeCachePolicyFromQuery("query GetHello { hello }", "GetHello", schema, cacheHints, {})
       )
 
       expect(result.maxAge).toBe(3600)

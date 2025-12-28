@@ -38,8 +38,8 @@ describe("schema-builder.ts", () => {
   // ==========================================================================
   describe("Pipeable interface", () => {
     it("should support pipe() with single operation", () => {
-      const builder = GraphQLSchemaBuilder.empty.pipe(
-        (b) => b.query("hello", {
+      const builder = GraphQLSchemaBuilder.empty.pipe((b) =>
+        b.query("hello", {
           type: S.String,
           resolve: () => Effect.succeed("world"),
         })
@@ -50,7 +50,7 @@ describe("schema-builder.ts", () => {
     it("should support pipe() with multiple operations", () => {
       const builder = GraphQLSchemaBuilder.empty.pipe(
         (b) => b.query("a", { type: S.String, resolve: () => Effect.succeed("a") }),
-        (b) => b.query("b", { type: S.String, resolve: () => Effect.succeed("b") }),
+        (b) => b.query("b", { type: S.String, resolve: () => Effect.succeed("b") })
       )
       const schema = builder.buildSchema()
       const queryType = schema.getQueryType()!
@@ -198,12 +198,10 @@ describe("schema-builder.ts", () => {
 
     it("should infer name from TaggedStruct", () => {
       const UserSchema = S.TaggedStruct("User", { id: S.String })
-      const builder = GraphQLSchemaBuilder.empty
-        .objectType({ schema: UserSchema })
-        .query("user", {
-          type: UserSchema,
-          resolve: () => Effect.succeed({ _tag: "User" as const, id: "1" }),
-        })
+      const builder = GraphQLSchemaBuilder.empty.objectType({ schema: UserSchema }).query("user", {
+        type: UserSchema,
+        resolve: () => Effect.succeed({ _tag: "User" as const, id: "1" }),
+      })
 
       const schema = builder.buildSchema()
       const userType = schema.getType("User")
@@ -254,18 +252,18 @@ describe("schema-builder.ts", () => {
           fields: {
             fullName: {
               type: S.String,
-              resolve: (parent) =>
-                Effect.succeed(`${parent.firstName} ${parent.lastName}`),
+              resolve: (parent) => Effect.succeed(`${parent.firstName} ${parent.lastName}`),
             },
           },
         })
         .query("user", {
           type: UserSchema,
-          resolve: () => Effect.succeed({
-            id: "1",
-            firstName: "John",
-            lastName: "Doe",
-          }),
+          resolve: () =>
+            Effect.succeed({
+              id: "1",
+              firstName: "John",
+              lastName: "Doe",
+            }),
         })
 
       const schema = builder.buildSchema()
@@ -308,8 +306,7 @@ describe("schema-builder.ts", () => {
 
     it("should use default resolveType (uses _tag)", () => {
       const NodeSchema = S.Struct({ id: S.String })
-      const builder = GraphQLSchemaBuilder.empty
-        .interfaceType({ name: "Node", schema: NodeSchema })
+      const builder = GraphQLSchemaBuilder.empty.interfaceType({ name: "Node", schema: NodeSchema })
 
       // This tests internal behavior - the interface should be created
       const schema = builder
@@ -568,8 +565,7 @@ describe("schema-builder.ts", () => {
         .objectType({ name: "User", schema: UserSchema })
         .field("User", "greeting", {
           type: S.String,
-          resolve: (parent: { name: string }) =>
-            Effect.succeed(`Hello, ${parent.name}!`),
+          resolve: (parent: { name: string }) => Effect.succeed(`Hello, ${parent.name}!`),
         })
         .query("user", {
           type: UserSchema,
@@ -661,8 +657,7 @@ describe("schema-builder.ts", () => {
     })
 
     it("should not include Query type when no queries", () => {
-      const builder = GraphQLSchemaBuilder.empty
-        .enumType({ name: "Status", values: ["A"] })
+      const builder = GraphQLSchemaBuilder.empty.enumType({ name: "Status", values: ["A"] })
 
       const schema = builder.buildSchema()
       // getQueryType returns undefined when there's no query type

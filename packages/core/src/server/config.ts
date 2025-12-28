@@ -54,9 +54,7 @@ export interface GraphQLRouterConfigInput {
   readonly cacheControl?: CacheControlConfig
 }
 
-export const normalizeConfig = (
-  input: GraphQLRouterConfigInput = {}
-): GraphQLRouterConfig => {
+export const normalizeConfig = (input: GraphQLRouterConfigInput = {}): GraphQLRouterConfig => {
   const path = input.path ?? defaultConfig.path
 
   let graphiql: false | GraphiQLConfig = false
@@ -96,37 +94,31 @@ export const normalizeConfig = (
  * - GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE: Default maxAge for root fields (default: 0)
  * - GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE: Default scope - PUBLIC or PRIVATE (default: PUBLIC)
  */
-export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
-  Config.all({
-    path: Config.string("GRAPHQL_PATH").pipe(Config.withDefault("/graphql")),
-    introspection: Config.boolean("GRAPHQL_INTROSPECTION").pipe(
-      Config.withDefault(true)
-    ),
-    graphiqlEnabled: Config.boolean("GRAPHIQL_ENABLED").pipe(
-      Config.withDefault(false)
-    ),
-    graphiqlPath: Config.string("GRAPHIQL_PATH").pipe(
-      Config.withDefault("/graphiql")
-    ),
-    graphiqlEndpoint: Config.string("GRAPHIQL_ENDPOINT").pipe(Config.option),
-    maxDepth: Config.number("GRAPHQL_MAX_DEPTH").pipe(Config.option),
-    maxComplexity: Config.number("GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
-    maxAliases: Config.number("GRAPHQL_MAX_ALIASES").pipe(Config.option),
-    maxFields: Config.number("GRAPHQL_MAX_FIELDS").pipe(Config.option),
-    defaultFieldComplexity: Config.number("GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
-      Config.withDefault(1)
-    ),
-    cacheControlEnabled: Config.boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(
-      Config.withDefault(false)
-    ),
-    cacheControlDefaultMaxAge: Config.number("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(
-      Config.withDefault(0)
-    ),
-    cacheControlDefaultScope: Config.string("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
-      Config.withDefault("PUBLIC")
-    ),
-  }).pipe(
-    Config.map(({
+export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> = Config.all({
+  path: Config.string("GRAPHQL_PATH").pipe(Config.withDefault("/graphql")),
+  introspection: Config.boolean("GRAPHQL_INTROSPECTION").pipe(Config.withDefault(true)),
+  graphiqlEnabled: Config.boolean("GRAPHIQL_ENABLED").pipe(Config.withDefault(false)),
+  graphiqlPath: Config.string("GRAPHIQL_PATH").pipe(Config.withDefault("/graphiql")),
+  graphiqlEndpoint: Config.string("GRAPHIQL_ENDPOINT").pipe(Config.option),
+  maxDepth: Config.number("GRAPHQL_MAX_DEPTH").pipe(Config.option),
+  maxComplexity: Config.number("GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
+  maxAliases: Config.number("GRAPHQL_MAX_ALIASES").pipe(Config.option),
+  maxFields: Config.number("GRAPHQL_MAX_FIELDS").pipe(Config.option),
+  defaultFieldComplexity: Config.number("GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
+    Config.withDefault(1)
+  ),
+  cacheControlEnabled: Config.boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(
+    Config.withDefault(false)
+  ),
+  cacheControlDefaultMaxAge: Config.number("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(
+    Config.withDefault(0)
+  ),
+  cacheControlDefaultScope: Config.string("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
+    Config.withDefault("PUBLIC")
+  ),
+}).pipe(
+  Config.map(
+    ({
       path,
       introspection,
       graphiqlEnabled,
@@ -154,9 +146,7 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
         graphiql: graphiqlEnabled
           ? {
               path: graphiqlPath,
-              endpoint: Option.isSome(graphiqlEndpoint)
-                ? graphiqlEndpoint.value
-                : path,
+              endpoint: Option.isSome(graphiqlEndpoint) ? graphiqlEndpoint.value : path,
             }
           : (false as const),
         complexity: hasComplexity
@@ -172,10 +162,13 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> =
           ? {
               enabled: true,
               defaultMaxAge: cacheControlDefaultMaxAge,
-              defaultScope: (cacheControlDefaultScope === "PRIVATE" ? "PRIVATE" : "PUBLIC") as import("../builder/types").CacheControlScope,
+              defaultScope: (cacheControlDefaultScope === "PRIVATE"
+                ? "PRIVATE"
+                : "PUBLIC") as import("../builder/types").CacheControlScope,
               calculateHttpHeaders: true,
             }
           : undefined,
       }
-    })
+    }
   )
+)

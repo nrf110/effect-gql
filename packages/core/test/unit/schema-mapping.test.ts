@@ -21,8 +21,7 @@ import {
 } from "../../src/schema-mapping"
 
 // Helper to unwrap NonNull types
-const unwrapNonNull = (type: any): any =>
-  isNonNullType(type) ? type.ofType : type
+const unwrapNonNull = (type: any): any => (isNonNullType(type) ? type.ofType : type)
 
 // Helper to get type name
 const getTypeName = (type: any): string => {

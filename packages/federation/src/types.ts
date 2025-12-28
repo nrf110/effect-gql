@@ -76,7 +76,9 @@ export interface FederatedSchemaResult {
 /**
  * Convert a FederationDirective to a DirectiveApplication
  */
-export function toDirectiveApplication(directive: FederationDirective): import("@effect-gql/core").DirectiveApplication {
+export function toDirectiveApplication(
+  directive: FederationDirective
+): import("@effect-gql/core").DirectiveApplication {
   switch (directive._tag) {
     case "key":
       return {

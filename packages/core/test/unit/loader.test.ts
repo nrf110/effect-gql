@@ -307,11 +307,10 @@ describe("LoaderRegistry.load (single)", () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const loaders = yield* registry.Service
-        return yield* Effect.tryPromise(() => loaders.UserById.load("nonexistent"))
-          .pipe(
-            Effect.map(() => ({ error: null })),
-            Effect.catchAll((e) => Effect.succeed({ error: e }))
-          )
+        return yield* Effect.tryPromise(() => loaders.UserById.load("nonexistent")).pipe(
+          Effect.map(() => ({ error: null })),
+          Effect.catchAll((e) => Effect.succeed({ error: e }))
+        )
       }).pipe(Effect.provide(registry.toLayer()))
     )
 
@@ -373,10 +372,7 @@ describe("LoaderRegistry.load (grouped)", () => {
       Effect.gen(function* () {
         const loaders = yield* registry.Service
         const [posts1, posts2] = yield* Effect.promise(() =>
-          Promise.all([
-            loaders.PostsByAuthorId.load("1"),
-            loaders.PostsByAuthorId.load("2"),
-          ])
+          Promise.all([loaders.PostsByAuthorId.load("1"), loaders.PostsByAuthorId.load("2")])
         )
         return { posts1, posts2 }
       }).pipe(Effect.provide(registry.toLayer()))
@@ -419,12 +415,10 @@ describe("LoaderRegistry.loadMany", () => {
     })
 
     const result = await Effect.runPromise(
-      registry
-        .loadMany("UserById", ["1", "nonexistent"])
-        .pipe(
-          Effect.catchAll((e) => Effect.succeed({ error: e })),
-          Effect.provide(registry.toLayer())
-        )
+      registry.loadMany("UserById", ["1", "nonexistent"]).pipe(
+        Effect.catchAll((e) => Effect.succeed({ error: e })),
+        Effect.provide(registry.toLayer())
+      )
     )
 
     expect(result).toHaveProperty("error")
@@ -628,15 +622,13 @@ describe("Service integration", () => {
     })
 
     const dbLayer = Layer.succeed(DatabaseService, {
-      getUsersByIds: (ids) =>
-        Effect.succeed(testUsers.filter((u) => ids.includes(u.id))),
+      getUsersByIds: (ids) => Effect.succeed(testUsers.filter((u) => ids.includes(u.id))),
     })
 
     const result = await Effect.runPromise(
-      registry.load("UserById", "1").pipe(
-        Effect.provide(registry.toLayer()),
-        Effect.provide(dbLayer)
-      )
+      registry
+        .load("UserById", "1")
+        .pipe(Effect.provide(registry.toLayer()), Effect.provide(dbLayer))
     )
 
     expect(result).toEqual({ id: "1", name: "Alice" })
@@ -661,11 +653,10 @@ describe("Service integration", () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const loaders = yield* registry.Service
-        return yield* Effect.tryPromise(() => loaders.UserById.load("1"))
-          .pipe(
-            Effect.map(() => ({ error: null })),
-            Effect.catchAll((e) => Effect.succeed({ error: e }))
-          )
+        return yield* Effect.tryPromise(() => loaders.UserById.load("1")).pipe(
+          Effect.map(() => ({ error: null })),
+          Effect.catchAll((e) => Effect.succeed({ error: e }))
+        )
       }).pipe(Effect.provide(registry.toLayer()), Effect.provide(failingDbLayer))
     )
 
@@ -691,14 +682,10 @@ describe("Fresh instances per layer", () => {
     })
 
     // First request
-    await Effect.runPromise(
-      registry.load("UserById", "1").pipe(Effect.provide(registry.toLayer()))
-    )
+    await Effect.runPromise(registry.load("UserById", "1").pipe(Effect.provide(registry.toLayer())))
 
     // Second request with new layer - should not use cache from first
-    await Effect.runPromise(
-      registry.load("UserById", "1").pipe(Effect.provide(registry.toLayer()))
-    )
+    await Effect.runPromise(registry.load("UserById", "1").pipe(Effect.provide(registry.toLayer())))
 
     // Each toLayer() call creates fresh DataLoader instances
     expect(batchSpy).toHaveBeenCalledTimes(2)

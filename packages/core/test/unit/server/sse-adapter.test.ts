@@ -8,10 +8,7 @@ import {
   GraphQLNonNull,
   GraphQLInt,
 } from "graphql"
-import {
-  makeGraphQLSSEHandler,
-  makeSSESubscriptionStream,
-} from "../../../src/server/sse-adapter"
+import { makeGraphQLSSEHandler, makeSSESubscriptionStream } from "../../../src/server/sse-adapter"
 import {
   formatSSEMessage,
   formatNextEvent,
@@ -19,11 +16,7 @@ import {
   formatCompleteEvent,
   type SSEEvent,
 } from "../../../src/server/sse-types"
-import {
-  GraphQLSchemaBuilder,
-  query,
-  subscription,
-} from "../../../src/builder"
+import { GraphQLSchemaBuilder, query, subscription } from "../../../src/builder"
 
 describe("sse-adapter.ts", () => {
   describe("formatSSEMessage", () => {
@@ -258,10 +251,7 @@ describe("sse-adapter.ts", () => {
       const schema = createTestSchema()
       const handler = makeGraphQLSSEHandler(schema, Layer.empty)
 
-      const stream = handler(
-        { query: "subscription { counter }" },
-        new Headers()
-      )
+      const stream = handler({ query: "subscription { counter }" }, new Headers())
 
       const events: SSEEvent[] = []
       await Effect.runPromise(
@@ -291,10 +281,7 @@ describe("sse-adapter.ts", () => {
       })
 
       const headers = new Headers({ authorization: "Bearer token" })
-      const stream = handler(
-        { query: "subscription { counter }" },
-        headers
-      )
+      const stream = handler({ query: "subscription { counter }" }, headers)
 
       const events: SSEEvent[] = []
       await Effect.runPromise(
@@ -353,14 +340,9 @@ describe("sse-adapter.ts", () => {
         },
       })
 
-      const stream = handler(
-        { query: "subscription { counter }" },
-        new Headers()
-      )
+      const stream = handler({ query: "subscription { counter }" }, new Headers())
 
-      await Effect.runPromise(
-        Stream.runCollect(stream).pipe(Effect.map(() => {}))
-      )
+      await Effect.runPromise(Stream.runCollect(stream).pipe(Effect.map(() => {})))
 
       expect(subscribeCalled).toBe(true)
       expect(subscribeContext.request.query).toBe("subscription { counter }")
@@ -377,14 +359,9 @@ describe("sse-adapter.ts", () => {
         },
       })
 
-      const stream = handler(
-        { query: "subscription { counter }" },
-        new Headers()
-      )
+      const stream = handler({ query: "subscription { counter }" }, new Headers())
 
-      await Effect.runPromise(
-        Stream.runCollect(stream).pipe(Effect.map(() => {}))
-      )
+      await Effect.runPromise(Stream.runCollect(stream).pipe(Effect.map(() => {})))
 
       expect(completeCalled).toBe(true)
     })
@@ -396,10 +373,7 @@ describe("sse-adapter.ts", () => {
         onConnect: () => Effect.fail(new Error("Unauthorized")),
       })
 
-      const stream = handler(
-        { query: "subscription { counter }" },
-        new Headers()
-      )
+      const stream = handler({ query: "subscription { counter }" }, new Headers())
 
       const events: SSEEvent[] = []
       await Effect.runPromise(
@@ -443,14 +417,9 @@ describe("sse-adapter.ts", () => {
         onConnect: () => Effect.succeed({ userId: "user-123", role: "admin" }),
       })
 
-      const stream = handler(
-        { query: "subscription { counter }" },
-        new Headers()
-      )
+      const stream = handler({ query: "subscription { counter }" }, new Headers())
 
-      await Effect.runPromise(
-        Stream.runCollect(stream).pipe(Effect.map(() => {}))
-      )
+      await Effect.runPromise(Stream.runCollect(stream).pipe(Effect.map(() => {})))
 
       expect(receivedContext.userId).toBe("user-123")
       expect(receivedContext.role).toBe("admin")
@@ -580,10 +549,7 @@ describe("sse-adapter.ts", () => {
         },
       })
 
-      const stream = handler(
-        { query: "subscription { tick { count } }" },
-        new Headers()
-      )
+      const stream = handler({ query: "subscription { tick { count } }" }, new Headers())
 
       const events: SSEEvent[] = []
       await Effect.runPromise(
@@ -695,10 +661,7 @@ describe("sse-adapter.ts", () => {
       const schema = builder.buildSchema()
       const handler = makeGraphQLSSEHandler(schema, Layer.empty)
 
-      const stream = handler(
-        { query: "subscription { tick { count } }" },
-        new Headers()
-      )
+      const stream = handler({ query: "subscription { tick { count } }" }, new Headers())
 
       const events: SSEEvent[] = []
       await Effect.runPromise(

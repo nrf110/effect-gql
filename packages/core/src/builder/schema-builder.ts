@@ -27,7 +27,12 @@ import type {
   CacheHint,
 } from "./types"
 import type { GraphQLExtension, ExecutionArgs } from "../extensions"
-import type { GraphQLResolveInfo, DocumentNode, ExecutionResult, GraphQLError as GQLError } from "graphql"
+import type {
+  GraphQLResolveInfo,
+  DocumentNode,
+  ExecutionResult,
+  GraphQLError as GQLError,
+} from "graphql"
 import type { FieldComplexity, FieldComplexityMap } from "../server/complexity"
 import type { CacheHintMap } from "../server/cache-control"
 import {
@@ -56,8 +61,8 @@ interface BuilderState {
   unions: Map<string, UnionRegistration>
   inputs: Map<string, InputTypeRegistration>
   directives: Map<string, DirectiveRegistration>
-  middlewares: readonly MiddlewareRegistration[]  // Array to preserve registration order
-  extensions: readonly GraphQLExtension<any>[]    // Array to preserve registration order
+  middlewares: readonly MiddlewareRegistration[] // Array to preserve registration order
+  extensions: readonly GraphQLExtension<any>[] // Array to preserve registration order
   queries: Map<string, FieldRegistration>
   mutations: Map<string, FieldRegistration>
   subscriptions: Map<string, SubscriptionFieldRegistration>
@@ -92,11 +97,51 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   pipe<A, B>(this: A, ab: (a: A) => B): B
   pipe<A, B, C>(this: A, ab: (a: A) => B, bc: (b: B) => C): C
   pipe<A, B, C, D>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D): D
-  pipe<A, B, C, D, E>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E): E
-  pipe<A, B, C, D, E, F>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E, ef: (e: E) => F): F
-  pipe<A, B, C, D, E, F, G>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E, ef: (e: E) => F, fg: (f: F) => G): G
-  pipe<A, B, C, D, E, F, G, H>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E, ef: (e: E) => F, fg: (f: F) => G, gh: (g: G) => H): H
-  pipe<A, B, C, D, E, F, G, H, I>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E, ef: (e: E) => F, fg: (f: F) => G, gh: (g: G) => H, hi: (h: H) => I): I
+  pipe<A, B, C, D, E>(
+    this: A,
+    ab: (a: A) => B,
+    bc: (b: B) => C,
+    cd: (c: C) => D,
+    de: (d: D) => E
+  ): E
+  pipe<A, B, C, D, E, F>(
+    this: A,
+    ab: (a: A) => B,
+    bc: (b: B) => C,
+    cd: (c: C) => D,
+    de: (d: D) => E,
+    ef: (e: E) => F
+  ): F
+  pipe<A, B, C, D, E, F, G>(
+    this: A,
+    ab: (a: A) => B,
+    bc: (b: B) => C,
+    cd: (c: C) => D,
+    de: (d: D) => E,
+    ef: (e: E) => F,
+    fg: (f: F) => G
+  ): G
+  pipe<A, B, C, D, E, F, G, H>(
+    this: A,
+    ab: (a: A) => B,
+    bc: (b: B) => C,
+    cd: (c: C) => D,
+    de: (d: D) => E,
+    ef: (e: E) => F,
+    fg: (f: F) => G,
+    gh: (g: G) => H
+  ): H
+  pipe<A, B, C, D, E, F, G, H, I>(
+    this: A,
+    ab: (a: A) => B,
+    bc: (b: B) => C,
+    cd: (c: C) => D,
+    de: (d: D) => E,
+    ef: (e: E) => F,
+    fg: (f: F) => G,
+    gh: (g: G) => H,
+    hi: (h: H) => I
+  ): I
   pipe() {
     return Pipeable.pipeArguments(this, arguments)
   }
@@ -237,26 +282,31 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
      * Can be overridden by field-level cacheControl.
      */
     cacheControl?: CacheHint
-    fields?: Record<string, {
-      type: S.Schema<any, any, any>
-      args?: S.Schema<any, any, any>
-      description?: string
-      directives?: readonly DirectiveApplication[]
-      /**
-       * Complexity cost of this field for query complexity limiting.
-       */
-      complexity?: FieldComplexity
-      /**
-       * Cache control hint for this field.
-       */
-      cacheControl?: CacheHint
-      resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
-    }>
+    fields?: Record<
+      string,
+      {
+        type: S.Schema<any, any, any>
+        args?: S.Schema<any, any, any>
+        description?: string
+        directives?: readonly DirectiveApplication[]
+        /**
+         * Complexity cost of this field for query complexity limiting.
+         */
+        complexity?: FieldComplexity
+        /**
+         * Cache control hint for this field.
+         */
+        cacheControl?: CacheHint
+        resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
+      }
+    >
   }): GraphQLSchemaBuilder<R | R2> {
     const { schema, implements: implementsInterfaces, directives, cacheControl, fields } = config
     const name = config.name ?? getSchemaName(schema)
     if (!name) {
-      throw new Error("objectType requires a name. Either provide one explicitly or use a TaggedStruct/TaggedClass/Schema.Class")
+      throw new Error(
+        "objectType requires a name. Either provide one explicitly or use a TaggedStruct/TaggedClass/Schema.Class"
+      )
     }
 
     const newTypes = new Map(this.state.types)
@@ -291,7 +341,9 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     const { schema, resolveType, directives } = config
     const name = config.name ?? getSchemaName(schema)
     if (!name) {
-      throw new Error("interfaceType requires a name. Either provide one explicitly or use a TaggedStruct/TaggedClass/Schema.Class")
+      throw new Error(
+        "interfaceType requires a name. Either provide one explicitly or use a TaggedStruct/TaggedClass/Schema.Class"
+      )
     }
 
     const newInterfaces = new Map(this.state.interfaces)
@@ -352,7 +404,9 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     const { schema, description, directives } = config
     const name = config.name ?? getSchemaName(schema)
     if (!name) {
-      throw new Error("inputType requires a name. Either provide one explicitly or use a TaggedStruct/TaggedClass/Schema.Class")
+      throw new Error(
+        "inputType requires a name. Either provide one explicitly or use a TaggedStruct/TaggedClass/Schema.Class"
+      )
     }
 
     const newInputs = new Map(this.state.inputs)
@@ -368,7 +422,9 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     description?: string
     locations: readonly DirectiveLocation[]
     args?: S.Schema<Args, any, any>
-    apply?: (args: Args) => <A, E, R3>(effect: Effect.Effect<A, E, R3>) => Effect.Effect<A, E, R2 | R3>
+    apply?: (
+      args: Args
+    ) => <A, E, R3>(effect: Effect.Effect<A, E, R3>) => Effect.Effect<A, E, R2 | R3>
   }): GraphQLSchemaBuilder<R | R2> {
     const newDirectives = new Map(this.state.directives)
     newDirectives.set(config.name, config as DirectiveRegistration)
@@ -445,7 +501,10 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     name: string
     description?: string
     onParse?: (source: string, document: DocumentNode) => Effect.Effect<void, never, R2>
-    onValidate?: (document: DocumentNode, errors: readonly GQLError[]) => Effect.Effect<void, never, R2>
+    onValidate?: (
+      document: DocumentNode,
+      errors: readonly GQLError[]
+    ) => Effect.Effect<void, never, R2>
     onExecuteStart?: (args: ExecutionArgs) => Effect.Effect<void, never, R2>
     onExecuteEnd?: (result: ExecutionResult) => Effect.Effect<void, never, R2>
   }): GraphQLSchemaBuilder<R | R2> {
@@ -654,12 +713,15 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       for (const value of reg.values) {
         enumValues[value] = { value }
       }
-      registry.set(name, new GraphQLEnumType({
+      registry.set(
         name,
-        values: enumValues,
-        description: reg.description,
-        extensions: reg.directives ? { directives: reg.directives } : undefined,
-      }))
+        new GraphQLEnumType({
+          name,
+          values: enumValues,
+          description: reg.description,
+          extensions: reg.directives ? { directives: reg.directives } : undefined,
+        })
+      )
     }
 
     return registry
@@ -677,14 +739,15 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       const inputType = new GraphQLInputObjectType({
         name,
         description: reg.description,
-        fields: () => schemaToInputFields(
-          reg.schema,
-          enumRegistry,
-          registry,
-          this.state.inputs,
-          this.state.enums,
-          cache
-        ),
+        fields: () =>
+          schemaToInputFields(
+            reg.schema,
+            enumRegistry,
+            registry,
+            this.state.inputs,
+            this.state.enums,
+            cache
+          ),
         extensions: reg.directives ? { directives: reg.directives } : undefined,
       })
       registry.set(name, inputType)
@@ -768,9 +831,8 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
 
     // Build object types with lazy field builders (allows circular references)
     for (const [typeName, typeReg] of this.state.types) {
-      const implementedInterfaces = typeReg.implements?.map(
-        (name) => interfaceRegistry.get(name)!
-      ).filter(Boolean) ?? []
+      const implementedInterfaces =
+        typeReg.implements?.map((name) => interfaceRegistry.get(name)!).filter(Boolean) ?? []
 
       const graphqlType = new GraphQLObjectType({
         name: typeName,
@@ -876,9 +938,10 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
         ...Array.from(registries.typeRegistry.values()),
         ...Array.from(registries.unionRegistry.values()),
       ],
-      directives: registries.directiveRegistry.size > 0
-        ? [...Array.from(registries.directiveRegistry.values())]
-        : undefined,
+      directives:
+        registries.directiveRegistry.size > 0
+          ? [...Array.from(registries.directiveRegistry.values())]
+          : undefined,
     }
 
     if (Object.keys(registries.queryFields).length > 0) {

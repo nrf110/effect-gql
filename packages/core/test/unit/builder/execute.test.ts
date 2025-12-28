@@ -28,11 +28,7 @@ describe("execute.ts", () => {
         })
         .buildSchema()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty)(
-          `query { hello }`
-        )
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty)(`query { hello }`))
 
       expect(result.data).toEqual({ hello: "world" })
       expect(result.errors).toBeUndefined()
@@ -48,10 +44,9 @@ describe("execute.ts", () => {
         .buildSchema()
 
       const result = await Effect.runPromise(
-        execute(schema, Layer.empty)(
-          `query Greet($name: String!) { greet(name: $name) }`,
-          { name: "World" }
-        )
+        execute(schema, Layer.empty)(`query Greet($name: String!) { greet(name: $name) }`, {
+          name: "World",
+        })
       )
 
       expect(result.data).toEqual({ greet: "Hello, World!" })
@@ -64,11 +59,7 @@ describe("execute.ts", () => {
         .buildSchema()
 
       const result = await Effect.runPromise(
-        execute(schema, Layer.empty)(
-          `query GetA { a } query GetB { b }`,
-          undefined,
-          "GetA"
-        )
+        execute(schema, Layer.empty)(`query GetA { a } query GetB { b }`, undefined, "GetA")
       )
 
       expect(result.data).toEqual({ a: "a" })
@@ -91,11 +82,7 @@ describe("execute.ts", () => {
         })
         .buildSchema()
 
-      const result = await Effect.runPromise(
-        execute(schema, testLayer)(
-          `query { serviceValue }`
-        )
-      )
+      const result = await Effect.runPromise(execute(schema, testLayer)(`query { serviceValue }`))
 
       expect(result.data).toEqual({ serviceValue: "from-service" })
     })
@@ -123,12 +110,8 @@ describe("execute.ts", () => {
       // Reset counter
       callCount = 0
 
-      const result1 = await Effect.runPromise(
-        execute(schema, countingLayer)(`query { value }`)
-      )
-      const result2 = await Effect.runPromise(
-        execute(schema, countingLayer)(`query { value }`)
-      )
+      const result1 = await Effect.runPromise(execute(schema, countingLayer)(`query { value }`))
+      const result2 = await Effect.runPromise(execute(schema, countingLayer)(`query { value }`))
 
       expect(result1.data).toEqual({ value: "call-1" })
       expect(result2.data).toEqual({ value: "call-2" })
@@ -147,11 +130,7 @@ describe("execute.ts", () => {
         })
         .buildSchema()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty)(
-          `query { fail }`
-        )
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty)(`query { fail }`))
 
       expect(result.errors).toBeDefined()
       expect(result.errors![0].message).toContain("Resolver error")
@@ -165,11 +144,7 @@ describe("execute.ts", () => {
         })
         .buildSchema()
 
-      const result = await Effect.runPromise(
-        execute(schema, Layer.empty)(
-          `query { invalid syntax`
-        )
-      )
+      const result = await Effect.runPromise(execute(schema, Layer.empty)(`query { invalid syntax`))
 
       expect(result.errors).toBeDefined()
     })
@@ -183,9 +158,7 @@ describe("execute.ts", () => {
         .buildSchema()
 
       const result = await Effect.runPromise(
-        execute(schema, Layer.empty)(
-          `query { nonExistentField }`
-        )
+        execute(schema, Layer.empty)(`query { nonExistentField }`)
       )
 
       expect(result.errors).toBeDefined()
@@ -207,9 +180,7 @@ describe("execute.ts", () => {
         .buildSchema()
 
       const result = await Effect.runPromise(
-        execute(schema, Layer.empty)(
-          `mutation { createItem(name: "test") }`
-        )
+        execute(schema, Layer.empty)(`mutation { createItem(name: "test") }`)
       )
 
       expect(result.data).toEqual({ createItem: "Created: test" })

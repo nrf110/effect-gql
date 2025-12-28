@@ -10,7 +10,12 @@ import {
   type DirectiveApplication,
 } from "@effect-gql/core"
 import { AnyScalar, FieldSetScalar } from "./scalars"
-import { createEntityUnion, createEntitiesResolver, createServiceType, createServiceResolver } from "./entities"
+import {
+  createEntityUnion,
+  createEntitiesResolver,
+  createServiceType,
+  createServiceResolver,
+} from "./entities"
 import type { EntityRegistration, FederatedSchemaConfig, FederatedSchemaResult } from "./types"
 import { toDirectiveApplication } from "./types"
 
@@ -58,8 +63,21 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
   pipe<A, B>(this: A, ab: (a: A) => B): B
   pipe<A, B, C>(this: A, ab: (a: A) => B, bc: (b: B) => C): C
   pipe<A, B, C, D>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D): D
-  pipe<A, B, C, D, E>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E): E
-  pipe<A, B, C, D, E, F>(this: A, ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D, de: (d: D) => E, ef: (e: E) => F): F
+  pipe<A, B, C, D, E>(
+    this: A,
+    ab: (a: A) => B,
+    bc: (b: B) => C,
+    cd: (c: C) => D,
+    de: (d: D) => E
+  ): E
+  pipe<A, B, C, D, E, F>(
+    this: A,
+    ab: (a: A) => B,
+    bc: (b: B) => C,
+    cd: (c: C) => D,
+    de: (d: D) => E,
+    ef: (e: E) => F
+  ): F
   pipe() {
     return Pipeable.pipeArguments(this, arguments)
   }
@@ -127,13 +145,15 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
     // Build directive applications for the object type
     const typeDirectives: DirectiveApplication[] = [
       // Add @key directives
-      ...keys.map((k): DirectiveApplication => ({
-        name: "key",
-        args: {
-          fields: k.fields,
-          ...(k.resolvable !== undefined ? { resolvable: k.resolvable } : {}),
-        },
-      })),
+      ...keys.map(
+        (k): DirectiveApplication => ({
+          name: "key",
+          args: {
+            fields: k.fields,
+            ...(k.resolvable !== undefined ? { resolvable: k.resolvable } : {}),
+          },
+        })
+      ),
       // Add additional directives
       ...(directives?.map(toDirectiveApplication) ?? []),
     ]
@@ -299,7 +319,11 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
     }
   ): FederatedSchemaBuilder<R | R2> {
     return this.with({
-      coreBuilder: this.state.coreBuilder.field(typeName, fieldName, config) as GraphQLSchemaBuilder<any>,
+      coreBuilder: this.state.coreBuilder.field(
+        typeName,
+        fieldName,
+        config
+      ) as GraphQLSchemaBuilder<any>,
     })
   }
 
@@ -344,9 +368,8 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
     }
 
     // Create federation types
-    const entityUnion = this.state.entities.size > 0
-      ? createEntityUnion(this.state.entities, typeRegistry)
-      : null
+    const entityUnion =
+      this.state.entities.size > 0 ? createEntityUnion(this.state.entities, typeRegistry) : null
     const serviceType = createServiceType()
 
     // Build federation query fields
@@ -386,14 +409,17 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
           if (name === "_placeholder") continue
           fields[name] = {
             type: field.type,
-            args: field.args.reduce((acc, arg) => {
-              acc[arg.name] = {
-                type: arg.type,
-                description: arg.description,
-                defaultValue: arg.defaultValue,
-              }
-              return acc
-            }, {} as Record<string, any>),
+            args: field.args.reduce(
+              (acc, arg) => {
+                acc[arg.name] = {
+                  type: arg.type,
+                  description: arg.description,
+                  defaultValue: arg.defaultValue,
+                }
+                return acc
+              },
+              {} as Record<string, any>
+            ),
             description: field.description,
             resolve: field.resolve,
             extensions: field.extensions,
@@ -408,11 +434,7 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
     })
 
     // Collect all types for the schema
-    const types: any[] = [
-      AnyScalar,
-      FieldSetScalar,
-      serviceType,
-    ]
+    const types: any[] = [AnyScalar, FieldSetScalar, serviceType]
 
     if (entityUnion) {
       types.push(entityUnion)
@@ -504,7 +526,10 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
       const directiveStr = directives.map(formatDirective).join(" ")
 
       // Match type definition and add directives
-      const typePattern = new RegExp(`(type\\s+${typeName}(?:\\s+implements\\s+[^{]+)?)(\\s*\\{)`, "g")
+      const typePattern = new RegExp(
+        `(type\\s+${typeName}(?:\\s+implements\\s+[^{]+)?)(\\s*\\{)`,
+        "g"
+      )
       result = result.replace(typePattern, `$1 ${directiveStr}$2`)
 
       const interfacePattern = new RegExp(`(interface\\s+${typeName})(\\s*\\{)`, "g")
@@ -527,7 +552,9 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
 
       const fields = type.getFields()
       for (const [fieldName, field] of Object.entries(fields)) {
-        const fieldDirectives = (field.extensions as any)?.directives as DirectiveApplication[] | undefined
+        const fieldDirectives = (field.extensions as any)?.directives as
+          | DirectiveApplication[]
+          | undefined
         if (!fieldDirectives || fieldDirectives.length === 0) continue
 
         const directiveStr = fieldDirectives.map(formatDirective).join(" ")

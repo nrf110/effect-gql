@@ -92,8 +92,7 @@ export interface PersistedQueriesConfig {
  * Extends the standard GraphQL router options with persisted query configuration.
  */
 export interface PersistedQueriesRouterOptions
-  extends MakeGraphQLRouterOptions,
-    PersistedQueriesConfig {}
+  extends MakeGraphQLRouterOptions, PersistedQueriesConfig {}
 
 /**
  * Effect Config for loading persisted queries settings from environment variables.
@@ -112,16 +111,12 @@ export interface PersistedQueriesRouterOptions
  * const config = yield* Config.unwrap(PersistedQueriesConfigFromEnv)
  * ```
  */
-export const PersistedQueriesConfigFromEnv: Config.Config<
-  Omit<PersistedQueriesConfig, "store">
-> = Config.all({
-  mode: Config.literal("apq", "safelist")("PERSISTED_QUERIES_MODE").pipe(
-    Config.withDefault("apq" as const)
-  ),
-  enableGet: Config.boolean("PERSISTED_QUERIES_ENABLE_GET").pipe(
-    Config.withDefault(true)
-  ),
-  validateHash: Config.boolean("PERSISTED_QUERIES_VALIDATE_HASH").pipe(
-    Config.withDefault(true)
-  ),
-})
+export const PersistedQueriesConfigFromEnv: Config.Config<Omit<PersistedQueriesConfig, "store">> =
+  Config.all({
+    mode: Config.literal(
+      "apq",
+      "safelist"
+    )("PERSISTED_QUERIES_MODE").pipe(Config.withDefault("apq" as const)),
+    enableGet: Config.boolean("PERSISTED_QUERIES_ENABLE_GET").pipe(Config.withDefault(true)),
+    validateHash: Config.boolean("PERSISTED_QUERIES_VALIDATE_HASH").pipe(Config.withDefault(true)),
+  })

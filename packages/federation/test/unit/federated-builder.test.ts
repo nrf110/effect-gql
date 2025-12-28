@@ -79,11 +79,12 @@ describe("FederatedSchemaBuilder", () => {
           name: "User",
           schema: UserSchema,
           keys: [{ fields: "id" }],
-          resolveReference: (ref) => Effect.succeed({
-            id: ref.id!,
-            name: "Test User",
-            email: "test@example.com",
-          }),
+          resolveReference: (ref) =>
+            Effect.succeed({
+              id: ref.id!,
+              name: "Test User",
+              email: "test@example.com",
+            }),
         })
       )
 
@@ -103,16 +104,14 @@ describe("FederatedSchemaBuilder", () => {
         entity({
           name: "Product",
           schema: ProductSchema,
-          keys: [
-            { fields: "id" },
-            { fields: "sku" },
-          ],
-          resolveReference: (ref) => Effect.succeed({
-            id: ref.id ?? "1",
-            sku: ref.sku ?? "SKU-001",
-            name: "Test Product",
-            price: 99.99,
-          }),
+          keys: [{ fields: "id" }, { fields: "sku" }],
+          resolveReference: (ref) =>
+            Effect.succeed({
+              id: ref.id ?? "1",
+              sku: ref.sku ?? "SKU-001",
+              name: "Test Product",
+              price: 99.99,
+            }),
         })
       )
 
@@ -152,11 +151,12 @@ describe("FederatedSchemaBuilder", () => {
           name: "User",
           schema: UserSchema,
           keys: [{ fields: "id" }],
-          resolveReference: (ref) => Effect.succeed({
-            id: ref.id!,
-            name: "Test User",
-            email: "test@example.com",
-          }),
+          resolveReference: (ref) =>
+            Effect.succeed({
+              id: ref.id!,
+              name: "Test User",
+              email: "test@example.com",
+            }),
         })
       )
 
@@ -344,8 +344,8 @@ describe("FederatedSchemaBuilder", () => {
     })
 
     it("should delegate objectType to core builder", () => {
-      const builder = FederatedSchemaBuilder.empty.pipe(
-        (b) => b.objectType({
+      const builder = FederatedSchemaBuilder.empty.pipe((b) =>
+        b.objectType({
           name: "User",
           schema: UserSchema,
         })
@@ -365,7 +365,7 @@ describe("FederatedSchemaBuilder", () => {
           keys: [{ fields: "id" }],
           resolveReference: () => Effect.succeed({ id: "1", name: "Test", email: "t@t.com" }),
         }),
-        field<typeof UserSchema.Type, typeof PostSchema.Type[], never, never>("User", "posts", {
+        field<typeof UserSchema.Type, (typeof PostSchema.Type)[], never, never>("User", "posts", {
           type: S.Array(PostSchema),
           resolve: () => Effect.succeed([]),
         })
@@ -389,19 +389,21 @@ describe("FederatedSchemaBuilder", () => {
           name: "User",
           schema: UserSchema,
           keys: [{ fields: "id" }],
-          resolveReference: (ref) => Effect.succeed({
-            id: ref.id!,
-            name: "Resolved User",
-            email: "resolved@example.com",
-          }),
+          resolveReference: (ref) =>
+            Effect.succeed({
+              id: ref.id!,
+              name: "Resolved User",
+              email: "resolved@example.com",
+            }),
         }),
         query("me", {
           type: UserSchema,
-          resolve: () => Effect.succeed({
-            id: "current-user",
-            name: "Current User",
-            email: "me@example.com",
-          }),
+          resolve: () =>
+            Effect.succeed({
+              id: "current-user",
+              name: "Current User",
+              email: "me@example.com",
+            }),
         }),
         query("users", {
           type: S.Array(UserSchema),

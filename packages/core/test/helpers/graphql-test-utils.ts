@@ -1,4 +1,19 @@
-import { graphql, GraphQLSchema, printSchema, GraphQLObjectType, GraphQLInputObjectType, GraphQLEnumType, GraphQLUnionType, GraphQLInterfaceType, GraphQLType, GraphQLNonNull, GraphQLList, isNonNullType, isListType, isNamedType } from "graphql"
+import {
+  graphql,
+  GraphQLSchema,
+  printSchema,
+  GraphQLObjectType,
+  GraphQLInputObjectType,
+  GraphQLEnumType,
+  GraphQLUnionType,
+  GraphQLInterfaceType,
+  GraphQLType,
+  GraphQLNonNull,
+  GraphQLList,
+  isNonNullType,
+  isListType,
+  isNamedType,
+} from "graphql"
 import { Effect, Layer, Runtime } from "effect"
 import type { GraphQLEffectContext } from "../../src/builder/types"
 
@@ -12,9 +27,7 @@ export const executeGraphQL = async <R>(
   variables?: Record<string, unknown>,
   operationName?: string
 ): Promise<{ data?: unknown; errors?: readonly { message: string }[] }> => {
-  const runtime = await Effect.runPromise(
-    Effect.scoped(Layer.toRuntime(layer))
-  )
+  const runtime = await Effect.runPromise(Effect.scoped(Layer.toRuntime(layer)))
 
   return graphql({
     schema,
@@ -46,10 +59,7 @@ export const executeGraphQLNoLayer = async (
 /**
  * Assert schema contains expected type
  */
-export const assertSchemaHasType = (
-  schema: GraphQLSchema,
-  typeName: string
-): void => {
+export const assertSchemaHasType = (schema: GraphQLSchema, typeName: string): void => {
   const type = schema.getType(typeName)
   if (!type) {
     throw new Error(`Schema does not contain type: ${typeName}`)
@@ -59,10 +69,7 @@ export const assertSchemaHasType = (
 /**
  * Assert schema has query type with field
  */
-export const assertSchemaHasQueryField = (
-  schema: GraphQLSchema,
-  fieldName: string
-): void => {
+export const assertSchemaHasQueryField = (schema: GraphQLSchema, fieldName: string): void => {
   const queryType = schema.getQueryType()
   if (!queryType) {
     throw new Error("Schema does not have a Query type")
@@ -76,10 +83,7 @@ export const assertSchemaHasQueryField = (
 /**
  * Assert schema has mutation type with field
  */
-export const assertSchemaHasMutationField = (
-  schema: GraphQLSchema,
-  fieldName: string
-): void => {
+export const assertSchemaHasMutationField = (schema: GraphQLSchema, fieldName: string): void => {
   const mutationType = schema.getMutationType()
   if (!mutationType) {
     throw new Error("Schema does not have a Mutation type")
@@ -110,8 +114,7 @@ export const assertSchemaHasSubscriptionField = (
 /**
  * Get SDL representation for debugging
  */
-export const getSchemaSDL = (schema: GraphQLSchema): string =>
-  printSchema(schema)
+export const getSchemaSDL = (schema: GraphQLSchema): string => printSchema(schema)
 
 /**
  * Get the Query type from schema

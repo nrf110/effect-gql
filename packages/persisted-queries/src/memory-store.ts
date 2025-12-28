@@ -87,8 +87,7 @@ export const makeMemoryStore = (
           evictIfNeeded()
         }),
 
-      has: (hash) =>
-        Effect.sync(() => cache.has(hash)),
+      has: (hash) => Effect.sync(() => cache.has(hash)),
     })
   )
 }
@@ -124,11 +123,7 @@ export const makeSafelistStore = (
     PersistedQueryStore,
     PersistedQueryStore.of({
       get: (hash) =>
-        Effect.succeed(
-          queries[hash] !== undefined
-            ? Option.some(queries[hash])
-            : Option.none()
-        ),
+        Effect.succeed(queries[hash] !== undefined ? Option.some(queries[hash]) : Option.none()),
 
       // No-op for safelist mode - queries cannot be added at runtime
       set: () => Effect.void,

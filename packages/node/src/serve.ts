@@ -1,7 +1,7 @@
 import { Effect, Layer } from "effect"
 import { HttpApp, HttpRouter, HttpServer } from "@effect/platform"
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
-import { createServer, Server } from "node:http"
+import { createServer } from "node:http"
 import type { GraphQLSchema } from "graphql"
 import type { GraphQLWSOptions } from "@effect-gql/core"
 import { toWebHeaders } from "./http-utils"
@@ -99,9 +99,7 @@ export const serve = <E, R, RE>(
       onStart(`http://${host === "0.0.0.0" ? "localhost" : host}:${port}`)
     }
 
-    NodeRuntime.runMain(
-      Layer.launch(Layer.provide(app, fullLayer))
-    )
+    NodeRuntime.runMain(Layer.launch(Layer.provide(app, fullLayer)))
   }
 }
 
@@ -120,7 +118,7 @@ function serveWithSubscriptions<E, R, RE>(
   // Dynamically import ws module to keep it optional
   const importWs = Effect.tryPromise({
     try: () => import("./ws"),
-    catch: (error) => error as Error
+    catch: (error) => error as Error,
   })
 
   Effect.runPromise(

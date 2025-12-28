@@ -134,7 +134,9 @@ export const sseMiddleware = <R>(
       })
 
       req.on("error", (error) => {
-        Effect.runPromise(Deferred.fail(clientDisconnected, new SSEError({ cause: error }))).catch(() => {})
+        Effect.runPromise(Deferred.fail(clientDisconnected, new SSEError({ cause: error }))).catch(
+          () => {}
+        )
       })
 
       // Stream events to the client
@@ -153,11 +155,7 @@ export const sseMiddleware = <R>(
 
       // Race between stream completion and client disconnection
       yield* Effect.race(
-        runStream.pipe(
-          Effect.catchAll((error) =>
-            Effect.logWarning("SSE stream error", error)
-          )
-        ),
+        runStream.pipe(Effect.catchAll((error) => Effect.logWarning("SSE stream error", error))),
         Deferred.await(clientDisconnected)
       )
     })
@@ -251,7 +249,9 @@ export const createSSEHandler = <R>(
       })
 
       req.on("error", (error) => {
-        Effect.runPromise(Deferred.fail(clientDisconnected, new SSEError({ cause: error }))).catch(() => {})
+        Effect.runPromise(Deferred.fail(clientDisconnected, new SSEError({ cause: error }))).catch(
+          () => {}
+        )
       })
 
       // Stream events to the client
@@ -270,11 +270,7 @@ export const createSSEHandler = <R>(
 
       // Race between stream completion and client disconnection
       yield* Effect.race(
-        runStream.pipe(
-          Effect.catchAll((error) =>
-            Effect.logWarning("SSE stream error", error)
-          )
-        ),
+        runStream.pipe(Effect.catchAll((error) => Effect.logWarning("SSE stream error", error))),
         Deferred.await(clientDisconnected)
       )
     })

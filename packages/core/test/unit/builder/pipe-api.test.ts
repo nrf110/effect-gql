@@ -38,13 +38,15 @@ describe("pipe-api.ts", () => {
     })
 
     it("should support explicit name", () => {
-      const schema = GraphQLSchemaBuilder.empty.pipe(
-        objectType({ name: "Person", schema: S.Struct({ id: S.String }) }),
-        query("person", {
-          type: S.Struct({ id: S.String }),
-          resolve: () => Effect.succeed({ id: "1" }),
-        })
-      ).buildSchema()
+      const schema = GraphQLSchemaBuilder.empty
+        .pipe(
+          objectType({ name: "Person", schema: S.Struct({ id: S.String }) }),
+          query("person", {
+            type: S.Struct({ id: S.String }),
+            resolve: () => Effect.succeed({ id: "1" }),
+          })
+        )
+        .buildSchema()
 
       expect(schema.getType("Person")).toBeDefined()
     })
@@ -222,8 +224,7 @@ describe("pipe-api.ts", () => {
         objectType({ name: "User", schema: UserSchema }),
         field("User", "greeting", {
           type: S.String,
-          resolve: (parent: { name: string }) =>
-            Effect.succeed(`Hello, ${parent.name}`),
+          resolve: (parent: { name: string }) => Effect.succeed(`Hello, ${parent.name}`),
         }),
         query("user", {
           type: UserSchema,
@@ -270,9 +271,7 @@ describe("pipe-api.ts", () => {
     it("should preserve builder chain", () => {
       const builder = GraphQLSchemaBuilder.empty.pipe(
         query("first", { type: S.String, resolve: () => Effect.succeed("1") }),
-        compose(
-          mutation("create", { type: S.String, resolve: () => Effect.succeed("c") })
-        ),
+        compose(mutation("create", { type: S.String, resolve: () => Effect.succeed("c") })),
         query("last", { type: S.String, resolve: () => Effect.succeed("2") })
       )
 

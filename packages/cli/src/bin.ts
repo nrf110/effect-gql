@@ -79,7 +79,11 @@ Effect.runPromise(
   main.pipe(
     Effect.catchAll((error) =>
       Console.error(`Error: ${error.message}`).pipe(
-        Effect.andThen(Effect.sync(() => { process.exitCode = 1 }))
+        Effect.andThen(
+          Effect.sync(() => {
+            process.exitCode = 1
+          })
+        )
       )
     )
   )

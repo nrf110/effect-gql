@@ -23,9 +23,7 @@ import {
 /**
  * Error thrown when query complexity exceeds configured limits
  */
-export class ComplexityLimitExceededError extends Data.TaggedError(
-  "ComplexityLimitExceededError"
-)<{
+export class ComplexityLimitExceededError extends Data.TaggedError("ComplexityLimitExceededError")<{
   readonly message: string
   readonly limit: number
   readonly actual: number
@@ -35,9 +33,7 @@ export class ComplexityLimitExceededError extends Data.TaggedError(
 /**
  * Error thrown when complexity analysis fails
  */
-export class ComplexityAnalysisError extends Data.TaggedError(
-  "ComplexityAnalysisError"
-)<{
+export class ComplexityAnalysisError extends Data.TaggedError("ComplexityAnalysisError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
@@ -97,9 +93,7 @@ export interface ComplexityExceededInfo {
 /**
  * Complexity value for a field - can be static or dynamic based on arguments
  */
-export type FieldComplexity =
-  | number
-  | ((args: Record<string, unknown>) => number)
+export type FieldComplexity = number | ((args: Record<string, unknown>) => number)
 
 /**
  * Map of type.field -> complexity
@@ -164,9 +158,7 @@ export interface ComplexityConfig {
    * This is called BEFORE the error is thrown.
    * Must be self-contained (no service requirements).
    */
-  readonly onExceeded?: (
-    info: ComplexityExceededInfo
-  ) => Effect.Effect<void, never, never>
+  readonly onExceeded?: (info: ComplexityExceededInfo) => Effect.Effect<void, never, never>
 }
 
 // ============================================================================
@@ -180,9 +172,7 @@ export interface ComplexityConfig {
  * - fieldCount: Total number of field selections
  * - aliasCount: Number of aliased fields
  */
-export const defaultComplexityCalculator = (
-  defaultCost: number = 1
-): ComplexityCalculator => {
+export const defaultComplexityCalculator = (defaultCost: number = 1): ComplexityCalculator => {
   return (info: ComplexityAnalysisInfo) =>
     Effect.try({
       try: () => {
@@ -198,9 +188,7 @@ export const defaultComplexityCalculator = (
         // Get the root type for the operation
         const rootType = getRootType(info.schema, info.operation.operation)
         if (!rootType) {
-          throw new Error(
-            `No root type found for operation: ${info.operation.operation}`
-          )
+          throw new Error(`No root type found for operation: ${info.operation.operation}`)
         }
 
         // Analyze the selection set
@@ -302,7 +290,12 @@ function analyzeSelectionSet(
     accumulateResult(acc, result)
   }
 
-  return { depth: acc.maxDepth, complexity: acc.complexity, fieldCount: acc.fieldCount, aliasCount: acc.aliasCount }
+  return {
+    depth: acc.maxDepth,
+    complexity: acc.complexity,
+    fieldCount: acc.fieldCount,
+    aliasCount: acc.aliasCount,
+  }
 }
 
 /**
@@ -356,9 +349,12 @@ function analyzeField(
   // Get field complexity
   const complexityKey = `${parentType.name}.${fieldName}`
   const fieldComplexity = ctx.fieldComplexities.get(complexityKey)
-  const cost = fieldComplexity !== undefined
-    ? (typeof fieldComplexity === "function" ? fieldComplexity(args) : fieldComplexity)
-    : ctx.defaultCost
+  const cost =
+    fieldComplexity !== undefined
+      ? typeof fieldComplexity === "function"
+        ? fieldComplexity(args)
+        : fieldComplexity
+      : ctx.defaultCost
 
   // If the field has a selection set, analyze it
   if (field.selectionSet) {
@@ -527,11 +523,7 @@ export const validateComplexity = (
   schema: GraphQLSchema,
   fieldComplexities: FieldComplexityMap,
   config: ComplexityConfig
-): Effect.Effect<
-  ComplexityResult,
-  ComplexityLimitExceededError | ComplexityAnalysisError,
-  never
-> =>
+): Effect.Effect<ComplexityResult, ComplexityLimitExceededError | ComplexityAnalysisError, never> =>
   Effect.gen(function* () {
     // Parse the query
     const document = yield* Effect.try({
@@ -547,8 +539,7 @@ export const validateComplexity = (
     const operation = yield* Effect.try({
       try: () => {
         const operations = document.definitions.filter(
-          (d): d is OperationDefinitionNode =>
-            d.kind === Kind.OPERATION_DEFINITION
+          (d): d is OperationDefinitionNode => d.kind === Kind.OPERATION_DEFINITION
         )
 
         if (operations.length === 0) {
@@ -556,9 +547,7 @@ export const validateComplexity = (
         }
 
         if (operationName) {
-          const op = operations.find(
-            (o) => o.name?.value === operationName
-          )
+          const op = operations.find((o) => o.name?.value === operationName)
           if (!op) {
             throw new Error(`Operation "${operationName}" not found`)
           }
@@ -566,9 +555,7 @@ export const validateComplexity = (
         }
 
         if (operations.length > 1) {
-          throw new Error(
-            "Multiple operations found - operationName required"
-          )
+          throw new Error("Multiple operations found - operationName required")
         }
 
         return operations[0]
@@ -582,8 +569,7 @@ export const validateComplexity = (
 
     // Calculate complexity
     const calculator =
-      config.calculator ??
-      defaultComplexityCalculator(config.defaultFieldComplexity ?? 1)
+      config.calculator ?? defaultComplexityCalculator(config.defaultFieldComplexity ?? 1)
 
     const result = yield* calculator({
       document,
@@ -648,24 +634,23 @@ export const validateComplexity = (
  * - GRAPHQL_MAX_FIELDS: Maximum number of fields
  * - GRAPHQL_DEFAULT_FIELD_COMPLEXITY: Default field complexity (default: 1)
  */
-export const ComplexityConfigFromEnv: Config.Config<ComplexityConfig> =
-  Config.all({
-    maxDepth: Config.number("GRAPHQL_MAX_DEPTH").pipe(Config.option),
-    maxComplexity: Config.number("GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
-    maxAliases: Config.number("GRAPHQL_MAX_ALIASES").pipe(Config.option),
-    maxFields: Config.number("GRAPHQL_MAX_FIELDS").pipe(Config.option),
-    defaultFieldComplexity: Config.number("GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
-      Config.withDefault(1)
-    ),
-  }).pipe(
-    Config.map(({ maxDepth, maxComplexity, maxAliases, maxFields, defaultFieldComplexity }) => ({
-      maxDepth: Option.getOrUndefined(maxDepth),
-      maxComplexity: Option.getOrUndefined(maxComplexity),
-      maxAliases: Option.getOrUndefined(maxAliases),
-      maxFields: Option.getOrUndefined(maxFields),
-      defaultFieldComplexity,
-    }))
-  )
+export const ComplexityConfigFromEnv: Config.Config<ComplexityConfig> = Config.all({
+  maxDepth: Config.number("GRAPHQL_MAX_DEPTH").pipe(Config.option),
+  maxComplexity: Config.number("GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
+  maxAliases: Config.number("GRAPHQL_MAX_ALIASES").pipe(Config.option),
+  maxFields: Config.number("GRAPHQL_MAX_FIELDS").pipe(Config.option),
+  defaultFieldComplexity: Config.number("GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
+    Config.withDefault(1)
+  ),
+}).pipe(
+  Config.map(({ maxDepth, maxComplexity, maxAliases, maxFields, defaultFieldComplexity }) => ({
+    maxDepth: Option.getOrUndefined(maxDepth),
+    maxComplexity: Option.getOrUndefined(maxComplexity),
+    maxAliases: Option.getOrUndefined(maxAliases),
+    maxFields: Option.getOrUndefined(maxFields),
+    defaultFieldComplexity,
+  }))
+)
 
 // ============================================================================
 // Utility Calculators
@@ -685,12 +670,7 @@ export const depthOnlyCalculator: ComplexityCalculator = (info) =>
         }
       }
 
-      const depth = calculateMaxDepth(
-        info.operation.selectionSet,
-        fragments,
-        1,
-        new Set()
-      )
+      const depth = calculateMaxDepth(info.operation.selectionSet, fragments, 1, new Set())
 
       return {
         depth,
@@ -747,7 +727,7 @@ function calculateMaxDepth(
         break
       }
 
-      case Kind.INLINE_FRAGMENT:
+      case Kind.INLINE_FRAGMENT: {
         const inlineDepth = calculateMaxDepth(
           selection.selectionSet,
           fragments,
@@ -756,6 +736,7 @@ function calculateMaxDepth(
         )
         maxDepth = Math.max(maxDepth, inlineDepth)
         break
+      }
     }
   }
 

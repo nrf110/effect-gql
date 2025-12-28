@@ -38,8 +38,7 @@ export interface NodeWSOptions<R> extends GraphQLWSOptions<R> {
  * })
  * ```
  */
-export const toEffectWebSocket = (ws: WebSocket): EffectWebSocket =>
-  toEffectWebSocketFromWs(ws)
+export const toEffectWebSocket = (ws: WebSocket): EffectWebSocket => toEffectWebSocketFromWs(ws)
 
 /**
  * Create a WebSocket server that handles GraphQL subscriptions.
@@ -74,11 +73,7 @@ export const createGraphQLWSServer = <R>(
   /** The underlying WebSocketServer instance */
   wss: WebSocketServer
   /** Handle HTTP upgrade requests */
-  handleUpgrade: (
-    request: IncomingMessage,
-    socket: Duplex,
-    head: Buffer
-  ) => void
+  handleUpgrade: (request: IncomingMessage, socket: Duplex, head: Buffer) => void
   /** Close the WebSocket server */
   close: () => Promise<void>
 } => {
@@ -106,11 +101,7 @@ export const createGraphQLWSServer = <R>(
     })
   })
 
-  const handleUpgrade = (
-    request: IncomingMessage,
-    socket: Duplex,
-    head: Buffer
-  ) => {
+  const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     // Check if this is the GraphQL WebSocket path
     const url = new URL(request.url ?? "/", `http://${request.headers.host}`)
     if (url.pathname !== path) {

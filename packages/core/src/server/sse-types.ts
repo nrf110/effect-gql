@@ -9,7 +9,7 @@ import type { ComplexityConfig, FieldComplexityMap } from "./complexity"
 export const SSE_HEADERS: Record<string, string> = {
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache",
-  "Connection": "keep-alive",
+  Connection: "keep-alive",
   "X-Accel-Buffering": "no", // Disable nginx buffering
 } as const
 
@@ -144,31 +144,22 @@ export interface GraphQLSSEOptions<R> {
   /**
    * Called when the subscription starts streaming.
    */
-  readonly onSubscribe?: (
-    ctx: SSEConnectionContext<R>
-  ) => Effect.Effect<void, never, R>
+  readonly onSubscribe?: (ctx: SSEConnectionContext<R>) => Effect.Effect<void, never, R>
 
   /**
    * Called when the subscription completes (normally or due to error).
    */
-  readonly onComplete?: (
-    ctx: SSEConnectionContext<R>
-  ) => Effect.Effect<void, never, R>
+  readonly onComplete?: (ctx: SSEConnectionContext<R>) => Effect.Effect<void, never, R>
 
   /**
    * Called when the client disconnects.
    */
-  readonly onDisconnect?: (
-    ctx: SSEConnectionContext<R>
-  ) => Effect.Effect<void, never, R>
+  readonly onDisconnect?: (ctx: SSEConnectionContext<R>) => Effect.Effect<void, never, R>
 
   /**
    * Called when an error occurs during subscription execution.
    */
-  readonly onError?: (
-    ctx: SSEConnectionContext<R>,
-    error: unknown
-  ) => Effect.Effect<void, never, R>
+  readonly onError?: (ctx: SSEConnectionContext<R>, error: unknown) => Effect.Effect<void, never, R>
 }
 
 /**

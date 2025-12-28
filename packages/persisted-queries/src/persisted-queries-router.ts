@@ -11,7 +11,6 @@ import {
 } from "graphql"
 import {
   normalizeConfig,
-  type MakeGraphQLRouterOptions,
   graphiqlHtml,
   validateComplexity,
   ComplexityLimitExceededError,
@@ -297,9 +296,7 @@ export const makePersistedQueriesRouter = <R>(
           fieldComplexities,
           resolvedConfig.complexity
         ).pipe(
-          Effect.catchTag("ComplexityLimitExceededError", (error) =>
-            Effect.fail(error)
-          ),
+          Effect.catchTag("ComplexityLimitExceededError", (error) => Effect.fail(error)),
           Effect.catchTag("ComplexityAnalysisError", (error) =>
             Effect.logWarning("Complexity analysis failed", error)
           )
@@ -409,19 +406,14 @@ export const makePersistedQueriesRouter = <R>(
 
   // Add GET handler if enabled
   if (enableGet) {
-    router = router.pipe(
-      HttpRouter.get(resolvedConfig.path as HttpRouter.PathInput, getHandler)
-    )
+    router = router.pipe(HttpRouter.get(resolvedConfig.path as HttpRouter.PathInput, getHandler))
   }
 
   // Add GraphiQL route if enabled
   if (resolvedConfig.graphiql) {
     const { path, endpoint } = resolvedConfig.graphiql
     router = router.pipe(
-      HttpRouter.get(
-        path as HttpRouter.PathInput,
-        HttpServerResponse.html(graphiqlHtml(endpoint))
-      )
+      HttpRouter.get(path as HttpRouter.PathInput, HttpServerResponse.html(graphiqlHtml(endpoint)))
     )
   }
 

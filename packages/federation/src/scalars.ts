@@ -16,12 +16,13 @@ function parseLiteralToValue(ast: ValueNode): unknown {
       return null
     case Kind.LIST:
       return ast.values.map(parseLiteralToValue)
-    case Kind.OBJECT:
+    case Kind.OBJECT: {
       const obj: Record<string, unknown> = {}
       for (const field of ast.fields) {
         obj[field.name.value] = parseLiteralToValue(field.value)
       }
       return obj
+    }
     default:
       return undefined
   }
@@ -33,7 +34,8 @@ function parseLiteralToValue(ast: ValueNode): unknown {
  */
 export const AnyScalar = new GraphQLScalarType({
   name: "_Any",
-  description: "The _Any scalar is used to pass representations of entities from external services.",
+  description:
+    "The _Any scalar is used to pass representations of entities from external services.",
   serialize: (value) => value,
   parseValue: (value) => value,
   parseLiteral: parseLiteralToValue,

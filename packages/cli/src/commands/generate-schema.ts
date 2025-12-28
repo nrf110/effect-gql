@@ -79,19 +79,14 @@ export const loadSchema = (modulePath: string): Effect.Effect<GraphQLSchema, Err
     }
 
     return yield* Effect.fail(
-      new Error(
-        `Export is not a GraphQLSchemaBuilder or GraphQLSchema. Got: ${typeof exported}`
-      )
+      new Error(`Export is not a GraphQLSchemaBuilder or GraphQLSchema. Got: ${typeof exported}`)
     )
   })
 
 /**
  * Generate SDL from a schema
  */
-export const generateSDL = (
-  schema: GraphQLSchema,
-  options: { sort?: boolean } = {}
-): string => {
+export const generateSDL = (schema: GraphQLSchema, options: { sort?: boolean } = {}): string => {
   const finalSchema = options.sort !== false ? lexicographicSortSchema(schema) : schema
   return printSchema(finalSchema)
 }
@@ -133,9 +128,7 @@ const watch = (options: GenerateOptions): Effect.Effect<void, Error> =>
     yield* Console.log(`Watching for changes in ${dir}...`)
 
     // Initial generation
-    yield* run(options).pipe(
-      Effect.catchAll((error) => Console.error(`Error: ${error.message}`))
-    )
+    yield* run(options).pipe(Effect.catchAll((error) => Console.error(`Error: ${error.message}`)))
 
     // Watch for changes
     yield* Effect.async<void, Error>(() => {

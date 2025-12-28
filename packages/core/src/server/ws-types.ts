@@ -126,9 +126,7 @@ export interface GraphQLWSOptions<R> {
    * Called when a client disconnects.
    * Use this for cleanup (e.g., removing user from active connections).
    */
-  readonly onDisconnect?: (
-    ctx: ConnectionContext<R>
-  ) => Effect.Effect<void, never, R>
+  readonly onDisconnect?: (ctx: ConnectionContext<R>) => Effect.Effect<void, never, R>
 
   /**
    * Called when a client starts a subscription (SUBSCRIBE message).
@@ -153,10 +151,7 @@ export interface GraphQLWSOptions<R> {
   /**
    * Called when an error occurs during subscription execution.
    */
-  readonly onError?: (
-    ctx: ConnectionContext<R>,
-    error: unknown
-  ) => Effect.Effect<void, never, R>
+  readonly onError?: (ctx: ConnectionContext<R>, error: unknown) => Effect.Effect<void, never, R>
 }
 
 /**

@@ -1,12 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Layer } from "effect"
 import { HttpApp } from "@effect/platform"
-import {
-  GraphQLSchema,
-  GraphQLObjectType,
-  GraphQLString,
-  GraphQLNonNull,
-} from "graphql"
+import { GraphQLSchema, GraphQLObjectType, GraphQLString, GraphQLNonNull } from "graphql"
 import { makePersistedQueriesRouter, makeSafelistStore, computeHash } from "../../src"
 
 // Create a simple schema for testing using graphql-js directly
@@ -378,9 +373,7 @@ describe("makePersistedQueriesRouter", () => {
 
       const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
       try {
-        const response = await handler(
-          new Request("http://localhost/graphiql", { method: "GET" })
-        )
+        const response = await handler(new Request("http://localhost/graphiql", { method: "GET" }))
         const html = await response.text()
 
         expect(response.status).toBe(200)

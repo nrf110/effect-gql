@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream, Runtime, Fiber, Deferred } from "effect"
+import { Effect, Layer, Stream, Deferred } from "effect"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { GraphQLSchema } from "graphql"
 import {
@@ -66,7 +66,7 @@ export const createSSEHandler = <R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
   options?: NodeSSEOptions<R>
-): (req: IncomingMessage, res: ServerResponse) => Promise<void> => {
+): ((req: IncomingMessage, res: ServerResponse) => Promise<void>) => {
   const sseHandler = makeGraphQLSSEHandler(schema, layer, options)
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -74,9 +74,11 @@ export const createSSEHandler = <R>(
     const accept = req.headers.accept ?? ""
     if (!accept.includes("text/event-stream") && !accept.includes("*/*")) {
       res.statusCode = 406
-      res.end(JSON.stringify({
-        errors: [{ message: "Client must accept text/event-stream" }],
-      }))
+      res.end(
+        JSON.stringify({
+          errors: [{ message: "Client must accept text/event-stream" }],
+        })
+      )
       return
     }
 
@@ -86,9 +88,11 @@ export const createSSEHandler = <R>(
       body = await readBody(req)
     } catch {
       res.statusCode = 400
-      res.end(JSON.stringify({
-        errors: [{ message: "Failed to read request body" }],
-      }))
+      res.end(
+        JSON.stringify({
+          errors: [{ message: "Failed to read request body" }],
+        })
+      )
       return
     }
 
@@ -107,9 +111,11 @@ export const createSSEHandler = <R>(
       }
     } catch {
       res.statusCode = 400
-      res.end(JSON.stringify({
-        errors: [{ message: "Invalid GraphQL request body" }],
-      }))
+      res.end(
+        JSON.stringify({
+          errors: [{ message: "Invalid GraphQL request body" }],
+        })
+      )
       return
     }
 
@@ -132,7 +138,9 @@ export const createSSEHandler = <R>(
       })
 
       req.on("error", (error) => {
-        Effect.runPromise(Deferred.fail(clientDisconnected, new SSEError({ cause: error }))).catch(() => {})
+        Effect.runPromise(Deferred.fail(clientDisconnected, new SSEError({ cause: error }))).catch(
+          () => {}
+        )
       })
 
       // Stream events to the client
@@ -151,11 +159,7 @@ export const createSSEHandler = <R>(
 
       // Race between stream completion and client disconnection
       yield* Effect.race(
-        runStream.pipe(
-          Effect.catchAll((error) =>
-            Effect.logWarning("SSE stream error", error)
-          )
-        ),
+        runStream.pipe(Effect.catchAll((error) => Effect.logWarning("SSE stream error", error))),
         Deferred.await(clientDisconnected)
       )
     })
