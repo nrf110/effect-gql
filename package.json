@@ -19,7 +19,9 @@
     "format:check": "prettier --check \"packages/*/src/**/*.ts\" \"packages/*/test/**/*.ts\"",
     "docs:dev": "npm run dev --prefix docs",
     "docs:build": "npm run build --prefix docs",
-    "docs:preview": "npm run preview --prefix docs"
+    "docs:preview": "npm run preview --prefix docs",
+    "prepare-publish": "npx tsx scripts/prepare-publish.ts",
+    "release": "npm run prepare-publish && npx tsx scripts/publish.ts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
