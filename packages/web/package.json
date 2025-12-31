@@ -1,6 +1,6 @@
 {
   "name": "@effect-gql/web",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Web standard handler for @effect-gql/core - works with Cloudflare Workers, Deno, and other WASM runtimes",
   "type": "module",
   "main": "dist/index.cjs",
@@ -26,7 +26,7 @@
     "test:watch": "vitest"
   },
   "peerDependencies": {
-    "@effect-gql/core": "^0.1.0",
+    "@effect-gql/core": "^0.2.0",
     "@effect/platform": "^0.94.0",
     "effect": "^3.19.0"
   },
