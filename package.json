@@ -1,6 +1,8 @@
 {
   "name": "effect-gql-monorepo",
-  "private": true,
+  "repository": {
+    "url": "https://github.com/nrf110/effect-gql"
+  },
   "workspaces": [
     "packages/*"
   ],

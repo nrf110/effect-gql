@@ -2,6 +2,9 @@
   "name": "@effect-gql/web",
   "version": "0.1.0",
   "description": "Web standard handler for @effect-gql/core - works with Cloudflare Workers, Deno, and other WASM runtimes",
+  "repository": {
+    "url": "https://github.com/nrf110/effect-gql"
+  },
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
