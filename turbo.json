@@ -1,0 +1,51 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "tsconfig.json", "tsup.config.ts", "package.json"],
+      "outputs": ["dist/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "inputs": ["src/**", "test/**", "tsconfig.json", "package.json"],
+      "outputs": []
+    },
+    "lint": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "test/**", "eslint.config.mjs", "package.json"],
+      "outputs": []
+    },
+    "lint:fix": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "test/**", "eslint.config.mjs", "package.json"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": ["src/**", "test/**", "vitest.config.ts", "package.json"],
+      "outputs": [],
+      "cache": false
+    },
+    "test:unit": {
+      "dependsOn": ["build"],
+      "inputs": ["src/**", "test/unit/**", "vitest.config.ts", "package.json"],
+      "outputs": [],
+      "cache": false
+    },
+    "test:integration": {
+      "dependsOn": ["build"],
+      "inputs": ["src/**", "test/integration/**", "vitest.config.ts", "package.json"],
+      "outputs": [],
+      "cache": false
+    },
+    "clean": {
+      "cache": false
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "persistent": true,
+      "cache": false
+    }
+  }
+}

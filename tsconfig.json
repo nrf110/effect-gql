@@ -1,20 +1,26 @@
 {
   "compilerOptions": {
-    "composite": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
     "declaration": true,
     "declarationMap": true,
     "skipLibCheck": true,
     "strict": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "moduleResolution": "node",
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
     "baseUrl": ".",
     "paths": {
       "@effect-gql/core": ["packages/core/src/index.ts"],
-      "@effect-gql/core/*": ["packages/core/src/*"]
-    }
+      "@effect-gql/core/*": ["packages/core/src/*"],
+    },
   },
   "include": [],
   "exclude": ["docs", "node_modules"],
@@ -25,7 +31,8 @@
     { "path": "./packages/web" },
     { "path": "./packages/express" },
     { "path": "./packages/federation" },
+    { "path": "./packages/cli" },
     { "path": "./packages/opentelemetry" },
-    { "path": "./packages/persisted-queries" }
-  ]
+    { "path": "./packages/persisted-queries" },
+  ],
 }

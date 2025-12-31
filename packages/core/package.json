@@ -2,30 +2,35 @@
   "name": "@effect-gql/core",
   "version": "0.1.0",
   "description": "Core GraphQL framework for Effect-TS - schema building, type mapping, and execution",
-  "main": "dist/index.js",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     },
     "./builder": {
       "types": "./dist/builder/index.d.ts",
-      "default": "./dist/builder/index.js"
+      "import": "./dist/builder/index.js",
+      "require": "./dist/builder/index.cjs"
     },
     "./server": {
       "types": "./dist/server/index.d.ts",
-      "default": "./dist/server/index.js"
+      "import": "./dist/server/index.js",
+      "require": "./dist/server/index.cjs"
     }
   },
   "files": [
-    "dist",
-    "src"
+    "dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
+    "build": "tsup",
+    "dev": "tsup --watch",
     "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },

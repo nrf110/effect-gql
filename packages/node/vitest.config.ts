@@ -4,9 +4,12 @@ import path from "path"
 export default defineConfig({
   resolve: {
     alias: {
-      // Use compiled dist to avoid Effect module identity issues
-      "@effect-gql/core": path.resolve(__dirname, "../core/dist/index.js"),
+      // Use source files for proper module resolution during tests
+      "@effect-gql/core/server": path.resolve(__dirname, "../core/src/server/index.ts"),
+      "@effect-gql/core": path.resolve(__dirname, "../core/src/index.ts"),
     },
+    // Ensure proper deduplication of graphql modules
+    dedupe: ["graphql", "graphql-ws"],
   },
   test: {
     globals: true,
@@ -30,5 +33,11 @@ export default defineConfig({
     },
     testTimeout: 30000,
     hookTimeout: 30000,
+    // Force single instance of graphql across all imports
+    server: {
+      deps: {
+        inline: ["graphql", "graphql-ws"],
+      },
+    },
   },
 })

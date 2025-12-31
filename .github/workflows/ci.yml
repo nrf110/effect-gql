@@ -7,80 +7,36 @@ on:
     branches: [main]
 
 jobs:
-  # Build all packages and run tests for Node.js packages
-  test-node:
-    name: Test (${{ matrix.package }})
+  # Build and test all packages
+  build-and-test:
+    name: Build & Test
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        package: [core, node, express]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build all packages
-        run: tsc --build
-
-      - name: Run tests
-        run: npm test -w @effect-gql/${{ matrix.package }}
-
-  # Build and test the bun package
-  test-bun:
-    name: Test (bun)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+          cache: pnpm
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: npm
-
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build all packages
-        run: tsc --build
+        run: pnpm run build
 
-      - name: Run tests
-        run: npm test -w @effect-gql/bun
-
-  # Verify web package builds (no tests)
-  build-web:
-    name: Build (web)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build all packages
-        run: tsc --build
+      - name: Run all tests
+        run: pnpm test
 
   # Type checking across the entire monorepo
   typecheck:
@@ -90,17 +46,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: tsc --build
+        run: pnpm run typecheck
 
   # Lint all packages
   lint:
@@ -110,17 +69,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Lint
-        run: npm run lint
+        run: pnpm run lint
 
   # Check code formatting
   format:
@@ -130,14 +92,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Check formatting
-        run: npm run format:check
+        run: pnpm run format:check

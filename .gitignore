@@ -20,3 +20,5 @@ packages/*/test/**/*.d.ts.map
 docs/src/**/*.js
 docs/src/**/*.d.ts
 docs/src/**/*.d.ts.map
+
+.turbo
