@@ -1,6 +1,6 @@
 {
   "name": "@effect-gql/node",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Node.js HTTP server integration for @effect-gql/core",
   "repository": {
     "url": "https://github.com/nrf110/effect-gql"
@@ -30,7 +30,7 @@
     "test:watch": "vitest"
   },
   "peerDependencies": {
-    "@effect-gql/core": "^0.1.0",
+    "@effect-gql/core": "^1.0.0",
     "@effect/platform": "^0.94.0",
     "@effect/platform-node": "^0.104.0",
     "effect": "^3.19.0",
