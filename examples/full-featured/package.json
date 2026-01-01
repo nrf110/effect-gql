@@ -1,6 +1,6 @@
 {
   "name": "@effect-gql/example-full-featured",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
   "description": "Full-featured GraphQL server example with services, auth, and error handling",
   "type": "module",
