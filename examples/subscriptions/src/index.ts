@@ -9,7 +9,7 @@
  * - WebSocket transport via graphql-ws protocol
  */
 
-import { Effect, Stream, Layer, Duration, Ref, PubSub, Queue, Schedule } from "effect"
+import { Effect, Stream, Layer, Duration, Ref, PubSub, Schedule } from "effect"
 import * as S from "effect/Schema"
 import { HttpRouter, HttpServerResponse } from "@effect/platform"
 import {
