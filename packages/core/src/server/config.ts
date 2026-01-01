@@ -10,6 +10,8 @@ export interface GraphiQLConfig {
   readonly path: string
   /** URL where GraphiQL sends requests (default: same as graphql path) */
   readonly endpoint: string
+  /** WebSocket URL for subscriptions (default: same as endpoint) */
+  readonly subscriptionEndpoint?: string
 }
 
 /**

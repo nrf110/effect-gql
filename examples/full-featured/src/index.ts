@@ -11,7 +11,7 @@
  */
 
 import { Effect, Layer } from "effect"
-import { HttpMiddleware, HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "@effect/platform"
 import { makeGraphQLRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 
@@ -43,22 +43,7 @@ const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
   },
 })
 
-/**
- * CORS middleware to allow cross-origin requests.
- * Required for GraphiQL to work properly in browsers.
- */
-const cors = HttpMiddleware.make((app) =>
-  Effect.gen(function* () {
-    const response = yield* app
-    return response.pipe(
-      HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type")
-    )
-  })
-)
-
-const app = HttpRouter.empty.pipe(
+const router = HttpRouter.empty.pipe(
   // Handle OPTIONS preflight requests
   HttpRouter.options(
     "/graphql",
@@ -71,15 +56,14 @@ const app = HttpRouter.empty.pipe(
     )
   ),
   HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter),
-  cors
+  HttpRouter.concat(graphqlRouter)
 )
 
 // =============================================================================
 // Server Startup
 // =============================================================================
 
-serve(app, Layer.empty, {
+serve(router, Layer.empty, {
   port: 4003,
   onStart: (url: string) => {
     console.log(`🚀 Full-Featured Example Server ready at ${url}`)

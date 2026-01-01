@@ -1,5 +1,12 @@
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Cause, Context, Effect, Layer } from "effect"
+import {
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerResponse,
+  HttpIncomingMessage,
+  HttpServerError,
+  HttpBody,
+} from "@effect/platform"
+import { Cause, Context, Effect, Layer, ParseResult, Schema } from "effect"
 import {
   GraphQLSchema,
   parse,
@@ -62,13 +69,46 @@ export const defaultErrorHandler: ErrorHandler = (cause) =>
   )
 
 /**
+ * Schema for GraphQL request body.
+ */
+const GraphQLRequestBodySchema = Schema.Struct({
+  query: Schema.String,
+  variables: Schema.optionalWith(Schema.Record({ key: Schema.String, value: Schema.Unknown }), {
+    as: "Option",
+  }),
+  operationName: Schema.optionalWith(Schema.String, { as: "Option" }),
+})
+
+/**
  * Request body for GraphQL queries.
  */
 interface GraphQLRequestBody {
-  query: string
-  variables?: Record<string, unknown>
-  operationName?: string
+  readonly query: string
+  readonly variables?: Record<string, unknown>
+  readonly operationName?: string
 }
+
+/**
+ * Decode the request body from JSON using the schema.
+ */
+const decodeRequestBody = HttpIncomingMessage.schemaBodyJson(GraphQLRequestBodySchema)
+
+/**
+ * Union of all possible errors that can occur during GraphQL request handling.
+ */
+type GraphQLHandlerError =
+  | HttpServerError.RequestError
+  | HttpBody.HttpBodyError
+  | ParseResult.ParseError
+  | ComplexityLimitExceededError
+  | Error
+
+/**
+ * Result type for parseGraphQLQuery
+ */
+type ParseGraphQLQueryResult =
+  | { ok: true; document: DocumentNode }
+  | { ok: false; response: HttpServerResponse.HttpServerResponse }
 
 /**
  * Parse a GraphQL query string into a DocumentNode.
@@ -77,25 +117,25 @@ interface GraphQLRequestBody {
 const parseGraphQLQuery = (
   query: string,
   extensionsService: Context.Tag.Service<typeof ExtensionsService>
-): Effect.Effect<
-  | { ok: true; document: DocumentNode }
-  | { ok: false; response: HttpServerResponse.HttpServerResponse },
-  never,
-  never
-> =>
-  Effect.gen(function* () {
-    try {
-      const document = parse(query)
-      return { ok: true as const, document }
-    } catch (parseError) {
-      const extensionData = yield* extensionsService.get()
-      const response = yield* HttpServerResponse.json({
-        errors: [{ message: String(parseError) }],
-        extensions: Object.keys(extensionData).length > 0 ? extensionData : undefined,
-      }).pipe(Effect.orDie)
-      return { ok: false as const, response }
-    }
-  })
+): Effect.Effect<ParseGraphQLQueryResult, never, never> => {
+  try {
+    const document = parse(query)
+    return Effect.succeed({ ok: true as const, document })
+  } catch (parseError) {
+    return extensionsService.get().pipe(
+      Effect.flatMap(
+        (extensionData): Effect.Effect<ParseGraphQLQueryResult, never, never> =>
+          HttpServerResponse.json({
+            errors: [{ message: String(parseError) }],
+            extensions: Object.keys(extensionData).length > 0 ? extensionData : undefined,
+          }).pipe(
+            Effect.orDie,
+            Effect.map((response) => ({ ok: false as const, response }))
+          )
+      )
+    )
+  }
+}
 
 /**
  * Run complexity validation if configured.
@@ -127,6 +167,12 @@ const runComplexityValidation = (
 }
 
 /**
+ * Type guard to check if a value is a Promise-like object.
+ */
+const isPromiseLike = <T>(value: unknown): value is PromiseLike<T> =>
+  value !== null && typeof value === "object" && "then" in value && typeof value.then === "function"
+
+/**
  * Execute a GraphQL query and handle async results.
  */
 const executeGraphQLQuery = <R>(
@@ -135,28 +181,30 @@ const executeGraphQLQuery = <R>(
   variables: Record<string, unknown> | undefined,
   operationName: string | undefined,
   runtime: import("effect").Runtime.Runtime<R>
-): Effect.Effect<import("graphql").ExecutionResult, Error, never> =>
-  Effect.gen(function* () {
-    const executeResult = yield* Effect.try({
-      try: () =>
-        graphqlExecute({
-          schema,
-          document,
-          variableValues: variables,
-          operationName,
-          contextValue: { runtime } satisfies GraphQLEffectContext<R>,
-        }),
-      catch: (error) => new Error(String(error)),
-    })
+): Effect.Effect<import("graphql").ExecutionResult, Error, never> => {
+  type ExecutionResult = import("graphql").ExecutionResult
 
-    // Await result if it's a promise
-    if (executeResult && typeof executeResult === "object" && "then" in executeResult) {
-      return yield* Effect.promise(
-        () => executeResult as Promise<import("graphql").ExecutionResult>
-      )
-    }
-    return executeResult as import("graphql").ExecutionResult
+  const tryExecute = Effect.try({
+    try: () =>
+      graphqlExecute({
+        schema,
+        document,
+        variableValues: variables,
+        operationName,
+        contextValue: { runtime } satisfies GraphQLEffectContext<R>,
+      }),
+    catch: (error) => new Error(String(error)),
   })
+
+  return tryExecute.pipe(
+    Effect.flatMap((executeResult): Effect.Effect<ExecutionResult, never, never> => {
+      if (isPromiseLike<ExecutionResult>(executeResult)) {
+        return Effect.promise(() => executeResult)
+      }
+      return Effect.succeed(executeResult)
+    })
+  )
+}
 
 /**
  * Compute cache control header for the response if applicable.
@@ -169,38 +217,32 @@ const computeCacheControlHeader = (
   cacheControlConfig:
     | { enabled?: boolean; calculateHttpHeaders?: boolean; defaultMaxAge?: number }
     | undefined
-): Effect.Effect<string | undefined, never, never> =>
-  Effect.gen(function* () {
-    if (
-      cacheControlConfig?.enabled === false ||
-      cacheControlConfig?.calculateHttpHeaders === false
-    ) {
-      return undefined
-    }
+): Effect.Effect<string | undefined, never, never> => {
+  if (cacheControlConfig?.enabled === false || cacheControlConfig?.calculateHttpHeaders === false) {
+    return Effect.succeed(undefined)
+  }
 
-    // Find the operation from the document
-    const operations = document.definitions.filter(
-      (d): d is OperationDefinitionNode => d.kind === Kind.OPERATION_DEFINITION
-    )
-    const operation = operationName
-      ? operations.find((o) => o.name?.value === operationName)
-      : operations[0]
+  // Find the operation from the document
+  const operations = document.definitions.filter(
+    (d): d is OperationDefinitionNode => d.kind === Kind.OPERATION_DEFINITION
+  )
+  const operation = operationName
+    ? operations.find((o) => o.name?.value === operationName)
+    : operations[0]
 
-    if (!operation || operation.operation === "mutation") {
-      // Mutations should not be cached
-      return undefined
-    }
+  if (!operation || operation.operation === "mutation") {
+    // Mutations should not be cached
+    return Effect.succeed(undefined)
+  }
 
-    const cachePolicy = yield* computeCachePolicy({
-      document,
-      operation,
-      schema,
-      cacheHints,
-      config: cacheControlConfig ?? {},
-    })
-
-    return toCacheControlHeader(cachePolicy)
-  })
+  return computeCachePolicy({
+    document,
+    operation,
+    schema,
+    cacheHints,
+    config: cacheControlConfig ?? {},
+  }).pipe(Effect.map(toCacheControlHeader))
+}
 
 /**
  * Build the final GraphQL response with extensions merged in.
@@ -324,14 +366,20 @@ export const makeGraphQLRouter = <R>(
   const extensions = options.extensions ?? []
   const errorHandler = options.errorHandler ?? defaultErrorHandler
 
-  // GraphQL POST handler
+  // GraphQL POST handler - typed as returning HttpServerResponse with all errors handled
   const graphqlHandler = Effect.gen(function* () {
     const extensionsService = yield* makeExtensionsService()
     const runtime = yield* Effect.runtime<R>()
 
     // Parse request body
     const request = yield* HttpServerRequest.HttpServerRequest
-    const body = yield* request.json as Effect.Effect<GraphQLRequestBody>
+    const parsedBody = yield* decodeRequestBody(request)
+    const body: GraphQLRequestBody = {
+      query: parsedBody.query,
+      variables: parsedBody.variables._tag === "Some" ? parsedBody.variables.value : undefined,
+      operationName:
+        parsedBody.operationName._tag === "Some" ? parsedBody.operationName.value : undefined,
+    }
 
     // Phase 1: Parse
     const parseResult = yield* parseGraphQLQuery(body.query, extensionsService)
@@ -347,7 +395,7 @@ export const makeGraphQLRouter = <R>(
     // Phase 2: Validate
     const validationRules = resolvedConfig.introspection
       ? undefined
-      : [...specifiedRules, NoSchemaIntrospectionCustomRule]
+      : specifiedRules.concat(NoSchemaIntrospectionCustomRule)
     const validationErrors = validate(schema, document, validationRules)
 
     yield* runValidateHooks(extensions, document, validationErrors).pipe(
@@ -407,7 +455,7 @@ export const makeGraphQLRouter = <R>(
     return yield* buildGraphQLResponse(result, extensionData, cacheControlHeader)
   }).pipe(
     Effect.provide(layer),
-    Effect.catchAll((error) => {
+    Effect.catchAll((error: GraphQLHandlerError) => {
       if (error instanceof ComplexityLimitExceededError) {
         return handleComplexityError(error)
       }
@@ -422,9 +470,12 @@ export const makeGraphQLRouter = <R>(
   )
 
   if (resolvedConfig.graphiql) {
-    const { path, endpoint } = resolvedConfig.graphiql
+    const { path, endpoint, subscriptionEndpoint } = resolvedConfig.graphiql
     router = router.pipe(
-      HttpRouter.get(path as HttpRouter.PathInput, HttpServerResponse.html(graphiqlHtml(endpoint)))
+      HttpRouter.get(
+        path as HttpRouter.PathInput,
+        HttpServerResponse.html(graphiqlHtml(endpoint, subscriptionEndpoint))
+      )
     )
   }
 

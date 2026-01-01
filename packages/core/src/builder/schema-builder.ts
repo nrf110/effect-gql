@@ -275,6 +275,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   objectType<A, R2 = never>(config: {
     name?: string
     schema: S.Schema<A, any, any>
+    description?: string
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
     /**
@@ -301,7 +302,14 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       }
     >
   }): GraphQLSchemaBuilder<R | R2> {
-    const { schema, implements: implementsInterfaces, directives, cacheControl, fields } = config
+    const {
+      schema,
+      description,
+      implements: implementsInterfaces,
+      directives,
+      cacheControl,
+      fields,
+    } = config
     const name = config.name ?? getSchemaName(schema)
     if (!name) {
       throw new Error(
@@ -310,7 +318,14 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     }
 
     const newTypes = new Map(this.state.types)
-    newTypes.set(name, { name, schema, implements: implementsInterfaces, directives, cacheControl })
+    newTypes.set(name, {
+      name,
+      schema,
+      description,
+      implements: implementsInterfaces,
+      directives,
+      cacheControl,
+    })
 
     let newObjectFields = this.state.objectFields
     if (fields) {
@@ -836,6 +851,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
 
       const graphqlType = new GraphQLObjectType({
         name: typeName,
+        description: typeReg.description,
         fields: () => {
           const baseFields = schemaToFields(typeReg.schema, sharedCtx)
           const additionalFields = this.state.objectFields.get(typeName)

@@ -11,7 +11,7 @@
 
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { HttpMiddleware, HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "@effect/platform"
 import { GraphQLSchemaBuilder, query, mutation, makeGraphQLRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 
@@ -76,10 +76,10 @@ const schema = GraphQLSchemaBuilder.empty
       resolve: () => Effect.succeed(users),
     }),
 
-    // Query to get a single user by ID
+    // Query to get a single user by ID (nullable return type)
     query("user", {
       args: S.Struct({ id: S.String }),
-      type: S.OptionFromNullOr(User),
+      type: S.NullOr(User),
       description: "Get a user by ID",
       resolve: (args) =>
         Effect.succeed(users.find((u) => u.id === args.id) ?? null),
@@ -128,27 +128,12 @@ const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
 })
 
 /**
- * CORS middleware to allow cross-origin requests.
- * Required for GraphiQL to work properly in browsers.
- */
-const cors = HttpMiddleware.make((app) =>
-  Effect.gen(function* () {
-    const response = yield* app
-    return response.pipe(
-      HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type")
-    )
-  })
-)
-
-/**
  * Build the complete application by composing routers.
  *
  * This demonstrates how Effect GQL integrates with @effect/platform's
  * HTTP routing system.
  */
-const app = HttpRouter.empty.pipe(
+const router = HttpRouter.empty.pipe(
   // Handle OPTIONS preflight requests for CORS
   HttpRouter.options(
     "/graphql",
@@ -165,10 +150,7 @@ const app = HttpRouter.empty.pipe(
   HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
 
   // Mount the GraphQL router
-  HttpRouter.concat(graphqlRouter),
-
-  // Apply CORS headers to all responses
-  cors
+  HttpRouter.concat(graphqlRouter)
 )
 
 // =============================================================================
@@ -183,7 +165,7 @@ const app = HttpRouter.empty.pipe(
  * - Handles graceful shutdown
  * - Provides lifecycle hooks
  */
-serve(app, Layer.empty, {
+serve(router, Layer.empty, {
   port: 4000,
   onStart: (url: string) => {
     console.log(`🚀 Server ready at ${url}`)

@@ -9,9 +9,9 @@
  * - WebSocket transport via graphql-ws protocol
  */
 
-import { Effect, Stream, Layer, Duration, Ref, PubSub, Queue, Schedule } from "effect"
+import { Effect, Stream, Layer, Duration, Ref, PubSub, Schedule } from "effect"
 import * as S from "effect/Schema"
-import { HttpMiddleware, HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "@effect/platform"
 import {
   GraphQLSchemaBuilder,
   query,
@@ -211,21 +211,7 @@ const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
   },
 })
 
-/**
- * CORS middleware to allow cross-origin requests.
- */
-const cors = HttpMiddleware.make((app) =>
-  Effect.gen(function* () {
-    const response = yield* app
-    return response.pipe(
-      HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type")
-    )
-  })
-)
-
-const app = HttpRouter.empty.pipe(
+const router = HttpRouter.empty.pipe(
   HttpRouter.options(
     "/graphql",
     HttpServerResponse.empty().pipe(
@@ -237,8 +223,7 @@ const app = HttpRouter.empty.pipe(
     )
   ),
   HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter),
-  cors
+  HttpRouter.concat(graphqlRouter)
 )
 
 // =============================================================================
@@ -251,7 +236,7 @@ const app = HttpRouter.empty.pipe(
  * The `subscriptions` option enables the graphql-ws protocol on the same
  * endpoint, allowing clients to establish WebSocket connections.
  */
-serve(app, Layer.empty, {
+serve(router, Layer.empty, {
   port: 4002,
   subscriptions: {
     schema,

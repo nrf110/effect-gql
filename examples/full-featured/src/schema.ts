@@ -24,21 +24,14 @@ import { loaders } from "./loaders"
 // Build the Schema
 // =============================================================================
 
-export const schema = GraphQLSchemaBuilder.empty
+// Define types
+const schemaWithTypes = GraphQLSchemaBuilder.empty
   .pipe(
-    // =========================================================================
-    // Enum Types
-    // =========================================================================
-
     enumType({
       name: "UserRole",
       values: ["ADMIN", "USER", "GUEST"],
       description: "The role of a user in the system",
     }),
-
-    // =========================================================================
-    // Object Types
-    // =========================================================================
 
     objectType({
       name: "User",
@@ -56,12 +49,12 @@ export const schema = GraphQLSchemaBuilder.empty
       name: "Comment",
       schema: Comment,
       description: "A comment on a post",
-    }),
+    })
+  )
 
-    // =========================================================================
-    // Computed Fields - User
-    // =========================================================================
-
+// Add computed fields
+const schemaWithFields = schemaWithTypes
+  .pipe(
     field("User", "posts", {
       type: S.Array(Post),
       description: "All posts written by this user",
@@ -77,10 +70,6 @@ export const schema = GraphQLSchemaBuilder.empty
           Effect.map((posts) => posts.length)
         ),
     }),
-
-    // =========================================================================
-    // Computed Fields - Post
-    // =========================================================================
 
     field("Post", "author", {
       type: User,
@@ -105,10 +94,6 @@ export const schema = GraphQLSchemaBuilder.empty
         ),
     }),
 
-    // =========================================================================
-    // Computed Fields - Comment
-    // =========================================================================
-
     field("Comment", "author", {
       type: User,
       description: "The author of this comment",
@@ -124,12 +109,12 @@ export const schema = GraphQLSchemaBuilder.empty
           const postService = yield* PostService
           return yield* postService.findById(parent.postId)
         }),
-    }),
+    })
+  )
 
-    // =========================================================================
-    // Queries
-    // =========================================================================
-
+// Add queries
+const schemaWithQueries = schemaWithFields
+  .pipe(
     query("me", {
       type: S.NullOr(User),
       description: "Get the currently authenticated user",
@@ -178,12 +163,12 @@ export const schema = GraphQLSchemaBuilder.empty
           const postService = yield* PostService
           return yield* postService.findById(args.id)
         }),
-    }),
+    })
+  )
 
-    // =========================================================================
-    // Mutations
-    // =========================================================================
-
+// Add mutations and build schema
+export const schema = schemaWithQueries
+  .pipe(
     mutation("createUser", {
       args: CreateUserInput,
       type: User,
@@ -196,7 +181,7 @@ export const schema = GraphQLSchemaBuilder.empty
           const userService = yield* UserService
           const user = yield* userService.create(args)
 
-          console.log(`✅ Created user: ${user.name} (${user.email})`)
+          console.log(`Created user: ${user.name} (${user.email})`)
           return user
         }),
     }),
@@ -213,7 +198,7 @@ export const schema = GraphQLSchemaBuilder.empty
           const postService = yield* PostService
           const post = yield* postService.create(user.id, args)
 
-          console.log(`✅ Created post: "${post.title}" by ${user.name}`)
+          console.log(`Created post: "${post.title}" by ${user.name}`)
           return post
         }),
     }),
@@ -230,7 +215,7 @@ export const schema = GraphQLSchemaBuilder.empty
           const postService = yield* PostService
           const post = yield* postService.publish(args.id)
 
-          console.log(`✅ Published post: "${post.title}"`)
+          console.log(`Published post: "${post.title}"`)
           return post
         }),
     }),
@@ -250,7 +235,7 @@ export const schema = GraphQLSchemaBuilder.empty
           const commentService = yield* CommentService
           const comment = yield* commentService.create(args.postId, user.id, args.content)
 
-          console.log(`✅ Added comment to post ${args.postId} by ${user.name}`)
+          console.log(`Added comment to post ${args.postId} by ${user.name}`)
           return comment
         }),
     })

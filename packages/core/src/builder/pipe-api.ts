@@ -20,6 +20,7 @@ export const objectType =
   <A, R2 = never>(config: {
     name?: string
     schema: S.Schema<A, any, any>
+    description?: string
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
     /**

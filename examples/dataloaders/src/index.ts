@@ -15,7 +15,7 @@
 
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
-import { HttpMiddleware, HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "@effect/platform"
 import {
   GraphQLSchemaBuilder,
   query,
@@ -234,21 +234,7 @@ const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
   },
 })
 
-/**
- * CORS middleware to allow cross-origin requests.
- */
-const cors = HttpMiddleware.make((app) =>
-  Effect.gen(function* () {
-    const response = yield* app
-    return response.pipe(
-      HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type")
-    )
-  })
-)
-
-const app = HttpRouter.empty.pipe(
+const router = HttpRouter.empty.pipe(
   HttpRouter.options(
     "/graphql",
     HttpServerResponse.empty().pipe(
@@ -260,15 +246,14 @@ const app = HttpRouter.empty.pipe(
     )
   ),
   HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter),
-  cors
+  HttpRouter.concat(graphqlRouter)
 )
 
 // =============================================================================
 // Server Startup
 // =============================================================================
 
-serve(app, Layer.empty, {
+serve(router, Layer.empty, {
   port: 4001,
   onStart: (url: string) => {
     console.log(`🚀 DataLoader Example Server ready at ${url}`)

@@ -77,6 +77,7 @@ export interface FieldRegistration<Args = any, A = any, E = any, R = any> {
 export interface TypeRegistration {
   name: string
   schema: S.Schema<any, any, any>
+  description?: string
   implements?: readonly string[]
   directives?: readonly DirectiveApplication[]
   /**

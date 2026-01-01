@@ -1,18 +1,14 @@
+// @ts-check
+
 import eslint from "@eslint/js"
+import { defineConfig } from "eslint/config"
 import tseslint from "typescript-eslint"
 import eslintConfigPrettier from "eslint-config-prettier"
 
-export default tseslint.config(
+export default defineConfig(
   // Global ignores
   {
-    ignores: [
-      "**/dist/**",
-      "**/node_modules/**",
-      "docs/**",
-      "examples/**",
-      "**/coverage/**",
-      "**/*.d.ts",
-    ],
+    ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**", "**/*.d.ts", "docs/.astro/**"],
   },
 
   // Base config for all files
@@ -91,6 +87,48 @@ export default tseslint.config(
     files: ["packages/cli/**/*.ts"],
     rules: {
       "no-console": "off",
+    },
+  },
+
+  // Examples - relaxed rules for reference code
+  {
+    files: ["examples/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-non-null-assertion": "off",
+      "@typescript-eslint/no-empty-object-type": "off",
+      "@typescript-eslint/no-require-imports": "off",
+      "no-console": "off",
+    },
+  },
+
+  // Docs - minimal rules for documentation site
+  {
+    files: ["docs/**/*.{ts,tsx,js,jsx,mjs,cjs,astro}"],
+    rules: {
+      // Turn off most TypeScript rules - docs code may be incomplete snippets
+      "@typescript-eslint/no-unused-vars": "off",
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-non-null-assertion": "off",
+      "@typescript-eslint/no-empty-object-type": "off",
+      "@typescript-eslint/no-require-imports": "off",
+      "@typescript-eslint/no-empty-function": "off",
+      "@typescript-eslint/ban-ts-comment": "off",
+
+      // Allow console in docs
+      "no-console": "off",
+
+      // Keep basic code quality rules
+      "no-var": "error",
+      eqeqeq: ["error", "always", { null: "ignore" }],
     },
   },
 

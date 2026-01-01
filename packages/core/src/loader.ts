@@ -34,7 +34,7 @@ import DataLoader from "dataloader"
 /**
  * Configuration for a single-value loader (one key -> one value)
  */
-interface SingleLoaderDef<K, V, R> {
+export interface SingleLoaderDef<K, V, R> {
   readonly _tag: "single"
   readonly batch: (keys: readonly K[]) => Effect.Effect<readonly V[], Error, R>
   readonly key: (value: V) => K
@@ -43,7 +43,7 @@ interface SingleLoaderDef<K, V, R> {
 /**
  * Configuration for a grouped loader (one key -> many values)
  */
-interface GroupedLoaderDef<K, V, R> {
+export interface GroupedLoaderDef<K, V, R> {
   readonly _tag: "grouped"
   readonly batch: (keys: readonly K[]) => Effect.Effect<readonly V[], Error, R>
   readonly groupBy: (value: V) => K
@@ -164,10 +164,14 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
     return Layer.effect(
       this.Service,
       Effect.gen(function* () {
-        const instances: Record<string, DataLoader<any, any>> = {}
+        // Build loader instances dynamically from definitions
+        // The type cast at the end is necessary because we're building the object dynamically
+        const instances: Partial<LoaderInstances<Defs>> = {}
 
-        for (const [name, def] of Object.entries(self.definitions)) {
-          instances[name] = yield* createDataLoader(def)
+        for (const name of Object.keys(self.definitions) as Array<keyof Defs & string>) {
+          const def = self.definitions[name]
+          // Type assertion needed here as we're building a heterogeneous record dynamically
+          instances[name] = (yield* createDataLoader(def)) as LoaderInstances<Defs>[typeof name]
         }
 
         return instances as LoaderInstances<Defs>
@@ -191,6 +195,9 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
   /**
    * Load a single value by key.
    * This is the most common operation in resolvers.
+   *
+   * @internal The internal cast is safe because LoaderInstances<Defs> guarantees
+   * that loaders[name] is a DataLoader with the correct key/value types.
    */
   load<Name extends keyof Defs & string>(
     name: Name,
@@ -199,7 +206,8 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
     const self = this
     return Effect.gen(function* () {
       const loaders = yield* self.Service
-      const loader = loaders[name] as DataLoader<any, any>
+      // Safe cast: LoaderInstances maps name to the correctly-typed DataLoader
+      const loader = loaders[name] as DataLoader<LoaderKey<Defs[Name]>, LoaderValue<Defs[Name]>>
       return yield* Effect.promise(() => loader.load(key))
     })
   }
@@ -207,6 +215,9 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
   /**
    * Load multiple values by keys.
    * All keys are batched into a single request.
+   *
+   * @internal The internal cast is safe because LoaderInstances<Defs> guarantees
+   * that loaders[name] is a DataLoader with the correct key/value types.
    */
   loadMany<Name extends keyof Defs & string>(
     name: Name,
@@ -215,7 +226,8 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
     const self = this
     return Effect.gen(function* () {
       const loaders = yield* self.Service
-      const loader = loaders[name] as DataLoader<any, any>
+      // Safe cast: LoaderInstances maps name to the correctly-typed DataLoader
+      const loader = loaders[name] as DataLoader<LoaderKey<Defs[Name]>, LoaderValue<Defs[Name]>>
       const results = yield* Effect.promise(() => loader.loadMany(keys))
       // Convert any errors to a failure
       for (const result of results) {
@@ -229,46 +241,66 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
 }
 
 /**
- * Create a DataLoader from a loader definition
+ * Create a DataLoader from a single loader definition.
+ */
+function createSingleDataLoader<K, V, R>(
+  def: SingleLoaderDef<K, V, R>,
+  context: Context.Context<R>
+): DataLoader<K, V | Error> {
+  return new DataLoader<K, V | Error>(async (keys) => {
+    const items = await Effect.runPromise(def.batch(keys).pipe(Effect.provide(context)))
+    // Map items back to keys in order
+    return keys.map((key) => {
+      const item = items.find((i) => def.key(i) === key)
+      if (!item) return new Error(`Not found: ${key}`)
+      return item
+    })
+  })
+}
+
+/**
+ * Create a DataLoader from a grouped loader definition.
+ */
+function createGroupedDataLoader<K, V, R>(
+  def: GroupedLoaderDef<K, V, R>,
+  context: Context.Context<R>
+): DataLoader<K, V[]> {
+  return new DataLoader<K, V[]>(async (keys) => {
+    const items = await Effect.runPromise(def.batch(keys).pipe(Effect.provide(context)))
+    // Group items by key with lazy array initialization
+    const map = new Map<K, V[]>()
+    for (const item of items) {
+      const key = def.groupBy(item)
+      let arr = map.get(key)
+      if (!arr) {
+        arr = []
+        map.set(key, arr)
+      }
+      arr.push(item)
+    }
+    // Return results in key order, defaulting to empty array for missing keys
+    return keys.map((key) => map.get(key) ?? [])
+  })
+}
+
+/**
+ * Create a DataLoader from a loader definition.
+ * Single loaders return V | Error, grouped loaders return V[].
+ *
+ * @internal The return type uses a union because we need to handle both loader types.
+ * The calling code should use the appropriate type based on the definition's _tag.
  */
 function createDataLoader<K, V, R>(
   def: LoaderDef<K, V, R>
-): Effect.Effect<DataLoader<K, any>, never, R> {
+): Effect.Effect<DataLoader<K, V | Error> | DataLoader<K, V[]>, never, R> {
   return Effect.gen(function* () {
     // Capture context for use in batch function
     const context = yield* Effect.context<R>()
 
     if (def._tag === "single") {
-      const loader = new DataLoader<K, V>(async (keys) => {
-        const items = await Effect.runPromise(def.batch(keys).pipe(Effect.provide(context)))
-        // Map items back to keys in order
-        return keys.map((key) => {
-          const item = items.find((i) => def.key(i) === key)
-          if (!item) return new Error(`Not found: ${key}`) as any
-          return item
-        })
-      })
-      return loader
+      return createSingleDataLoader(def, context)
     } else {
-      // Grouped loader
-      const loader = new DataLoader<K, V[]>(async (keys) => {
-        const items = await Effect.runPromise(def.batch(keys).pipe(Effect.provide(context)))
-        // Group items by key with lazy array initialization
-        // Only create arrays for keys that have matching items
-        const map = new Map<K, V[]>()
-        for (const item of items) {
-          const key = def.groupBy(item)
-          let arr = map.get(key)
-          if (!arr) {
-            arr = []
-            map.set(key, arr)
-          }
-          arr.push(item)
-        }
-        // Return results in key order, defaulting to empty array for missing keys
-        return keys.map((key) => map.get(key) ?? [])
-      })
-      return loader
+      return createGroupedDataLoader(def, context)
     }
   })
 }
