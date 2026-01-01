@@ -1,0 +1,232 @@
+---
+title: DataLoaders
+description: Solve the N+1 problem with efficient batching using Effect GQL's Loader API
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This example demonstrates how to use Effect GQL's DataLoader integration to efficiently batch database queries and solve the N+1 problem.
+
+## Running the Example
+
+```bash
+pnpm example:dataloaders
+# Server starts at http://localhost:4001
+# GraphiQL available at http://localhost:4001/graphiql
+```
+
+## The N+1 Problem
+
+When fetching a list of posts with their authors, a naive implementation makes:
+- 1 query for the list of posts
+- N queries for each author (one per post)
+
+This results in N+1 database queries. With DataLoader, all author lookups are batched into a single query.
+
+<Aside type="tip">
+Watch the server console when running queries. You'll see `[Loader]` messages showing how requests are batched.
+</Aside>
+
+## What You'll Learn
+
+- Defining loaders with `Loader.single` and `Loader.grouped`
+- Integrating loaders with Effect services
+- Using loaders in computed fields
+- Request-scoped caching and batching
+
+## Loader Definitions
+
+Effect GQL provides a type-safe Loader API:
+
+```typescript
+import { Loader } from "@effect-gql/core"
+
+const loaders = Loader.define({
+  // One key → one value
+  UserById: Loader.single<string, User, DatabaseService>({
+    batch: (ids) =>
+      Effect.gen(function* () {
+        const db = yield* DatabaseService
+        return yield* db.getUsersByIds(ids)
+      }),
+    key: (user) => user.id,
+  }),
+
+  // One key → many values
+  PostsByAuthorId: Loader.grouped<string, Post, DatabaseService>({
+    batch: (authorIds) =>
+      Effect.gen(function* () {
+        const db = yield* DatabaseService
+        return yield* db.getPostsByAuthorIds(authorIds)
+      }),
+    groupBy: (post) => post.authorId,
+  }),
+})
+```
+
+### Loader Types
+
+| Type | Use Case | Example |
+|------|----------|---------|
+| `Loader.single` | One-to-one relationships | User by ID |
+| `Loader.grouped` | One-to-many relationships | Posts by author ID |
+
+## Using Loaders in Resolvers
+
+Loaders are used in computed fields to fetch related data:
+
+```typescript
+// Add computed field to Post type
+field("Post", "author", {
+  type: User,
+  resolve: (parent: Post) => loaders.load("UserById", parent.authorId),
+})
+
+// Add computed field to User type  
+field("User", "posts", {
+  type: S.Array(Post),
+  resolve: (parent: User) => loaders.load("PostsByAuthorId", parent.id),
+})
+```
+
+## Request-Scoped Layers
+
+Loaders must be request-scoped to ensure proper batching and cache isolation:
+
+```typescript
+const AppLayer = Layer.mergeAll(
+  DatabaseServiceLive,
+  loaders.toLayer()  // Creates fresh loaders per request
+)
+
+const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
+  path: "/graphql",
+})
+```
+
+## Complete Code
+
+```typescript
+import { Effect, Context, Layer } from "effect"
+import * as S from "effect/Schema"
+import {
+  GraphQLSchemaBuilder,
+  query,
+  objectType,
+  field,
+  makeGraphQLRouter,
+  Loader,
+} from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
+
+// Domain models
+const User = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+const Post = S.Struct({
+  id: S.String,
+  title: S.String,
+  content: S.String,
+  authorId: S.String,
+})
+
+// Database service
+class DatabaseService extends Context.Tag("DatabaseService")<
+  DatabaseService,
+  {
+    readonly getUsersByIds: (ids: readonly string[]) => Effect.Effect<readonly User[]>
+    readonly getPostsByAuthorIds: (ids: readonly string[]) => Effect.Effect<readonly Post[]>
+    readonly getAllPosts: () => Effect.Effect<readonly Post[]>
+  }
+>() {}
+
+// Define loaders
+const loaders = Loader.define({
+  UserById: Loader.single<string, User, DatabaseService>({
+    batch: (ids) =>
+      Effect.gen(function* () {
+        const db = yield* DatabaseService
+        console.log(`📦 [Loader] Batch fetching users: [${ids.join(", ")}]`)
+        return yield* db.getUsersByIds(ids)
+      }),
+    key: (user) => user.id,
+  }),
+
+  PostsByAuthorId: Loader.grouped<string, Post, DatabaseService>({
+    batch: (authorIds) =>
+      Effect.gen(function* () {
+        const db = yield* DatabaseService
+        console.log(`📦 [Loader] Batch fetching posts: [${authorIds.join(", ")}]`)
+        return yield* db.getPostsByAuthorIds(authorIds)
+      }),
+    groupBy: (post) => post.authorId,
+  }),
+})
+
+// Build schema with computed fields
+const schema = GraphQLSchemaBuilder.empty
+  .pipe(
+    objectType({ name: "User", schema: User }),
+    objectType({ name: "Post", schema: Post }),
+
+    // User.posts - uses grouped loader
+    field("User", "posts", {
+      type: S.Array(Post),
+      resolve: (parent) => loaders.load("PostsByAuthorId", parent.id),
+    }),
+
+    // Post.author - uses single loader
+    field("Post", "author", {
+      type: User,
+      resolve: (parent) => loaders.load("UserById", parent.authorId),
+    }),
+
+    query("posts", {
+      type: S.Array(Post),
+      resolve: () =>
+        Effect.gen(function* () {
+          const db = yield* DatabaseService
+          return [...(yield* db.getAllPosts())]
+        }),
+    }),
+  )
+  .buildSchema()
+```
+
+## Example Query
+
+This query demonstrates batching in action:
+
+```graphql
+query {
+  posts {
+    title
+    author {
+      name
+    }
+  }
+}
+```
+
+**Without batching**: 1 query for posts + 5 queries for authors = 6 queries  
+**With batching**: 1 query for posts + 1 batched query for authors = 2 queries
+
+## Console Output
+
+When you run the above query, you'll see:
+
+```
+📦 [DB] Fetching all posts
+📦 [Loader] Batch fetching users: [1, 2, 3]
+```
+
+Notice how all author IDs are batched into a single database call.
+
+## Next Steps
+
+- [Subscriptions Example](/effect-gql/examples/subscriptions/) - Add real-time updates
+- [Full-Featured Example](/effect-gql/examples/full-featured/) - See loaders in a complete application
+- [DataLoader Guide](/effect-gql/guides/dataloader/) - Deep dive into the Loader API

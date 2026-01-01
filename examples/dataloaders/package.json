@@ -1,0 +1,25 @@
+{
+  "name": "@effect-gql/example-dataloaders",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DataLoader example solving the N+1 problem with Effect GQL",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "build": "echo 'Examples are not built'",
+    "clean": "echo 'Nothing to clean'"
+  },
+  "dependencies": {
+    "@effect-gql/core": "workspace:*",
+    "@effect-gql/node": "workspace:*",
+    "@effect/platform": "^0.94.0",
+    "@effect/platform-node": "^0.104.0",
+    "effect": "^3.19.0",
+    "graphql": "^16.0.0",
+    "dataloader": "^2.2.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}

@@ -1,0 +1,354 @@
+---
+title: Full-Featured Example
+description: Production-ready GraphQL server with services, auth, and modular architecture
+---
+
+import { Aside, FileTree, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This example demonstrates a production-ready GraphQL server with proper separation of concerns, service-based architecture, and Effect best practices.
+
+## Running the Example
+
+```bash
+pnpm example:full
+# Server starts at http://localhost:4003
+# GraphiQL available at http://localhost:4003/graphiql
+```
+
+## What You'll Learn
+
+- Modular code organization
+- Domain modeling with Effect Schema
+- Service-based architecture with dependency injection
+- DataLoaders for efficient data fetching
+- Authentication and authorization patterns
+- Computed fields with relationships
+
+## Project Structure
+
+<FileTree>
+- examples/full-featured/
+  - src/
+    - domain.ts     # Effect Schema models
+    - services.ts   # Business logic services
+    - loaders.ts    # DataLoader definitions
+    - schema.ts     # GraphQL schema composition
+    - index.ts      # Server entry point
+  - package.json
+  - tsconfig.json
+</FileTree>
+
+## Domain Models
+
+Define your domain with Effect Schema. These serve as the single source of truth:
+
+```typescript
+// domain.ts
+import * as S from "effect/Schema"
+
+export const UserRole = S.Literal("ADMIN", "USER", "GUEST")
+export type UserRole = S.Schema.Type<typeof UserRole>
+
+export const User = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+  role: UserRole,
+})
+export type User = S.Schema.Type<typeof User>
+
+export const CreateUserInput = S.Struct({
+  name: S.String.pipe(S.minLength(1), S.maxLength(100)),
+  email: S.String.pipe(S.pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
+  role: S.optional(UserRole).pipe(S.withDefault(() => "USER" as const)),
+})
+
+export const Post = S.Struct({
+  id: S.String,
+  title: S.String,
+  content: S.String,
+  authorId: S.String,
+  published: S.Boolean,
+  createdAt: S.Number,
+})
+```
+
+<Aside type="tip">
+Effect Schema provides built-in validation. The `CreateUserInput` schema validates email format and name length automatically.
+</Aside>
+
+## Services
+
+Services encapsulate business logic and external dependencies:
+
+```typescript
+// services.ts
+import { Effect, Context, Layer } from "effect"
+import { NotFoundError, AuthorizationError } from "@effect-gql/core"
+
+export class AuthService extends Context.Tag("AuthService")<
+  AuthService,
+  {
+    readonly getCurrentUser: () => Effect.Effect<User | null>
+    readonly requireAuth: () => Effect.Effect<User, AuthorizationError>
+    readonly requireRole: (role: string) => Effect.Effect<User, AuthorizationError>
+  }
+>() {}
+
+export class UserService extends Context.Tag("UserService")<
+  UserService,
+  {
+    readonly findById: (id: string) => Effect.Effect<User, NotFoundError>
+    readonly findByIds: (ids: readonly string[]) => Effect.Effect<readonly User[]>
+    readonly findAll: () => Effect.Effect<readonly User[]>
+    readonly create: (input: CreateUserInput) => Effect.Effect<User>
+  }
+>() {}
+
+export class PostService extends Context.Tag("PostService")<
+  PostService,
+  {
+    readonly findById: (id: string) => Effect.Effect<Post, NotFoundError>
+    readonly findByAuthorIds: (ids: readonly string[]) => Effect.Effect<readonly Post[]>
+    readonly create: (authorId: string, input: CreatePostInput) => Effect.Effect<Post>
+  }
+>() {}
+```
+
+### Service Implementations
+
+```typescript
+export const UserServiceLive = Layer.succeed(UserService, {
+  findById: (id: string) =>
+    Effect.gen(function* () {
+      const users = yield* Ref.get(usersRef)
+      const user = users.find((u) => u.id === id)
+      if (!user) {
+        return yield* Effect.fail(
+          new NotFoundError({ message: "User not found", resource: `User:${id}` })
+        )
+      }
+      return user
+    }),
+  
+  findByIds: (ids: readonly string[]) =>
+    Effect.gen(function* () {
+      const users = yield* Ref.get(usersRef)
+      return users.filter((u) => ids.includes(u.id))
+    }),
+  
+  // ... other methods
+})
+
+export const ServicesLive = Layer.mergeAll(
+  AuthServiceLive,
+  UserServiceLive,
+  PostServiceLive,
+  CommentServiceLive
+)
+```
+
+## DataLoaders
+
+Define loaders that integrate with your services:
+
+```typescript
+// loaders.ts
+import { Loader } from "@effect-gql/core"
+import { UserService, PostService } from "./services"
+
+export const loaders = Loader.define({
+  UserById: Loader.single<string, User, UserService>({
+    batch: (ids) =>
+      Effect.gen(function* () {
+        const userService = yield* UserService
+        return yield* userService.findByIds(ids)
+      }),
+    key: (user) => user.id,
+  }),
+
+  PostsByAuthorId: Loader.grouped<string, Post, PostService>({
+    batch: (authorIds) =>
+      Effect.gen(function* () {
+        const postService = yield* PostService
+        return yield* postService.findByAuthorIds(authorIds)
+      }),
+    groupBy: (post) => post.authorId,
+  }),
+})
+```
+
+## Schema Composition
+
+Compose the schema using the pipe API:
+
+```typescript
+// schema.ts
+import {
+  GraphQLSchemaBuilder,
+  query,
+  mutation,
+  objectType,
+  enumType,
+  field,
+} from "@effect-gql/core"
+
+export const schema = GraphQLSchemaBuilder.empty
+  .pipe(
+    // Register types
+    enumType({ name: "UserRole", schema: UserRole }),
+    objectType({ name: "User", schema: User }),
+    objectType({ name: "Post", schema: Post }),
+
+    // Computed fields with loaders
+    field("User", "posts", {
+      type: S.Array(Post),
+      resolve: (parent) => loaders.load("PostsByAuthorId", parent.id),
+    }),
+
+    field("Post", "author", {
+      type: User,
+      resolve: (parent) => loaders.load("UserById", parent.authorId),
+    }),
+
+    // Queries
+    query("me", {
+      type: S.NullOr(User),
+      resolve: () =>
+        Effect.gen(function* () {
+          const auth = yield* AuthService
+          return yield* auth.getCurrentUser()
+        }),
+    }),
+
+    query("users", {
+      type: S.Array(User),
+      resolve: () =>
+        Effect.gen(function* () {
+          const userService = yield* UserService
+          return [...(yield* userService.findAll())]
+        }),
+    }),
+
+    // Mutations with auth
+    mutation("createUser", {
+      args: CreateUserInput,
+      type: User,
+      resolve: (args) =>
+        Effect.gen(function* () {
+          const auth = yield* AuthService
+          yield* auth.requireRole("ADMIN")
+
+          const userService = yield* UserService
+          return yield* userService.create(args)
+        }),
+    }),
+  )
+  .buildSchema()
+```
+
+## Server Entry Point
+
+Bring everything together:
+
+```typescript
+// index.ts
+import { Layer } from "effect"
+import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { makeGraphQLRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
+
+import { schema } from "./schema"
+import { ServicesLive } from "./services"
+import { loaders } from "./loaders"
+
+// Combine all layers
+const AppLayer = Layer.mergeAll(ServicesLive, loaders.toLayer())
+
+// Create router
+const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
+  path: "/graphql",
+  graphiql: { path: "/graphiql", endpoint: "/graphql" },
+})
+
+const app = HttpRouter.empty.pipe(
+  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
+  HttpRouter.concat(graphqlRouter)
+)
+
+// Start server
+serve(app, Layer.empty, { port: 4003 })
+```
+
+## Example Queries
+
+### Get Current User with Posts
+
+```graphql
+query {
+  me {
+    id
+    name
+    role
+    posts {
+      title
+      published
+      commentCount
+    }
+  }
+}
+```
+
+### Nested Relationships
+
+```graphql
+query {
+  posts {
+    title
+    author {
+      name
+      posts {
+        title
+      }
+    }
+    comments {
+      content
+      author {
+        name
+      }
+    }
+  }
+}
+```
+
+### Create a Post
+
+The example simulates a logged-in user (Alice with ADMIN role), so mutations work without explicit authentication headers.
+
+```graphql
+mutation {
+  createPost(title: "My New Post", content: "Hello world!") {
+    id
+    title
+    author {
+      name
+    }
+  }
+}
+```
+
+## Architecture Benefits
+
+| Concern | Solution | Benefit |
+|---------|----------|---------|
+| Type Safety | Effect Schema | Single source of truth for types |
+| Dependencies | Effect Services | Compile-time dependency checking |
+| Performance | DataLoaders | Automatic batching and caching |
+| Authorization | Service layer | Centralized access control |
+| Testing | Layer composition | Easy mocking and testing |
+
+## Next Steps
+
+- [Schema Builder Guide](/effect-gql/guides/schema-builder/) - Deep dive into schema building
+- [Resolver Context Guide](/effect-gql/guides/resolver-context/) - Working with request context
+- [Error Handling Guide](/effect-gql/guides/error-handling/) - Typed error handling patterns

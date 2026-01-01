@@ -4,9 +4,14 @@
     "url": "https://github.com/nrf110/effect-gql"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "examples/*"
   ],
   "scripts": {
+    "example:basic": "pnpm --filter @effect-gql/example-basic-server start",
+    "example:dataloaders": "pnpm --filter @effect-gql/example-dataloaders start",
+    "example:subscriptions": "pnpm --filter @effect-gql/example-subscriptions start",
+    "example:full": "pnpm --filter @effect-gql/example-full-featured start",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "test": "turbo run test",

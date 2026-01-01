@@ -1,181 +1,112 @@
 ---
-title: CLI Tools
-description: Command-line tools for effect-gql development workflows
+title: CLI API Reference
+description: Programmatic API for @effect-gql/cli
 ---
 
-The `@effect-gql/cli` package provides command-line tools for common development tasks.
+The `@effect-gql/cli` package exports functions for programmatic use in custom scripts and tooling.
 
-## Installation
+For installation and command-line usage, see the [CLI Guide](/effect-gql/guides/cli/).
 
-```bash
-npm install @effect-gql/cli
-```
+## Functions
 
-Or use directly with npx:
+### generateSDL
 
-```bash
-npx @effect-gql/cli <command>
-```
-
-## Commands
-
-### generate-schema
-
-Generate GraphQL SDL (Schema Definition Language) files from your code-first schema without starting your server.
-
-#### Why This Matters
-
-In code-first GraphQL frameworks, the schema is typically built at runtime. This often means you need to:
-1. Start your server with all dependencies (database, external services, etc.)
-2. Mock or stub every Effect layer just to generate SDL
-
-effect-gql separates **schema building** from **query execution**. The `R` type parameter tracks service requirements, but these are only needed when resolvers actually run - not when constructing the schema structure.
-
-#### Usage
-
-```bash
-# Generate SDL to stdout
-effect-gql generate-schema ./src/schema.ts
-
-# Write to file
-effect-gql generate-schema ./src/schema.ts -o schema.graphql
-
-# Watch mode - regenerate on changes
-effect-gql generate-schema ./src/schema.ts -o schema.graphql --watch
-```
-
-Or with npx:
-
-```bash
-npx @effect-gql/cli generate-schema ./src/schema.ts -o schema.graphql
-```
-
-#### Options
-
-| Option | Description |
-|--------|-------------|
-| `-o, --output <file>` | Write SDL to file instead of stdout |
-| `--no-sort` | Don't sort schema alphabetically (default: sorted) |
-| `-w, --watch` | Watch for changes and regenerate |
-| `-h, --help` | Show help message |
-
-#### Module Exports
-
-Your schema module should export one of:
+Generate SDL from a GraphQL schema.
 
 ```typescript
-// Option 1: Export builder
-export const builder = GraphQLSchemaBuilder.empty.pipe(
-  query("hello", { ... }),
-  objectType({ ... })
-)
+import { generateSDL } from "@effect-gql/cli"
 
-// Option 2: Export schema
-export const schema = builder.buildSchema()
-
-// Option 3: Default export
-export default builder
-```
-
-### create (Coming Soon)
-
-Scaffold a new Effect GraphQL project with best practices and common configurations.
-
-```bash
-effect-gql create my-app
-```
-
-## Programmatic API
-
-For more control, use the programmatic API:
-
-```typescript
-import { generateSDL, generateSDLFromModule } from "@effect-gql/cli"
-import { Effect } from "effect"
-
-// From a schema directly
-const sdl = generateSDL(builder.buildSchema())
+const sdl = generateSDL(schema)
 
 // With options
 const sortedSdl = generateSDL(schema, { sort: true })
-
-// From a module path (async)
-const sdl = await Effect.runPromise(
-  generateSDLFromModule("./src/schema.ts", { sort: true })
-)
 ```
 
-### API Reference
-
-#### `generateSDL(schema, options?)`
-
-Generate SDL from a GraphQL schema.
+#### Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `schema` | `GraphQLSchema` | The GraphQL schema |
 | `options.sort` | `boolean` | Sort types alphabetically (default: `true`) |
 
-Returns: `string` - The SDL representation
+#### Returns
 
-#### `generateSDLFromModule(modulePath, options?)`
+`string` - The SDL representation of the schema.
+
+---
+
+### generateSDLFromModule
 
 Load a schema from a module and generate SDL.
 
+```typescript
+import { generateSDLFromModule } from "@effect-gql/cli"
+import { Effect } from "effect"
+
+const sdl = await Effect.runPromise(
+  generateSDLFromModule("./src/schema.ts")
+)
+
+// With options
+const sdl = await Effect.runPromise(
+  generateSDLFromModule("./src/schema.ts", { sort: false })
+)
+```
+
+#### Parameters
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `modulePath` | `string` | Path to the module |
+| `modulePath` | `string` | Path to the module (relative to cwd) |
 | `options.sort` | `boolean` | Sort types alphabetically (default: `true`) |
 
-Returns: `Effect.Effect<string, Error>` - SDL or error
+#### Returns
 
-#### `loadSchema(modulePath)`
+`Effect.Effect<string, Error>` - Effect that produces SDL or fails with an error.
+
+---
+
+### loadSchema
 
 Load a GraphQL schema from a module path.
 
+```typescript
+import { loadSchema } from "@effect-gql/cli"
+import { Effect } from "effect"
+
+const schema = await Effect.runPromise(
+  loadSchema("./src/schema.ts")
+)
+```
+
+#### Parameters
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `modulePath` | `string` | Path to the module |
+| `modulePath` | `string` | Path to the module (relative to cwd) |
 
-Returns: `Effect.Effect<GraphQLSchema, Error>` - The loaded schema
+#### Returns
 
-## CI/CD Integration
+`Effect.Effect<GraphQLSchema, Error>` - Effect that produces the loaded schema or fails with an error.
 
-### GitHub Actions Example
+#### Module Resolution
 
-```yaml
-name: Schema Check
-on: [push, pull_request]
+The module should export one of:
 
-jobs:
-  schema:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
+- `builder` - A `GraphQLSchemaBuilder` instance (calls `buildSchema()` automatically)
+- `schema` - A `GraphQLSchema` instance
+- `default` - Either of the above as the default export
 
-      - run: npm ci
-
-      # Generate schema and check for uncommitted changes
-      - run: npx @effect-gql/cli generate-schema ./src/schema.ts -o schema.graphql
-      - run: git diff --exit-code schema.graphql
+```typescript
+// Any of these work:
+export const builder = GraphQLSchemaBuilder.empty.pipe(...)
+export const schema = builder.buildSchema()
+export default builder
 ```
 
-### Pre-commit Hook
+## Usage Examples
 
-Add to your `.husky/pre-commit`:
-
-```bash
-#!/bin/sh
-npx @effect-gql/cli generate-schema ./src/schema.ts -o schema.graphql
-git add schema.graphql
-```
-
-### Custom Script
-
-Create a simple generation script:
+### Custom Build Script
 
 ```typescript
 // scripts/generate-schema.ts
@@ -188,39 +119,46 @@ writeFileSync("schema.graphql", sdl)
 console.log("Generated schema.graphql")
 ```
 
-Run with:
-```bash
-npx tsx scripts/generate-schema.ts
-```
-
-## Working Without Services
-
-The key insight is that schema building doesn't require your services:
+### Schema Validation
 
 ```typescript
-import { generateSDL } from "@effect-gql/cli"
+import { loadSchema } from "@effect-gql/cli"
+import { Effect } from "effect"
+import { validateSchema } from "graphql"
 
-// This works without any DatabaseService layer!
-const builder = GraphQLSchemaBuilder.empty.pipe(
-  query("users", {
-    type: S.Array(UserSchema),
-    // Resolver requires DatabaseService, but it's never executed
-    resolve: () =>
-      DatabaseService.pipe(
-        Effect.flatMap((db) => db.getUsers())
-      ),
-  })
-)
+const program = Effect.gen(function* () {
+  const schema = yield* loadSchema("./src/schema.ts")
+  const errors = validateSchema(schema)
+  
+  if (errors.length > 0) {
+    console.error("Schema validation errors:", errors)
+    process.exit(1)
+  }
+  
+  console.log("Schema is valid!")
+})
 
-// buildSchema() is pure - no services needed
-const schema = builder.buildSchema()
-
-// Generate SDL without any layers
-const sdl = generateSDL(schema)
+Effect.runPromise(program)
 ```
 
-This means you can:
-- Generate SDL in CI without database connections
-- Create schema introspection endpoints
-- Build documentation from schema
-- Validate schema changes in pull requests
+### Comparing Schemas
+
+```typescript
+import { generateSDLFromModule } from "@effect-gql/cli"
+import { Effect } from "effect"
+import { readFileSync } from "fs"
+
+const program = Effect.gen(function* () {
+  const currentSDL = yield* generateSDLFromModule("./src/schema.ts")
+  const committedSDL = readFileSync("schema.graphql", "utf-8")
+  
+  if (currentSDL !== committedSDL) {
+    console.error("Schema has changed! Run 'effect-gql generate-schema' to update.")
+    process.exit(1)
+  }
+  
+  console.log("Schema is up to date.")
+})
+
+Effect.runPromise(program)
+```

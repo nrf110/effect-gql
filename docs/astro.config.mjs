@@ -34,6 +34,7 @@ export default defineConfig({
 						{ label: 'Server Integration', slug: 'guides/server-integration' },
 						{ label: 'Subscriptions', slug: 'guides/subscriptions' },
 						{ label: 'DataLoader', slug: 'guides/dataloader' },
+						{ label: 'CLI Tools', slug: 'guides/cli' },
 						{ label: 'Complexity Limiting', slug: 'guides/complexity-limiting' },
 						{ label: 'Response Caching', slug: 'guides/response-caching' },
 						{ label: 'OpenTelemetry', slug: 'guides/opentelemetry' },
@@ -53,6 +54,7 @@ export default defineConfig({
 						{ label: 'Context API', slug: 'reference/context-api' },
 						{ label: 'Loader API', slug: 'reference/loader-api' },
 						{ label: 'Server API', slug: 'reference/server-api' },
+						{ label: 'CLI API', slug: 'reference/cli' },
 					],
 				},
 				{

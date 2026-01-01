@@ -1,27 +1,82 @@
 ---
 title: Examples
-description: Complete examples showing Effect GraphQL in action
+description: Complete, runnable examples showing Effect GQL in action
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
 
-Learn from complete, working examples that demonstrate common patterns.
+Learn from complete, working examples that demonstrate common patterns. All examples are part of the monorepo and can be run directly.
+
+## Running Examples
+
+```bash
+# Clone the repository
+git clone https://github.com/nrf110/effect-gql.git
+# Install dependencies
+pnpm install
+
+# Build all packages first
+pnpm build
+
+# Run an example
+pnpm example:basic        # Basic server
+pnpm example:dataloaders  # DataLoader example
+pnpm example:subscriptions # Real-time subscriptions
+pnpm example:full         # Full-featured example
+```
+
+## Available Examples
 
 <CardGrid>
-  <Card title="Basic API" icon="rocket">
-    Simple CRUD operations with queries and mutations.
-  </Card>
-  <Card title="Service Injection" icon="puzzle">
-    Using Effect services for dependency injection.
-  </Card>
-  <Card title="Relational Data" icon="random">
-    Building schemas with relationships between types.
-  </Card>
-  <Card title="DataLoader" icon="list-format">
-    Batch loading with Effect-based DataLoaders.
-  </Card>
+  <LinkCard
+    title="Basic Server"
+    description="A minimal GraphQL server with queries, mutations, and GraphiQL. Perfect for getting started."
+    href="/effect-gql/examples/basic-server/"
+  />
+  <LinkCard
+    title="DataLoaders"
+    description="Solve the N+1 problem with Effect GQL's DataLoader integration for efficient batching."
+    href="/effect-gql/examples/dataloaders/"
+  />
+  <LinkCard
+    title="Subscriptions"
+    description="Real-time GraphQL subscriptions using Effect Streams and WebSockets."
+    href="/effect-gql/examples/subscriptions/"
+  />
+  <LinkCard
+    title="Full-Featured"
+    description="Production-ready example with services, auth, error handling, and modular architecture."
+    href="/effect-gql/examples/full-featured/"
+  />
 </CardGrid>
 
----
+## Example Structure
 
-*More examples coming soon. Check the [Getting Started](/effect-gql/getting-started/quick-start/) guide for introductory examples.*
+Each example is a self-contained package in the `examples/` directory:
+
+```
+examples/
+├── basic-server/       # Minimal getting-started example
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── src/
+│       └── index.ts
+├── dataloaders/        # N+1 problem solution
+├── subscriptions/      # Real-time updates
+└── full-featured/      # Production patterns
+    └── src/
+        ├── domain.ts   # Effect Schema models
+        ├── services.ts # Business logic services
+        ├── loaders.ts  # DataLoader definitions
+        ├── schema.ts   # GraphQL schema
+        └── index.ts    # Server entry point
+```
+
+## Quick Comparison
+
+| Example | Queries | Mutations | Subscriptions | Services | DataLoaders |
+|---------|:-------:|:---------:|:-------------:|:--------:|:-----------:|
+| Basic Server | ✅ | ✅ | ❌ | ❌ | ❌ |
+| DataLoaders | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Subscriptions | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Full-Featured | ✅ | ✅ | ❌ | ✅ | ✅ |

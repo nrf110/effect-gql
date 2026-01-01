@@ -1,0 +1,180 @@
+---
+title: CLI Tools
+description: Command-line tools for effect-gql development workflows
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The `@effect-gql/cli` package provides command-line tools for common development tasks like generating GraphQL SDL from your code-first schema.
+
+## Installation
+
+<Tabs>
+  <TabItem label="npm">
+    ```bash
+    npm install @effect-gql/cli
+    ```
+  </TabItem>
+  <TabItem label="pnpm">
+    ```bash
+    pnpm add @effect-gql/cli
+    ```
+  </TabItem>
+  <TabItem label="yarn">
+    ```bash
+    yarn add @effect-gql/cli
+    ```
+  </TabItem>
+</Tabs>
+
+Or use directly with npx:
+
+```bash
+npx @effect-gql/cli <command>
+```
+
+## Commands
+
+### generate-schema
+
+Generate GraphQL SDL (Schema Definition Language) files from your code-first schema without starting your server.
+
+```bash
+# Generate SDL to stdout
+effect-gql generate-schema ./src/schema.ts
+
+# Write to file
+effect-gql generate-schema ./src/schema.ts -o schema.graphql
+
+# Watch mode - regenerate on changes
+effect-gql generate-schema ./src/schema.ts -o schema.graphql --watch
+```
+
+#### Options
+
+| Option | Description |
+|--------|-------------|
+| `-o, --output <file>` | Write SDL to file instead of stdout |
+| `--no-sort` | Don't sort schema alphabetically (default: sorted) |
+| `-w, --watch` | Watch for changes and regenerate |
+| `-h, --help` | Show help message |
+
+#### Module Exports
+
+Your schema module should export one of:
+
+```typescript
+// Option 1: Export builder
+export const builder = GraphQLSchemaBuilder.empty.pipe(
+  query("hello", { ... }),
+  objectType({ ... })
+)
+
+// Option 2: Export schema
+export const schema = builder.buildSchema()
+
+// Option 3: Default export
+export default builder
+```
+
+### create (Coming Soon)
+
+Scaffold a new Effect GraphQL project with best practices and common configurations.
+
+```bash
+effect-gql create my-app
+```
+
+## Why This Matters
+
+In code-first GraphQL frameworks, the schema is typically built at runtime. This often means you need to:
+1. Start your server with all dependencies (database, external services, etc.)
+2. Mock or stub every Effect layer just to generate SDL
+
+Effect GQL separates **schema building** from **query execution**. The `R` type parameter tracks service requirements, but these are only needed when resolvers actually run—not when constructing the schema structure.
+
+```typescript
+import { generateSDL } from "@effect-gql/cli"
+
+// This works without any DatabaseService layer!
+const builder = GraphQLSchemaBuilder.empty.pipe(
+  query("users", {
+    type: S.Array(UserSchema),
+    // Resolver requires DatabaseService, but it's never executed
+    resolve: () =>
+      DatabaseService.pipe(
+        Effect.flatMap((db) => db.getUsers())
+      ),
+  })
+)
+
+// buildSchema() is pure - no services needed
+const schema = builder.buildSchema()
+
+// Generate SDL without any layers
+const sdl = generateSDL(schema)
+```
+
+This means you can:
+- Generate SDL in CI without database connections
+- Create schema introspection endpoints
+- Build documentation from schema
+- Validate schema changes in pull requests
+
+## CI/CD Integration
+
+### GitHub Actions Example
+
+```yaml
+name: Schema Check
+on: [push, pull_request]
+
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      # Generate schema and check for uncommitted changes
+      - run: npx @effect-gql/cli generate-schema ./src/schema.ts -o schema.graphql
+      - run: git diff --exit-code schema.graphql
+```
+
+### Pre-commit Hook
+
+Add to your `.husky/pre-commit`:
+
+```bash
+#!/bin/sh
+npx @effect-gql/cli generate-schema ./src/schema.ts -o schema.graphql
+git add schema.graphql
+```
+
+### Custom Script
+
+Create a simple generation script:
+
+```typescript
+// scripts/generate-schema.ts
+import { generateSDL } from "@effect-gql/cli"
+import { builder } from "../src/schema"
+import { writeFileSync } from "fs"
+
+const sdl = generateSDL(builder.buildSchema())
+writeFileSync("schema.graphql", sdl)
+console.log("Generated schema.graphql")
+```
+
+Run with:
+```bash
+npx tsx scripts/generate-schema.ts
+```
+
+## Next Steps
+
+- [CLI API Reference](/effect-gql/reference/cli/) - Programmatic API for custom tooling

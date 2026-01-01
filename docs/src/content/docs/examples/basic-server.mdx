@@ -1,0 +1,193 @@
+---
+title: Basic Server
+description: A minimal GraphQL server with queries, mutations, and GraphiQL
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This example demonstrates the simplest way to create a GraphQL server with Effect GQL. It includes basic queries, mutations, and the GraphiQL playground.
+
+## Running the Example
+
+```bash
+pnpm example:basic
+# Server starts at http://localhost:4000
+# GraphiQL available at http://localhost:4000/graphiql
+```
+
+## What You'll Learn
+
+- Setting up a basic GraphQL schema with Effect GQL
+- Defining queries with and without arguments
+- Creating mutations that modify data
+- Serving the schema with GraphiQL enabled
+
+## Complete Code
+
+```typescript
+import { Effect, Layer } from "effect"
+import * as S from "effect/Schema"
+import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { GraphQLSchemaBuilder, query, mutation, makeGraphQLRouter } from "@effect-gql/core"
+import { serve } from "@effect-gql/node"
+
+// Domain model defined with Effect Schema
+const User = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+type User = S.Schema.Type<typeof User>
+
+// In-memory data store
+const users: User[] = [
+  { id: "1", name: "Alice", email: "alice@example.com" },
+  { id: "2", name: "Bob", email: "bob@example.com" },
+]
+
+// Build the GraphQL schema
+const schema = GraphQLSchemaBuilder.empty
+  .pipe(
+    // Simple query
+    query("hello", {
+      type: S.String,
+      resolve: () => Effect.succeed("Hello from Effect GQL!"),
+    }),
+
+    // Query with arguments
+    query("users", {
+      type: S.Array(User),
+      resolve: () => Effect.succeed(users),
+    }),
+
+    // Query with optional return
+    query("user", {
+      args: S.Struct({ id: S.String }),
+      type: S.OptionFromNullOr(User),
+      resolve: (args) =>
+        Effect.succeed(users.find((u) => u.id === args.id) ?? null),
+    }),
+
+    // Mutation
+    mutation("createUser", {
+      args: S.Struct({ name: S.String, email: S.String }),
+      type: User,
+      resolve: (args) =>
+        Effect.sync(() => {
+          const newUser: User = {
+            id: String(users.length + 1),
+            name: args.name,
+            email: args.email,
+          }
+          users.push(newUser)
+          return newUser
+        }),
+    })
+  )
+  .buildSchema()
+
+// Create the HTTP router with GraphQL endpoint
+const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
+  path: "/graphql",
+  graphiql: {
+    path: "/graphiql",
+    endpoint: "/graphql",
+  },
+})
+
+// Compose with other routes
+const app = HttpRouter.empty.pipe(
+  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
+  HttpRouter.concat(graphqlRouter)
+)
+
+// Start the server
+serve(app, Layer.empty, {
+  port: 4000,
+  onStart: (url) => {
+    console.log(`Server ready at ${url}`)
+    console.log(`GraphiQL: ${url}/graphiql`)
+  },
+})
+```
+
+## Key Concepts
+
+### Effect Schema as Source of Truth
+
+The `User` schema defines both the TypeScript type and the GraphQL type:
+
+```typescript
+const User = S.Struct({
+  id: S.String,
+  name: S.String,
+  email: S.String,
+})
+
+// TypeScript type is inferred
+type User = S.Schema.Type<typeof User>
+```
+
+### Pipe API
+
+The `pipe` method allows fluent composition of schema elements:
+
+```typescript
+GraphQLSchemaBuilder.empty.pipe(
+  query("hello", { ... }),
+  query("users", { ... }),
+  mutation("createUser", { ... })
+)
+```
+
+### Effect-based Resolvers
+
+All resolvers return `Effect` values, enabling composition with other Effects:
+
+```typescript
+resolve: (args) =>
+  Effect.succeed(users.find((u) => u.id === args.id) ?? null)
+```
+
+## Example Queries
+
+Try these in GraphiQL:
+
+```graphql
+# Simple query
+query {
+  hello
+}
+
+# Get all users
+query {
+  users {
+    id
+    name
+    email
+  }
+}
+
+# Get user by ID
+query {
+  user(id: "1") {
+    name
+    email
+  }
+}
+
+# Create a new user
+mutation {
+  createUser(name: "Charlie", email: "charlie@example.com") {
+    id
+    name
+  }
+}
+```
+
+## Next Steps
+
+- [DataLoaders Example](/effect-gql/examples/dataloaders/) - Learn to solve the N+1 problem
+- [Subscriptions Example](/effect-gql/examples/subscriptions/) - Add real-time updates
+- [Full-Featured Example](/effect-gql/examples/full-featured/) - Production patterns
