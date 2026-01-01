@@ -27,13 +27,14 @@
     "docs:dev": "npm run dev --prefix docs",
     "docs:build": "npm run build --prefix docs",
     "docs:preview": "npm run preview --prefix docs",
-    "prepare-publish": "npx tsx scripts/prepare-publish.ts",
-    "release": "npm run prepare-publish && npx tsx scripts/publish.ts"
+    "prepare-publish": "pnpm tsx scripts/prepare-publish.ts",
+    "release": "pnpm run prepare-publish && pnpm tsx scripts/publish.ts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
     "@eslint/js": "^9.39.2",
     "@types/node": "^25.0.3",
+    "tsx": "^4.19.0",
     "@vitest/coverage-v8": "^4.0.16",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
