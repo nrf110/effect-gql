@@ -31,17 +31,17 @@
   },
   "peerDependencies": {
     "@effect-gql/core": "^1.5.0",
-    "@effect/platform": "^0.94.2",
+    "@effect/platform": "^0.94.4",
     "@effect/platform-bun": "^0.87.1",
     "effect": "^3.19.0",
     "graphql": "^16.0.0"
   },
   "devDependencies": {
     "@effect-gql/core": "*",
-    "@effect/platform": "^0.94.2",
+    "@effect/platform": "^0.94.4",
     "@effect/platform-bun": "^0.87.1",
     "@types/bun": "latest",
-    "effect": "^3.19.15",
+    "effect": "^3.19.16",
     "graphql": "^16.0.0",
     "graphql-ws": "^6.0.6",
     "ws": "^8.18.0",
