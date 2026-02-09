@@ -56,7 +56,7 @@
     "@effect/platform": "^0.94.2",
     "effect": "^3.19.15",
     "graphql": "^16.0.0",
-    "graphql-ws": "^6.0.6"
+    "graphql-ws": "^6.0.7"
   },
   "keywords": [
     "effect",
