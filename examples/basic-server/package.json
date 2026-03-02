@@ -16,7 +16,7 @@
     "@effect/platform": "^0.94.2",
     "@effect/platform-node": "^0.104.1",
     "effect": "^3.19.15",
-    "graphql": "^16.0.0"
+    "graphql": "^16.13.0"
   },
   "devDependencies": {
     "tsx": "^4.19.0"
