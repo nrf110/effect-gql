@@ -32,13 +32,13 @@
     "@effect-gql/core": "^1.5.0",
     "@effect/platform": "^0.94.2",
     "effect": "^3.19.0",
-    "graphql": "^16.0.0"
+    "graphql": "^16.13.0"
   },
   "devDependencies": {
     "@effect-gql/core": "*",
     "@effect/platform": "^0.94.2",
     "effect": "^3.19.15",
-    "graphql": "^16.0.0"
+    "graphql": "^16.13.0"
   },
   "keywords": [
     "effect",

@@ -33,7 +33,7 @@
   "peerDependencies": {
     "@effect-gql/core": "^1.5.0",
     "effect": "^3.19.0",
-    "graphql": "^16.0.0"
+    "graphql": "^16.13.0"
   },
   "dependencies": {
     "tsx": "^4.21.0"
@@ -41,7 +41,7 @@
   "devDependencies": {
     "@effect-gql/core": "workspace:*",
     "effect": "^3.19.15",
-    "graphql": "^16.0.0"
+    "graphql": "^16.13.0"
   },
   "keywords": [
     "effect",
