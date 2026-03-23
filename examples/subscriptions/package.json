@@ -18,7 +18,7 @@
     "effect": "^3.19.15",
     "graphql": "^16.0.0",
     "graphql-ws": "^6.0.0",
-    "ws": "^8.19.0"
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
