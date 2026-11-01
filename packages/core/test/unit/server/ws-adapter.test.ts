@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest"
 import { EventEmitter } from "node:events"
 import { Effect, Layer, Stream, Queue, Deferred, Fiber, Context, References } from "effect"
+import * as S from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 import {
   GraphQLSchema,
   GraphQLObjectType,
@@ -11,6 +13,7 @@ import {
 import { makeGraphQLWSHandler } from "../../../src/server/ws-adapter"
 import { toEffectWebSocketFromWs, type WsWebSocket } from "../../../src/server/ws-utils"
 import type { EffectWebSocket, WebSocketError, CloseEvent } from "../../../src/server/ws-types"
+import { GraphQLSchemaBuilder } from "../../../src/builder"
 
 /**
  * Create a mock EffectWebSocket for testing
@@ -645,6 +648,138 @@ describe("ws-adapter.ts", () => {
 
       // Handler should complete without hanging
       expect(result).toBeUndefined()
+    })
+  })
+
+  describe("builder subscription operation contexts", () => {
+    it("keeps decoded args per operation on one connection and cleans up completion and cancellation", async () => {
+      let defaults = 0
+      let transforms = 0
+      let acquired = 0
+      let released = 0
+      const finalized: number[] = []
+      const finalizedAtRelease: number[][] = []
+      const cancelled = Effect.runSync(Deferred.make<void>())
+      const Shared = Context.Service<{ readonly prefix: string }>("ws/SharedSubscription")
+      const layer = Layer.effect(
+        Shared,
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            acquired++
+            return { prefix: "shared" }
+          }),
+          () =>
+            Effect.sync(() => {
+              released++
+              finalizedAtRelease.push([...finalized])
+            })
+        )
+      )
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value + 10
+            }),
+            encode: SchemaGetter.transform((value) => value - 10),
+          }),
+          S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+        ),
+      })
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+        .subscription("token", {
+          type: S.String,
+          args,
+          subscribe: ({ token }) =>
+            Effect.succeed(
+              Stream.make("first", "second").pipe(
+                Stream.concat(token === 12 ? Stream.never : Stream.empty),
+                Stream.ensuring(
+                  Effect.gen(function* () {
+                    // Resource cleanup may itself be asynchronous.
+                    yield* Effect.promise(() => Promise.resolve())
+                    finalized.push(token)
+                    if (token === 12) yield* Deferred.succeed(cancelled, undefined)
+                  })
+                )
+              )
+            ),
+          resolve: (event, { token }) =>
+            Effect.map(Shared, ({ prefix }) => `${prefix}:${token}:${event}`),
+        })
+        .buildSchema()
+      const mock = createMockSocket()
+      const outgoing = Effect.runSync(
+        Queue.unbounded<{ type: string; id?: string; payload?: unknown }>()
+      )
+      const socket: EffectWebSocket = {
+        ...mock.socket,
+        send: (data) =>
+          mock.socket
+            .send(data)
+            .pipe(Effect.andThen(Queue.offer(outgoing, JSON.parse(data))), Effect.asVoid),
+      }
+      const nextMessage = () =>
+        Effect.runPromise(Queue.take(outgoing).pipe(Effect.timeout("2 seconds")))
+      const fiber = Effect.runFork(makeGraphQLWSHandler(schema, layer)(socket))
+
+      try {
+        mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+        expect(await nextMessage()).toEqual({ type: "connection_ack" })
+
+        mock.sendMessage(
+          JSON.stringify({
+            id: "completed",
+            type: "subscribe",
+            payload: { query: "subscription { token }" },
+          })
+        )
+        expect(await nextMessage()).toEqual({
+          id: "completed",
+          type: "next",
+          payload: { data: { token: "shared:11:first" } },
+        })
+        expect(await nextMessage()).toEqual({
+          id: "completed",
+          type: "next",
+          payload: { data: { token: "shared:11:second" } },
+        })
+        expect(await nextMessage()).toEqual({ id: "completed", type: "complete" })
+
+        mock.sendMessage(
+          JSON.stringify({
+            id: "cancelled",
+            type: "subscribe",
+            payload: { query: "subscription { token }" },
+          })
+        )
+        expect(await nextMessage()).toEqual({
+          id: "cancelled",
+          type: "next",
+          payload: { data: { token: "shared:12:first" } },
+        })
+        expect(await nextMessage()).toEqual({
+          id: "cancelled",
+          type: "next",
+          payload: { data: { token: "shared:12:second" } },
+        })
+        expect(acquired).toBe(1)
+        expect(released).toBe(0)
+        expect(defaults).toBe(2)
+        expect(transforms).toBe(2)
+
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Deferred.await(cancelled).pipe(Effect.timeout("2 seconds")))
+        await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+        expect(finalized).toEqual([11, 12])
+        expect(released).toBe(1)
+        expect(finalizedAtRelease).toEqual([[11, 12]])
+      } finally {
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Fiber.interrupt(fiber))
+      }
     })
   })
 

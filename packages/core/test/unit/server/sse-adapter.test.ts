@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
-import { Context, Effect, References, Stream, Layer } from "effect"
+import { Context, Deferred, Effect, Fiber, References, Stream, Layer } from "effect"
 import * as S from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 import {
   GraphQLSchema,
   GraphQLObjectType,
@@ -934,6 +935,83 @@ describe("sse-adapter.ts", () => {
   })
 
   describe("Integration with GraphQLSchemaBuilder", () => {
+    it("isolates once-decoded args across operations sharing services and finalizes both streams", async () => {
+      let defaults = 0
+      let transforms = 0
+      const finalized: number[] = []
+      const completed: string[] = []
+      const firstStarted = Effect.runSync(Deferred.make<void>())
+      const emit = Effect.runSync(Deferred.make<void>())
+      const Shared = Context.Service<{ readonly prefix: string }>("sse/SharedSubscription")
+      const shared = { prefix: "shared" }
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value + 10
+            }),
+            encode: SchemaGetter.transform((value) => value - 10),
+          }),
+          S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+        ),
+      })
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+        .subscription("token", {
+          type: S.String,
+          args,
+          subscribe: ({ token }) =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(token === 11 ? firstStarted : emit, undefined)
+              return Stream.fromEffect(Deferred.await(emit).pipe(Effect.as("first"))).pipe(
+                Stream.concat(Stream.make("second")),
+                Stream.concat(token === 12 ? Stream.never : Stream.empty),
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    finalized.push(token)
+                  })
+                )
+              )
+            }),
+          resolve: (event, { token }) =>
+            Effect.map(Shared, ({ prefix }) => `${prefix}:${token}:${event}`),
+        })
+        .buildSchema()
+      const handler = makeGraphQLSSEHandler(schema, Layer.succeed(Shared, shared), {
+        onComplete: () =>
+          Effect.map(Shared, ({ prefix }) => {
+            completed.push(prefix)
+          }),
+      })
+      const request = { query: "subscription { token }" }
+      const headers = new Headers()
+      const [first, second] = await Effect.runPromise(
+        Effect.gen(function* () {
+          const first = yield* Effect.forkChild(Stream.runCollect(handler(request, headers)))
+          yield* Deferred.await(firstStarted)
+          const second = yield* Effect.forkChild(
+            handler(request, headers).pipe(Stream.take(2), Stream.runCollect)
+          )
+          return [Array.from(yield* Fiber.join(first)), Array.from(yield* Fiber.join(second))]
+        }).pipe(Effect.timeout("2 seconds"))
+      )
+
+      expect(first).toEqual([
+        formatNextEvent({ data: { token: "shared:11:first" } }),
+        formatNextEvent({ data: { token: "shared:11:second" } }),
+        formatCompleteEvent(),
+      ])
+      expect(second).toEqual([
+        formatNextEvent({ data: { token: "shared:12:first" } }),
+        formatNextEvent({ data: { token: "shared:12:second" } }),
+      ])
+      expect(defaults).toBe(2)
+      expect(transforms).toBe(2)
+      expect(finalized.sort()).toEqual([11, 12])
+      expect(completed).toEqual(["shared", "shared"])
+    })
+
     it("should work with builder-created schemas", async () => {
       const Tick = S.Struct({
         count: S.Number,

@@ -267,8 +267,8 @@ const runConnectionLifecycle = <R>(
       Effect.catch(() => Effect.succeed({ code: 1000, reason: "Error" }))
     )
 
-    // Cleanup
-    closedHandler(1000, "Connection closed")
+    // Finish subscription finalizers before closing the connection service scope.
+    yield* Effect.promise(() => closedHandler(1000, "Connection closed"))
     yield* Fiber.interrupt(messageFiber)
     yield* Fiber.interrupt(closeFiber)
     yield* Fiber.interrupt(processMessagesFiber)

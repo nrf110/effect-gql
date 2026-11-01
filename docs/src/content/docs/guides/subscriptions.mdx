@@ -20,6 +20,8 @@ acquired only once per build. Connection/subscription resources are released
 when that connection closes or that subscription completes or is cancelled;
 ambient services retain their surrounding scope.
 
+WebSocket shutdown awaits active subscription source finalizers, including asynchronous cleanup, before releasing connection-scoped services.
+
 If a WebSocket connection's service layer fails to initialize, the upgraded
 socket closes with code `1011` and the generic reason `Internal server error`.
 Partially acquired resources are released, and acquisition error details are
@@ -102,6 +104,36 @@ subscription("messagesInChannel", {
   })
 })
 ```
+
+### Native GraphQL subscriptions
+
+Effect GQL schemas support calling `subscribe()` from `graphql` directly. **Pass a fresh context object for every call**, including retries and calls made after another subscription completes. The built-in WebSocket and SSE transports already create this object per operation; no client protocol changes are needed.
+
+With an already-built `schema` and acquired Effect `services`:
+
+```typescript
+import { parse, subscribe } from "graphql"
+
+// The document and services can be shared.
+const document = parse("subscription { messageAdded { id content } }")
+
+function startSubscription() {
+  return subscribe({
+    schema,
+    document,
+    // Allocate inside the function, not once per WebSocket connection.
+    contextValue: { services },
+  })
+}
+```
+
+No special factory is required. A frozen context object also works. Only the wrapper identity must be new: the immutable Effect `Context` and its services are referenced, not copied or rebuilt. Creating the wrapper does not change service-layer lifetimes or replace proper scoping of request-specific services.
+
+Subscription setup claims the context before decoding arguments or opening the source stream. A reused context returns an initial GraphQL error with `extensions.code: "SUBSCRIPTION_CONTEXT_REUSED"`, even after cancellation, completion, or failed setup. A missing context or invalid `services` value returns `"SUBSCRIPTION_CONTEXT_REQUIRED"`. Check the initial result for `errors` before treating it as an async iterable.
+
+Arguments are decoded once and retained for all of that operation's events. The iterator yields original payloads, so native resolvers receive the real payload in `info.rootValue`. Async resolver wrappers may delay or reorder execution, but must forward the same context object; replacing it loses the operation identity and produces `"SUBSCRIPTION_CONTEXT_REQUIRED"` when the custom event resolver looks up its arguments.
+
+The framework keeps operation metadata under weak context keys. It does not allocate a metadata wrapper for every event, correlate events by payload value, mutate the context or schema field, or depend on graphql-js's iterator-to-resolver timing. Keep normal subscription cancellation and resource cleanup in place; weak references are not a substitute for finalizers.
 
 ---
 
