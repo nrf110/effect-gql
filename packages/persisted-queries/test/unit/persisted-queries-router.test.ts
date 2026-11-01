@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Layer } from "effect"
-import { HttpRouter } from "effect/http"
+import { Context, Effect, Layer } from "effect"
+import { HttpRouter, HttpServerRequest } from "effect/http"
+import {
+  ExtensionsService,
+  type GraphQLEffectContext,
+  type GraphQLExtension,
+} from "@effect-gql/core"
 import { GraphQLSchema, GraphQLObjectType, GraphQLString, GraphQLNonNull } from "graphql"
 import { makePersistedQueriesRouter, makeSafelistStore, computeHash } from "../../src"
 
@@ -100,6 +105,108 @@ describe("makePersistedQueriesRouter", () => {
 
       expect(result.body.data).toEqual({ echo: "test message" })
     })
+  })
+
+  it("preserves request and middleware services in hooks and resolvers across APQ requests", async () => {
+    class RequestIdentity extends Context.Service<RequestIdentity, { readonly id: string }>()(
+      "persisted-query-test/RequestIdentity"
+    ) {}
+    class ResolverService extends Context.Service<ResolverService, { readonly prefix: string }>()(
+      "persisted-query-test/ResolverService"
+    ) {}
+
+    const recordPhase = (phase: string) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const identity = yield* RequestIdentity
+        const service = yield* ResolverService
+        const extensions = yield* ExtensionsService
+        yield* extensions.set(phase, [request.headers["x-request-id"], identity.id, service.prefix])
+      })
+    const extension: GraphQLExtension<
+      HttpServerRequest.HttpServerRequest | RequestIdentity | ResolverService | ExtensionsService
+    > = {
+      name: "request-services",
+      onParse: () => recordPhase("parse"),
+      onValidate: () => recordPhase("validate"),
+      onExecuteStart: () => recordPhase("start"),
+      onExecuteEnd: () => recordPhase("end"),
+    }
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          requestId: {
+            type: GraphQLString,
+            resolve: (
+              _parent: unknown,
+              _args: unknown,
+              context: GraphQLEffectContext<
+                HttpServerRequest.HttpServerRequest | RequestIdentity | ResolverService
+              >
+            ) =>
+              Effect.runPromiseWith(context.services)(
+                Effect.gen(function* () {
+                  const request = yield* HttpServerRequest.HttpServerRequest
+                  const identity = yield* RequestIdentity
+                  const service = yield* ResolverService
+                  return `${service.prefix}:${request.headers["x-request-id"]}:${identity.id}`
+                })
+              ),
+          },
+        },
+      }),
+    })
+    const router = makePersistedQueriesRouter(
+      schema,
+      Layer.succeed(ResolverService, { prefix: "resolver" }),
+      { extensions: [extension] }
+    )
+    const middleware = HttpRouter.middleware(
+      (effect) =>
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest
+          return yield* Effect.provideService(effect, RequestIdentity, {
+            id: `middleware-${request.headers["x-request-id"]}`,
+          })
+        }),
+      { global: true }
+    )
+    const { handler, dispose } = HttpRouter.toWebHandler(Layer.merge(router, middleware))
+    const query = "{ requestId }"
+    const hash = await Effect.runPromise(computeHash(query))
+    const extensions = { persistedQuery: { version: 1, sha256Hash: hash } }
+
+    try {
+      for (const [method, id] of [
+        ["POST", "first"],
+        ["GET", "second"],
+      ] as const) {
+        const url = new URL("http://localhost/graphql")
+        if (method === "GET") {
+          url.searchParams.set("extensions", JSON.stringify(extensions))
+        }
+        const response = await handler(
+          new Request(url, {
+            method,
+            headers: { "content-type": "application/json", "x-request-id": id },
+            body: method === "POST" ? JSON.stringify({ query, extensions }) : undefined,
+          })
+        )
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+          data: { requestId: `resolver:${id}:middleware-${id}` },
+          extensions: Object.fromEntries(
+            ["parse", "validate", "start", "end"].map((phase) => [
+              phase,
+              [id, `middleware-${id}`, "resolver"],
+            ])
+          ),
+        })
+      }
+    } finally {
+      await dispose()
+    }
   })
 
   describe("APQ mode", () => {

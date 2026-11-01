@@ -55,6 +55,11 @@ serve(router, serviceLayer, { port: 4000 })
   </TabItem>
 </Tabs>
 
+Resolvers and lifecycle extension hooks retain the current HTTP request and
+middleware-provided services alongside the router's service layer. These services
+remain available for both full-query registration and hash-only requests; the
+router's layer takes precedence if it provides the same service.
+
 ## How It Works
 
 ### APQ Protocol

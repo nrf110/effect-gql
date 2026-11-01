@@ -241,7 +241,8 @@ export const makePersistedQueriesRouter = <R>(
       const extensionsService = yield* makeExtensionsService()
 
       // Capture the request's services while the resolver layer remains in scope.
-      const services = yield* Layer.build(layer)
+      const baseServices = yield* Layer.build(layer)
+      const services = Context.merge(yield* Effect.context<never>(), baseServices)
       const hookServices = Context.add(services, ExtensionsService, extensionsService)
 
       // Phase 1: Parse
