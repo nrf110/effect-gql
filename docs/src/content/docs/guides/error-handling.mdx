@@ -150,7 +150,7 @@ resolve: (args) => Effect.gen(function* () {
   const cache = yield* CacheService
   return yield* cache.get(args.key)
 }).pipe(
-  Effect.catchAll(() =>
+  Effect.catch(() =>
     // Fallback to database if cache fails
     Effect.gen(function* () {
       const db = yield* DatabaseService
@@ -207,8 +207,8 @@ Arguments are validated automatically using Effect Schema. Validation errors are
 .mutation("createUser", {
   type: UserSchema,
   args: S.Struct({
-    email: S.String.pipe(S.pattern(/@/)),
-    age: S.Int.pipe(S.positive()),
+    email: S.String.check(S.isPattern(/@/)),
+    age: S.Int.check(S.isGreaterThan(0)),
   }),
   resolve: (args) => {
     // This only runs if validation passes
@@ -268,7 +268,7 @@ GraphQL supports partial responses where some fields succeed while others fail:
     const [user, stats] = yield* Effect.all([
       userService.getCurrentUser(),
       statsService.getDashboardStats().pipe(
-        Effect.catchAll(() => Effect.succeed(null))
+        Effect.catch(() => Effect.succeed(null))
       ),
     ])
 
@@ -278,7 +278,7 @@ GraphQL supports partial responses where some fields succeed while others fail:
 ```
 
 <Aside type="tip">
-  Use `Effect.catchAll` or `Effect.option` to convert errors to null values
+  Use `Effect.catch` or `Effect.option` to convert errors to null values
   when you want partial responses instead of full failures.
 </Aside>
 
@@ -308,7 +308,7 @@ Provide a custom error handler to control the response:
 
 ```typescript
 import { makeGraphQLRouter, type ErrorHandler } from "@effect-gql/core/server"
-import { HttpServerResponse } from "@effect/platform"
+import { HttpServerResponse } from "effect/http"
 import { Cause, Effect } from "effect"
 
 const customErrorHandler: ErrorHandler = (cause) =>
@@ -420,7 +420,7 @@ new AuthorizationError({
 Transform internal errors before returning to clients:
 
 ```typescript
-Effect.catchAll((error) => {
+Effect.catch((error) => {
   // Log the full error internally
   console.error("Internal error:", error)
 

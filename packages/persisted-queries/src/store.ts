@@ -49,6 +49,6 @@ export interface PersistedQueryStore {
  * Effect.runPromise(Effect.provide(program, storeLayer))
  * ```
  */
-export const PersistedQueryStore = Context.GenericTag<PersistedQueryStore>(
+export const PersistedQueryStore = Context.Service<PersistedQueryStore>(
   "@effect-gql/persisted-queries/PersistedQueryStore"
 )

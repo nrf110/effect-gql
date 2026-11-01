@@ -20,7 +20,6 @@ import {
   toGraphQLArgsWithRegistry,
   TypeConversionContext,
   buildInputTypeLookupCache,
-  buildReverseLookups,
 } from "../../../src/builder/type-registry"
 
 // Helper to create a minimal context
@@ -141,7 +140,6 @@ describe("type-registry.ts", () => {
     it("should handle S.Array with registry lookup for elements", () => {
       const ctx = createEmptyContext()
 
-      // S.Array creates a Transformation with TupleType on "to" side
       const result = toGraphQLTypeWithRegistry(S.Array(S.String), ctx)
       expect(isListType(result)).toBe(true)
       expect((result as any).ofType).toBe(GraphQLString)
@@ -165,7 +163,7 @@ describe("type-registry.ts", () => {
 
     it("should handle S.Tuple with elements", () => {
       const ctx = createEmptyContext()
-      const result = toGraphQLTypeWithRegistry(S.Tuple(S.String), ctx)
+      const result = toGraphQLTypeWithRegistry(S.Tuple([S.String]), ctx)
       expect(isListType(result)).toBe(true)
     })
   })
@@ -190,7 +188,7 @@ describe("type-registry.ts", () => {
       })
       ctx.enumRegistry.set("Status", StatusEnum)
 
-      const StatusSchema = S.Literal("ACTIVE", "INACTIVE")
+      const StatusSchema = S.Literals(["ACTIVE", "INACTIVE"])
       const result = toGraphQLTypeWithRegistry(StatusSchema, ctx)
       expect(result).toBe(StatusEnum)
     })
@@ -257,10 +255,8 @@ describe("type-registry.ts", () => {
 
       // Create a union schema - this is the S.Union of the tagged structs
       // Note: In practice this happens via schema AST matching
-      const UnionSchema = S.Union(
-        S.Struct({ _tag: S.Literal("Text"), body: S.String }),
-        S.Struct({ _tag: S.Literal("Image"), url: S.String })
-      )
+      const UnionSchema = S.Union([S.Struct({ _tag: S.Literal("Text"), body: S.String }),
+      S.Struct({ _tag: S.Literal("Image"), url: S.String })])
 
       const result = toGraphQLTypeWithRegistry(UnionSchema, ctx)
       expect(result).toBe(contentUnion)
@@ -271,7 +267,7 @@ describe("type-registry.ts", () => {
   // schemaToFields
   // ==========================================================================
   describe("schemaToFields", () => {
-    it("should convert TypeLiteral to fields", () => {
+    it("should convert struct schemas to fields", () => {
       const ctx = createEmptyContext()
       const UserSchema = S.Struct({
         id: S.String,
@@ -306,7 +302,7 @@ describe("type-registry.ts", () => {
       expect(isNonNullType(fields.bio.type)).toBe(false)
     })
 
-    it("should handle TaggedStruct (Transformation)", () => {
+    it("should handle TaggedStruct", () => {
       const ctx = createEmptyContext()
       const UserSchema = S.TaggedStruct("User", {
         id: S.String,
@@ -320,7 +316,7 @@ describe("type-registry.ts", () => {
       expect(fields._tag).toBeUndefined()
     })
 
-    it("should handle Schema.Class (Transformation)", () => {
+    it("should handle Schema.Class", () => {
       const ctx = createEmptyContext()
       class User extends S.Class<User>("User")({
         id: S.String,
@@ -356,7 +352,7 @@ describe("type-registry.ts", () => {
       expect(isNonNullType(fields.email.type)).toBe(false)
     })
 
-    it("should return empty object for non-TypeLiteral", () => {
+    it("should return empty object for a non-object schema", () => {
       const ctx = createEmptyContext()
       const fields = schemaToFields(S.String, ctx)
       expect(Object.keys(fields)).toHaveLength(0)
@@ -391,7 +387,7 @@ describe("type-registry.ts", () => {
   // schemaToInputFields
   // ==========================================================================
   describe("schemaToInputFields", () => {
-    it("should convert TypeLiteral to input fields", () => {
+    it("should convert struct schemas to input fields", () => {
       const InputSchema = S.Struct({
         name: S.String,
         email: S.String,
@@ -440,7 +436,7 @@ describe("type-registry.ts", () => {
       expect(isNonNullType(fields.email.type)).toBe(false)
     })
 
-    it("should return empty object for non-TypeLiteral", () => {
+    it("should return empty object for a non-object schema", () => {
       const fields = schemaToInputFields(S.String, new Map(), new Map(), new Map(), new Map())
       expect(Object.keys(fields)).toHaveLength(0)
     })
@@ -516,7 +512,7 @@ describe("type-registry.ts", () => {
       const enums = new Map()
       enums.set("Status", { name: "Status", values: ["ACTIVE", "INACTIVE"] })
 
-      const StatusSchema = S.Literal("ACTIVE", "INACTIVE")
+      const StatusSchema = S.Literals(["ACTIVE", "INACTIVE"])
       const result = toGraphQLInputTypeWithRegistry(
         StatusSchema,
         enumRegistry,
@@ -621,7 +617,7 @@ describe("type-registry.ts", () => {
 
     it("should handle OptionFromNullOr fields in query arguments as nullable", () => {
       const ArgsSchema = S.Struct({
-        limit: S.NonNegativeInt,
+        limit: S.Int.check(S.isGreaterThanOrEqualTo(0)),
         cursor: S.OptionFromNullOr(S.String),
         offset: S.OptionFromNullOr(S.Int),
       })
@@ -656,7 +652,7 @@ describe("type-registry.ts", () => {
       enums.set("Status", { name: "Status", values: ["ACTIVE", "INACTIVE"] })
 
       const ArgsSchema = S.Struct({
-        status: S.Literal("ACTIVE", "INACTIVE"),
+        status: S.Literals(["ACTIVE", "INACTIVE"]),
       })
 
       const args = toGraphQLArgsWithRegistry(ArgsSchema, enumRegistry, new Map(), new Map(), enums)
@@ -893,14 +889,13 @@ describe("type-registry.ts", () => {
   })
 
   // ==========================================================================
-  // Bug fixes - Nested Transformations
+  // Class schemas with declaration-backed fields
   // ==========================================================================
-  describe("Bug fixes - Nested Transformations", () => {
-    it("should handle S.Class with transformation fields (DateFromSelf)", () => {
-      // Bug 1: schemaToFields should unwrap nested Transformations in S.Class
+  describe("Class schemas with declaration-backed fields", () => {
+    it("should handle S.Class with Date fields", () => {
       class Event extends S.Class<Event>("Event")({
         id: S.String,
-        createdAt: S.DateFromSelf,
+        createdAt: S.Date,
       }) {}
 
       const ctx = createEmptyContext()
@@ -914,8 +909,8 @@ describe("type-registry.ts", () => {
     it("should handle S.Class with multiple transformation fields", () => {
       class Record extends S.Class<Record>("Record")({
         id: S.String,
-        created: S.DateFromSelf,
-        updated: S.DateFromSelf,
+        created: S.Date,
+        updated: S.Date,
         value: S.Number,
       }) {}
 
@@ -928,9 +923,7 @@ describe("type-registry.ts", () => {
       expect(fields.value).toBeDefined()
     })
 
-    it("should handle schemaToInputFields with transformation schema (TaggedStruct)", () => {
-      // Bug 3: schemaToInputFields should unwrap Transformations
-      // TaggedStruct creates a Transformation that wraps a TypeLiteral
+    it("should handle schemaToInputFields with TaggedStruct", () => {
       const InputData = S.TaggedStruct("InputData", {
         name: S.String,
         value: S.Number,
@@ -966,7 +959,6 @@ describe("type-registry.ts", () => {
       const inputs = new Map()
       inputs.set("CursorInput", { name: "CursorInput", schema: CursorInput })
 
-      // The schema is a Transformation (S.Class), but should still be found
       const result = toGraphQLInputTypeWithRegistry(
         CursorInput,
         new Map(),
@@ -1006,7 +998,6 @@ describe("type-registry.ts", () => {
   // ==========================================================================
   describe("Bug fixes - S.Option and Union handling", () => {
     it("should find registered type inside S.Option Union (from position)", () => {
-      // S.OptionFromNullOr creates: Transformation { from: Union[X.ast, Literal], to: Declaration }
       const ActorSchema = S.Struct({ id: S.String, name: S.String })
       const actorType = new GraphQLObjectType({
         name: "Actor",
@@ -1107,49 +1098,6 @@ describe("type-registry.ts", () => {
   // Bug fixes - Lookup cache with unwrapped AST forms
   // ==========================================================================
   describe("Bug fixes - Lookup cache unwrapped AST forms", () => {
-    it("buildInputTypeLookupCache should map unwrapped transformation ASTs", () => {
-      // A Schema.Class is a Transformation wrapping a Declaration wrapping a TypeLiteral
-      class MyInput extends S.Class<MyInput>("MyInput")({
-        value: S.String,
-      }) {}
-
-      const inputs = new Map()
-      inputs.set("MyInput", { name: "MyInput", schema: MyInput })
-
-      const cache = buildInputTypeLookupCache(inputs, new Map())
-
-      // The cache should have the original AST
-      expect(cache.astToInputName!.get(MyInput.ast)).toBe("MyInput")
-
-      // And also unwrapped forms (Transformation.to, Declaration.typeParameters[0])
-      const transformationTo = (MyInput.ast as any).to
-      expect(cache.astToInputName!.get(transformationTo)).toBe("MyInput")
-    })
-
-    it("buildReverseLookups should map unwrapped transformation ASTs for types", () => {
-      class MyType extends S.Class<MyType>("MyType")({
-        id: S.String,
-      }) {}
-
-      const myGraphQLType = new GraphQLObjectType({
-        name: "MyType",
-        fields: { id: { type: GraphQLString } },
-      })
-
-      const ctx = createEmptyContext()
-      ctx.types.set("MyType", { name: "MyType", schema: MyType })
-      ctx.typeRegistry.set("MyType", myGraphQLType)
-
-      buildReverseLookups(ctx)
-
-      // The lookup should have the original AST
-      expect(ctx.astToTypeName!.get(MyType.ast)).toBe("MyType")
-
-      // And also unwrapped forms
-      const transformationTo = (MyType.ast as any).to
-      expect(ctx.astToTypeName!.get(transformationTo)).toBe("MyType")
-    })
-
     it("should find registered type via unwrapped AST lookup", () => {
       class UserType extends S.Class<UserType>("UserType")({
         id: S.String,
@@ -1172,9 +1120,9 @@ describe("type-registry.ts", () => {
   })
 
   // ==========================================================================
-  // Bug fixes - S.Option(TransformationSchema) in args
+  // Registered Option schemas in arguments
   // ==========================================================================
-  describe("Bug fixes - S.Option(TransformationSchema) in args", () => {
+  describe("Registered Option schemas in arguments", () => {
     it("should find registered input when using S.Option(Schema.Class) in args - with cache", () => {
       // Simulates: S.Option(CursorFromHex) where CursorFromHex is a Schema.Class
       class CursorFromHex extends S.Class<CursorFromHex>("CursorFromHex")({
@@ -1317,7 +1265,6 @@ describe("type-registry.ts", () => {
       const inputs = new Map()
       inputs.set("CursorInput", { name: "CursorInput", schema: CursorFromHex })
 
-      // Args schema with optional cursor (using S.optional which creates Union[Type, UndefinedKeyword])
       const ArgsSchema = S.Struct({
         limit: S.Int,
         cursor: S.optional(CursorFromHex),
@@ -1338,124 +1285,6 @@ describe("type-registry.ts", () => {
       expect(args.cursor.type).toBe(cursorInputType)
     })
 
-    it("DEBUG: inspect S.OptionFromSelf AST structure", () => {
-      // Debug test to understand S.OptionFromSelf structure
-      class CursorFromHex extends S.Class<CursorFromHex>("CursorFromHex")({
-        value: S.String,
-      }) {}
-
-      const OptionalCursor = S.OptionFromSelf(CursorFromHex)
-      const ast = OptionalCursor.ast as any
-
-      console.log("S.OptionFromSelf AST structure:")
-      console.log("ast._tag:", ast._tag)
-
-      if (ast._tag === "Declaration") {
-        console.log("It's a Declaration (not Transformation)")
-        console.log("ast.typeParameters count:", ast.typeParameters?.length)
-        if (ast.typeParameters?.[0]) {
-          console.log("typeParameters[0]._tag:", ast.typeParameters[0]._tag)
-          console.log(
-            "typeParameters[0] === CursorFromHex.ast:",
-            ast.typeParameters[0] === CursorFromHex.ast
-          )
-        }
-      } else if (ast._tag === "Transformation") {
-        console.log("ast.from._tag:", ast.from?._tag)
-        console.log("ast.to._tag:", ast.to?._tag)
-      }
-
-      // Verify it's a Declaration (Option declaration)
-      expect(ast._tag).toBe("Declaration")
-    })
-
-    it("DEBUG: inspect S.optional inside Struct AST structure", () => {
-      // Debug test to understand how S.optional works inside a Struct
-      class CursorFromHex extends S.Class<CursorFromHex>("CursorFromHex")({
-        value: S.String,
-      }) {}
-
-      // S.optional is used inside a Struct to create optional fields
-      const Schema = S.Struct({
-        cursor: S.optional(CursorFromHex),
-      })
-      const ast = Schema.ast as any
-
-      console.log("S.Struct with S.optional AST structure:")
-      console.log("ast._tag:", ast._tag)
-
-      if (ast._tag === "TypeLiteral") {
-        const cursorProp = ast.propertySignatures?.find((p: any) => String(p.name) === "cursor")
-        if (cursorProp) {
-          console.log("cursor.isOptional:", cursorProp.isOptional)
-          console.log("cursor.type._tag:", cursorProp.type._tag)
-          if (cursorProp.type._tag === "Union") {
-            console.log("cursor.type.types count:", cursorProp.type.types?.length)
-            for (let i = 0; i < cursorProp.type.types?.length; i++) {
-              const memberType = cursorProp.type.types[i]
-              console.log(`  type[${i}]._tag:`, memberType._tag)
-              console.log(`  type[${i}] === CursorFromHex.ast:`, memberType === CursorFromHex.ast)
-            }
-          }
-        }
-      }
-
-      expect(ast._tag).toBe("TypeLiteral")
-    })
-
-    it("DEBUG: inspect S.Option AST structure", () => {
-      // Debug test to understand the AST structure
-      class CursorFromHex extends S.Class<CursorFromHex>("CursorFromHex")({
-        value: S.String,
-      }) {}
-
-      const OptionalCursor = S.Option(CursorFromHex)
-      const ast = OptionalCursor.ast as any
-
-      // Log the structure for debugging
-      console.log("S.Option AST structure:")
-      console.log("ast._tag:", ast._tag)
-
-      if (ast._tag === "Transformation") {
-        console.log("ast.from._tag:", ast.from?._tag)
-        console.log("ast.to._tag:", ast.to?._tag)
-
-        if (ast.from?._tag === "Union") {
-          console.log("ast.from.types count:", ast.from.types?.length)
-          for (let i = 0; i < ast.from.types?.length; i++) {
-            const memberAst = ast.from.types[i]
-            console.log(`  member[${i}]._tag:`, memberAst._tag)
-            if (memberAst._tag === "TypeLiteral") {
-              const props = memberAst.propertySignatures?.map((p: any) => String(p.name))
-              console.log(`  member[${i}].properties:`, props)
-              const valueField = memberAst.propertySignatures?.find(
-                (p: any) => String(p.name) === "value"
-              )
-              if (valueField) {
-                console.log(`  member[${i}].value.type._tag:`, valueField.type?._tag)
-                console.log(
-                  `  member[${i}].value.type === CursorFromHex.ast:`,
-                  valueField.type === CursorFromHex.ast
-                )
-                // Check unwrapped forms
-                let unwrapped = CursorFromHex.ast as any
-                while (unwrapped._tag === "Transformation") {
-                  console.log(`  CursorFromHex unwrapped to:`, unwrapped.to?._tag)
-                  unwrapped = unwrapped.to
-                }
-                console.log(
-                  `  member[${i}].value.type === unwrapped CursorFromHex:`,
-                  valueField.type === unwrapped
-                )
-              }
-            }
-          }
-        }
-      }
-
-      // The test itself - just verify it's a Transformation
-      expect(ast._tag).toBe("Transformation")
-    })
   })
 
   // ==========================================================================

@@ -12,7 +12,7 @@ import {
   isListType,
   isNamedType,
 } from "graphql"
-import { Effect, Layer, Runtime } from "effect"
+import { Context, Effect, Layer } from "effect"
 import type { GraphQLEffectContext } from "../../src/builder/types"
 
 /**
@@ -24,17 +24,21 @@ export const executeGraphQL = async <R>(
   layer: Layer.Layer<R, never, never>,
   variables?: Record<string, unknown>,
   operationName?: string
-): Promise<{ data?: unknown; errors?: readonly { message: string }[] }> => {
-  const runtime = await Effect.runPromise(Effect.scoped(Layer.toRuntime(layer)))
-
-  return graphql({
-    schema,
-    source: query,
-    variableValues: variables,
-    operationName,
-    contextValue: { runtime } satisfies GraphQLEffectContext<R>,
-  })
-}
+): Promise<{ data?: unknown; errors?: readonly { message: string }[] }> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const services = yield* Effect.context<R>()
+      return yield* Effect.promise(() =>
+        graphql({
+          schema,
+          source: query,
+          variableValues: variables,
+          operationName,
+          contextValue: { services } satisfies GraphQLEffectContext<R>,
+        })
+      )
+    }).pipe(Effect.provide(layer))
+  )
 
 /**
  * Execute a GraphQL query without layer requirements
@@ -44,13 +48,13 @@ export const executeGraphQLNoLayer = async (
   query: string,
   variables?: Record<string, unknown>
 ): Promise<{ data?: unknown; errors?: readonly { message: string }[] }> => {
-  const runtime = Runtime.defaultRuntime
+  const services = Context.empty()
 
   return graphql({
     schema,
     source: query,
     variableValues: variables,
-    contextValue: { runtime } satisfies GraphQLEffectContext<never>,
+    contextValue: { services } satisfies GraphQLEffectContext<never>,
   })
 }
 

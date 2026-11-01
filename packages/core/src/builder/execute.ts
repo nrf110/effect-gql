@@ -50,8 +50,8 @@ export const execute =
       // Create the ExtensionsService for this request
       const extensionsService = yield* makeExtensionsService()
 
-      // Create runtime from the provided layer
-      const runtime = yield* Effect.runtime<R>()
+      // Capture services while the request layer remains in scope.
+      const services = yield* Effect.context<R>()
 
       // Phase 1: Parse
       let document: DocumentNode
@@ -113,7 +113,7 @@ export const execute =
             document,
             variableValues,
             operationName,
-            contextValue: { runtime } satisfies GraphQLEffectContext<R>,
+            contextValue: { services } satisfies GraphQLEffectContext<R>,
           }),
         catch: (error) => new Error(String(error)),
       })

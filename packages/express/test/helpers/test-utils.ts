@@ -108,7 +108,8 @@ export const startTestServer = async (
 
   const schema = createTestSchema()
   const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
-  app.use(toMiddleware(router, Layer.empty))
+  const middleware = toMiddleware(router, Layer.empty)
+  app.use(middleware)
 
   return new Promise((resolve) => {
     const server: Server = app.listen(port, () => {
@@ -116,13 +117,15 @@ export const startTestServer = async (
       resolve({
         port: addr.port,
         app,
-        stop: () =>
-          new Promise<void>((res, rej) => {
+        stop: async () => {
+          await middleware.dispose()
+          return new Promise<void>((res, rej) => {
             server.close((err) => {
               if (err) rej(err)
               else res()
             })
-          }),
+          })
+        },
       })
     })
   })
@@ -174,7 +177,8 @@ export const startTestServerWithWS = async (
 
   const schema = createTestSchema()
   const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
-  app.use(toMiddleware(router, Layer.empty))
+  const middleware = toMiddleware(router, Layer.empty)
+  app.use(middleware)
 
   const server = createServer(app)
 
@@ -192,6 +196,7 @@ export const startTestServerWithWS = async (
         schema,
         stop: async () => {
           await ws.close()
+          await middleware.dispose()
           return new Promise<void>((res, rej) => {
             server.close((err) => {
               if (err) rej(err)

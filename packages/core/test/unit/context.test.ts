@@ -4,19 +4,6 @@ import { GraphQLRequestContext, makeRequestContextLayer } from "../../src/contex
 import { runSyncWithLayer } from "../helpers/effect-test-utils"
 
 describe("context.ts", () => {
-  // ==========================================================================
-  // GraphQLRequestContext Tag
-  // ==========================================================================
-  describe("GraphQLRequestContext Tag", () => {
-    it("should be a valid Context.Tag", () => {
-      expect(GraphQLRequestContext).toBeDefined()
-      expect(Context.isTag(GraphQLRequestContext)).toBe(true)
-    })
-
-    it("should have the correct key", () => {
-      expect(GraphQLRequestContext.key).toBe("GraphQLRequestContext")
-    })
-  })
 
   // ==========================================================================
   // makeRequestContextLayer
@@ -102,7 +89,7 @@ describe("context.ts", () => {
       interface TestService {
         getValue: () => string
       }
-      const TestService = Context.GenericTag<TestService>("TestService")
+      const TestService = Context.Service<TestService>("TestService")
 
       const requestContext: GraphQLRequestContext = {
         request: {

@@ -1,4 +1,4 @@
-import { Effect, Runtime, Stream } from "effect"
+import { Context, Effect, Stream } from "effect"
 import * as S from "effect/Schema"
 import { DirectiveLocation, GraphQLResolveInfo } from "graphql"
 import type { FieldComplexity } from "../server/complexity"
@@ -39,8 +39,8 @@ export interface CacheHint {
  * Configuration for a query or mutation field
  */
 export interface FieldRegistration<Args = any, A = any, E = any, R = any> {
-  type: S.Schema<A, any, any>
-  args?: S.Schema<Args, any, any>
+  type: S.Schema<A>
+  args?: S.Schema<Args>
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
@@ -76,7 +76,7 @@ export interface FieldRegistration<Args = any, A = any, E = any, R = any> {
  */
 export interface TypeRegistration {
   name: string
-  schema: S.Schema<any, any, any>
+  schema: S.Schema<any>
   description?: string
   implements?: readonly string[]
   directives?: readonly DirectiveApplication[]
@@ -96,7 +96,7 @@ export interface TypeRegistration {
  */
 export interface InterfaceRegistration {
   name: string
-  schema: S.Schema<any, any, any>
+  schema: S.Schema<any>
   resolveType: (value: any) => string
   directives?: readonly DirectiveApplication[]
 }
@@ -126,7 +126,7 @@ export interface UnionRegistration {
  */
 export interface InputTypeRegistration {
   name: string
-  schema: S.Schema<any, any, any>
+  schema: S.Schema<any>
   description?: string
   directives?: readonly DirectiveApplication[]
 }
@@ -146,7 +146,7 @@ export interface DirectiveRegistration<Args = any, R = never> {
   name: string
   description?: string
   locations: readonly DirectiveLocation[]
-  args?: S.Schema<Args, any, any>
+  args?: S.Schema<Args>
   /**
    * For executable directives - transforms the resolver Effect.
    * Called with directive args, returns an Effect transformer.
@@ -225,8 +225,8 @@ export interface MiddlewareRegistration<R = never> {
  * Returns a Stream that yields values over time
  */
 export interface SubscriptionFieldRegistration<Args = any, A = any, E = any, R = any> {
-  type: S.Schema<A, any, any>
-  args?: S.Schema<Args, any, any>
+  type: S.Schema<A>
+  args?: S.Schema<Args>
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
@@ -257,8 +257,8 @@ export interface SubscriptionFieldRegistration<Args = any, A = any, E = any, R =
  * Configuration for a field on an object type
  */
 export interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = any, R = any> {
-  type: S.Schema<A, any, any>
-  args?: S.Schema<Args, any, any>
+  type: S.Schema<A>
+  args?: S.Schema<Args>
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
@@ -287,10 +287,10 @@ export interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = 
 }
 
 /**
- * GraphQL context that contains the Effect runtime
+ * GraphQL context containing the request's Effect services.
  */
 export interface GraphQLEffectContext<R> {
-  runtime: Runtime.Runtime<R>
+  services: Context.Context<R>
 }
 
 /**

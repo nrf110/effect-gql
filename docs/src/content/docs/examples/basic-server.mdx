@@ -27,7 +27,7 @@ pnpm example:basic
 ```typescript
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { GraphQLSchemaBuilder, query, mutation, makeGraphQLRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 
@@ -97,9 +97,9 @@ const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
 })
 
 // Compose with other routes
-const app = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const app = Layer.mergeAll(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 // Start the server

@@ -228,11 +228,11 @@ PERSISTED_QUERIES_VALIDATE_HASH=true
 Load with Effect Config:
 
 ```typescript
-import { Config, Effect } from "effect"
+import { Effect } from "effect"
 import { PersistedQueriesConfigFromEnv } from "@effect-gql/persisted-queries"
 
 const program = Effect.gen(function* () {
-  const config = yield* Config.unwrap(PersistedQueriesConfigFromEnv)
+  const config = yield* PersistedQueriesConfigFromEnv
   // config.mode, config.enableGet, config.validateHash
 })
 ```
@@ -347,10 +347,10 @@ const UserSchema = S.Struct({
 })
 
 // Service
-class UserService extends Context.Tag("UserService")<
+class UserService extends Context.Service<
   UserService,
   { getAll: () => Effect.Effect<S.Schema.Type<typeof UserSchema>[]> }
->() {}
+>()("UserService") {}
 
 // Build schema
 const schema = GraphQLSchemaBuilder.empty

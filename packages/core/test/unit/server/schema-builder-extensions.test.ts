@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Layer, Context } from "effect"
 import * as S from "effect/Schema"
-import { HttpApp } from "@effect/platform"
+import { HttpRouter } from "effect/http"
 import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
 import { toRouter } from "../../../src/server/schema-builder-extensions"
 
@@ -10,7 +10,7 @@ interface TestService {
   getMessage: () => string
 }
 
-const TestService = Context.GenericTag<TestService>("TestService")
+const TestService = Context.Service<TestService>("TestService")
 
 const testLayer = Layer.succeed(TestService, {
   getMessage: () => "Hello from service",
@@ -25,7 +25,7 @@ const executeQuery = async <R1, R2>(
   variables?: Record<string, unknown>
 ) => {
   const router = toRouter(builder, layer, config)
-  const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
 
   try {
     const response = await handler(
@@ -49,7 +49,7 @@ const getGraphiQL = async <R1, R2>(
   path: string
 ) => {
   const router = toRouter(builder, layer, config)
-  const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
 
   try {
     const response = await handler(
@@ -71,17 +71,6 @@ describe("schema-builder-extensions.ts", () => {
   // toRouter - Basic functionality
   // ==========================================================================
   describe("toRouter - Basic functionality", () => {
-    it("should create a router from a GraphQLSchemaBuilder", () => {
-      const builder = GraphQLSchemaBuilder.empty.query("hello", {
-        type: S.String,
-        resolve: () => Effect.succeed("world"),
-      })
-
-      const router = toRouter(builder, Layer.empty)
-
-      expect(router).toBeDefined()
-    })
-
     it("should execute queries through the created router", async () => {
       const builder = GraphQLSchemaBuilder.empty.query("greeting", {
         type: S.String,

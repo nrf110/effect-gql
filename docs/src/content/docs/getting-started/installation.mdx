@@ -6,19 +6,37 @@ description: How to install Effect GraphQL and its dependencies
 ## Prerequisites
 
 Effect GraphQL requires:
-- Node.js 24 or later
+- Node.js 22.19.0 or later (required by `@effect/platform-node` 4.1.1)
 - TypeScript 5.0 or later (for full type inference)
 
 ## Install Dependencies
 
 ```bash
-npm install @effect-gql/core effect graphql
+npm install @effect-gql/core effect@^4.1.1 graphql
 ```
 
 This installs:
 - `@effect-gql/core` - The core library
 - `effect` - The Effect runtime and Schema library
 - `graphql` - GraphQL.js for schema execution
+
+Effect GraphQL targets stable **Effect 4.1.1**. Use matching **4.1.1** versions of
+`@effect/platform-node`, `@effect/platform-bun`, and `@effect/opentelemetry`
+when using those integrations. HTTP modules are included in `effect/http`;
+the Effect 3-only `@effect/platform` package is no longer required.
+
+### Migrating from Effect 3
+
+Service classes now use `Context.Service<Self, Shape>()("Name")`. Schema
+refinements use `.check(S.isMinLength(1))`, and multiple literals use
+`S.Literals(["A", "B"])`. Replace `Effect.catchAll` with `Effect.catch`.
+
+GraphQL routers are route-registration layers rather than pipeable routers:
+compose them with `Layer.mergeAll(HttpRouter.add("GET", "/health", handler), graphqlRoutes)`.
+Pass the resulting layer to `serve` or `toHandler`. Low-level GraphQL contexts
+contain `services: Context.Context<R>`; obtain these with `Effect.context<R>()`
+and run effects using `Effect.runPromiseWith(services)(effect)`. Keep scoped
+services alive for the full request or subscription lifetime.
 
 ## TypeScript Configuration
 

@@ -11,7 +11,7 @@
 
 import { Effect, Stream, Layer, Duration, Ref, PubSub, Schedule } from "effect"
 import * as S from "effect/Schema"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import {
   GraphQLSchemaBuilder,
   query,
@@ -53,7 +53,7 @@ type Message = S.Schema.Type<typeof Message>
  * PubSub is used to broadcast messages to all subscribers.
  */
 let messageIdCounter = 0
-const messagesRef = Ref.unsafeMake<Message[]>([])
+const messagesRef = Ref.makeUnsafe<Message[]>([])
 const messagePubSub = Effect.runSync(PubSub.unbounded<Message>())
 
 // =============================================================================
@@ -161,7 +161,7 @@ const schema = GraphQLSchemaBuilder.empty
         Effect.gen(function* () {
           const queue = yield* PubSub.subscribe(messagePubSub)
 
-          return Stream.fromQueue(queue).pipe(
+          return Stream.fromSubscription(queue).pipe(
             Stream.tap((msg) =>
               Effect.sync(() =>
                 console.log(`📤 Broadcasting message to subscriber: ${msg.id}`)
@@ -185,7 +185,7 @@ const schema = GraphQLSchemaBuilder.empty
         Effect.gen(function* () {
           const queue = yield* PubSub.subscribe(messagePubSub)
 
-          return Stream.fromQueue(queue).pipe(
+          return Stream.fromSubscription(queue).pipe(
             Stream.filter((msg) => msg.author === author),
             Stream.tap((msg) =>
               Effect.sync(() =>
@@ -211,19 +211,17 @@ const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
   },
 })
 
-const router = HttpRouter.empty.pipe(
-  HttpRouter.options(
-    "/graphql",
-    HttpServerResponse.empty().pipe(
-      HttpServerResponse.setStatus(204),
-      HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type"),
-      Effect.orDie
-    )
-  ),
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const router = Layer.mergeAll(
+  // Handle OPTIONS preflight requests for CORS
+  HttpRouter.add("OPTIONS", "/graphql", HttpServerResponse.empty().pipe(
+    HttpServerResponse.setStatus(204),
+    HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
+    HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type")
+  )),
+  // Health check endpoint
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 // =============================================================================

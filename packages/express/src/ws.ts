@@ -76,10 +76,10 @@ export interface ExpressWSOptions<R> extends GraphQLWSOptions<R> {
  * })
  * ```
  */
-export const attachWebSocket = <R>(
+export const attachWebSocket = <R, LE = never>(
   server: Server,
   schema: GraphQLSchema,
-  layer: Layer.Layer<R>,
+  layer: Layer.Layer<R, LE>,
   options?: ExpressWSOptions<R>
 ): { close: () => Promise<void> } => {
   const wss = new WebSocketServer({ noServer: true })
@@ -99,7 +99,7 @@ export const attachWebSocket = <R>(
     // Run the handler
     Effect.runPromise(
       handler(effectSocket).pipe(
-        Effect.catchAll((error) => Effect.logError("GraphQL WebSocket handler error", error))
+        Effect.catch((error) => Effect.logError("GraphQL WebSocket handler error", error))
       )
     ).finally(() => {
       activeConnections.delete(ws)

@@ -9,7 +9,7 @@ interface TestService {
   getValue: () => string
 }
 
-const TestService = Context.GenericTag<TestService>("TestService")
+const TestService = Context.Service<TestService>("TestService")
 
 const testLayer = Layer.succeed(TestService, {
   getValue: () => "from-service",
@@ -115,6 +115,40 @@ describe("execute.ts", () => {
 
       expect(result1.data).toEqual({ value: "call-1" })
       expect(result2.data).toEqual({ value: "call-2" })
+    })
+
+    it("keeps scoped services alive until asynchronous resolvers finish", async () => {
+      let open = false
+      let releases = 0
+      const Resource = Context.Service<{ readonly isOpen: () => boolean }>("execute/Resource")
+      const layer = Layer.effect(
+        Resource,
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            open = true
+            return { isOpen: () => open }
+          }),
+          () => Effect.sync(() => {
+            open = false
+            releases++
+          })
+        )
+      )
+      const schema = GraphQLSchemaBuilder.empty.query("open", {
+        type: S.Boolean,
+        resolve: () => Effect.gen(function* () {
+          const resource = yield* Resource
+          yield* Effect.sleep("1 millis")
+          return resource.isOpen()
+        }),
+      }).buildSchema()
+
+      const result = await Effect.runPromise(execute(schema, layer)("{ open }"))
+
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ open: true })
+      expect(open).toBe(false)
+      expect(releases).toBe(1)
     })
   })
 

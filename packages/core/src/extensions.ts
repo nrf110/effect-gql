@@ -119,9 +119,7 @@ export interface ExtensionsService {
 /**
  * Tag for the ExtensionsService
  */
-export const ExtensionsService = Context.GenericTag<ExtensionsService>(
-  "@effect-gql/ExtensionsService"
-)
+export const ExtensionsService = Context.Service<ExtensionsService>("@effect-gql/ExtensionsService")
 
 /**
  * Deep merge two objects
@@ -194,7 +192,7 @@ const runExtensionHooks = <R, K extends keyof GraphQLExtension<R>>(
     extensions.filter((ext) => ext[hookName] !== undefined),
     (ext) =>
       getHookEffect(ext).pipe(
-        Effect.catchAllCause((cause) =>
+        Effect.catchCause((cause) =>
           Effect.logWarning(`Extension "${ext.name}" ${String(hookName)} hook failed`, cause)
         )
       ),

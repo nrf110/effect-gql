@@ -341,7 +341,7 @@ describe("schema-builder.ts", () => {
           values: ["ACTIVE", "INACTIVE"],
         })
         .query("status", {
-          type: S.Literal("ACTIVE", "INACTIVE"),
+          type: S.Literals(["ACTIVE", "INACTIVE"]),
           resolve: () => Effect.succeed("ACTIVE" as const),
         })
 
@@ -404,7 +404,7 @@ describe("schema-builder.ts", () => {
           types: ["Text", "Image"],
         })
         .query("content", {
-          type: S.Union(TextSchema, ImageSchema),
+          type: S.Union([TextSchema, ImageSchema]),
           resolve: () => Effect.succeed({ _tag: "Text" as const, body: "Hello" }),
         })
 
@@ -704,12 +704,12 @@ describe("schema-builder.ts", () => {
       const UserSchema = S.TaggedStruct("User", {
         id: S.String,
         name: S.String,
-        status: S.Literal("ACTIVE", "INACTIVE"),
+        status: S.Literals(["ACTIVE", "INACTIVE"]),
       })
 
       const CreateUserInput = S.Struct({
         name: S.String,
-        status: S.optional(S.Literal("ACTIVE", "INACTIVE")),
+        status: S.optional(S.Literals(["ACTIVE", "INACTIVE"])),
       })
 
       const builder = GraphQLSchemaBuilder.empty

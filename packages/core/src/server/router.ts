@@ -5,8 +5,8 @@ import {
   HttpIncomingMessage,
   HttpServerError,
   HttpBody,
-} from "@effect/platform"
-import { Cause, Context, Effect, Layer, ParseResult, Runtime, Schema } from "effect"
+} from "effect/http"
+import { Cause, Context, Effect, Layer, Schema } from "effect"
 import { GraphQLRequestContext } from "../context"
 import {
   GraphQLSchema,
@@ -74,10 +74,8 @@ export const defaultErrorHandler: ErrorHandler = (cause) =>
  */
 const GraphQLRequestBodySchema = Schema.Struct({
   query: Schema.String,
-  variables: Schema.optionalWith(Schema.Record({ key: Schema.String, value: Schema.Unknown }), {
-    as: "Option",
-  }),
-  operationName: Schema.optionalWith(Schema.String, { as: "Option" }),
+  variables: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  operationName: Schema.optional(Schema.String),
 })
 
 /**
@@ -98,9 +96,9 @@ const decodeRequestBody = HttpIncomingMessage.schemaBodyJson(GraphQLRequestBodyS
  * Union of all possible errors that can occur during GraphQL request handling.
  */
 type GraphQLHandlerError =
-  | HttpServerError.RequestError
+  | HttpServerError.HttpServerError
   | HttpBody.HttpBodyError
-  | ParseResult.ParseError
+  | Schema.SchemaError
   | ComplexityLimitExceededError
   | Error
 
@@ -117,7 +115,7 @@ type ParseGraphQLQueryResult =
  */
 const parseGraphQLQuery = (
   query: string,
-  extensionsService: Context.Tag.Service<typeof ExtensionsService>
+  extensionsService: Context.Service.Shape<typeof ExtensionsService>
 ): Effect.Effect<ParseGraphQLQueryResult, never, never> => {
   try {
     const document = parse(query)
@@ -181,7 +179,7 @@ const executeGraphQLQuery = <R>(
   document: DocumentNode,
   variables: Record<string, unknown> | undefined,
   operationName: string | undefined,
-  runtime: import("effect").Runtime.Runtime<R>
+  services: Context.Context<R>
 ): Effect.Effect<import("graphql").ExecutionResult, Error, never> => {
   type ExecutionResult = import("graphql").ExecutionResult
 
@@ -192,7 +190,7 @@ const executeGraphQLQuery = <R>(
         document,
         variableValues: variables,
         operationName,
-        contextValue: { runtime } satisfies GraphQLEffectContext<R>,
+        contextValue: { services } satisfies GraphQLEffectContext<R>,
       }),
     catch: (error) => new Error(String(error)),
   })
@@ -326,7 +324,7 @@ export interface MakeGraphQLRouterOptions extends GraphQLRouterConfigInput {
 }
 
 /**
- * Create an HttpRouter configured for GraphQL
+ * Create a route registration layer configured for GraphQL.
  *
  * The router handles:
  * - POST requests to the GraphQL endpoint
@@ -337,7 +335,7 @@ export interface MakeGraphQLRouterOptions extends GraphQLRouterConfigInput {
  * @param schema - The GraphQL schema
  * @param layer - Effect layer providing services required by resolvers
  * @param options - Optional configuration for paths, GraphiQL, complexity, and extensions
- * @returns An HttpRouter that can be composed with other routes
+ * @returns A route registration layer that can be merged with other routes
  *
  * @example
  * ```typescript
@@ -350,9 +348,9 @@ export interface MakeGraphQLRouterOptions extends GraphQLRouterConfigInput {
  * })
  *
  * // Compose with other routes
- * const app = HttpRouter.empty.pipe(
- *   HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
- *   HttpRouter.concat(router)
+ * const app = Layer.merge(
+ *   HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+ *   router
  * )
  * ```
  */
@@ -360,11 +358,11 @@ export const makeGraphQLRouter = <R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
   options: MakeGraphQLRouterOptions = {}
-): HttpRouter.HttpRouter<never, never> => {
+): Layer.Layer<never, never, HttpRouter.HttpRouter> => {
   const resolvedConfig = normalizeConfig(options)
   const fieldComplexities = options.fieldComplexities ?? new Map()
   const cacheHints = options.cacheHints ?? new Map()
-  const extensions = options.extensions ?? []
+  const extensions: readonly GraphQLExtension<R>[] = options.extensions ?? []
   const errorHandler = options.errorHandler ?? defaultErrorHandler
 
   // GraphQL POST handler - typed as returning HttpServerResponse with all errors handled
@@ -378,9 +376,8 @@ export const makeGraphQLRouter = <R>(
     const parsedBody = yield* decodeRequestBody(request)
     const body: GraphQLRequestBody = {
       query: parsedBody.query,
-      variables: parsedBody.variables._tag === "Some" ? parsedBody.variables.value : undefined,
-      operationName:
-        parsedBody.operationName._tag === "Some" ? parsedBody.operationName.value : undefined,
+      variables: parsedBody.variables,
+      operationName: parsedBody.operationName,
     }
 
     // Create request context with headers and parsed body
@@ -393,9 +390,14 @@ export const makeGraphQLRouter = <R>(
       },
     }
 
-    // Get runtime with user-provided layer, then add request context
-    const baseRuntime = yield* Effect.runtime<R>()
-    const runtime = baseRuntime.pipe(Runtime.provideService(GraphQLRequestContext, requestContext))
+    // Capture services inside the request layer's scope, which stays open through execution.
+    const baseServices = yield* Layer.build(layer)
+    const services = Context.add(
+      Context.merge(yield* Effect.context<never>(), baseServices),
+      GraphQLRequestContext,
+      requestContext
+    )
+    const hookServices = Context.add(services, ExtensionsService, extensionsService)
 
     // Phase 1: Parse
     const parseResult = yield* parseGraphQLQuery(body.query, extensionsService)
@@ -405,7 +407,7 @@ export const makeGraphQLRouter = <R>(
     const document = parseResult.document
 
     yield* runParseHooks(extensions, body.query, document).pipe(
-      Effect.provideService(ExtensionsService, extensionsService)
+      Effect.setContext(hookServices)
     )
 
     // Phase 2: Validate
@@ -415,7 +417,7 @@ export const makeGraphQLRouter = <R>(
     const validationErrors = validate(schema, document, validationRules)
 
     yield* runValidateHooks(extensions, document, validationErrors).pipe(
-      Effect.provideService(ExtensionsService, extensionsService)
+      Effect.setContext(hookServices)
     )
 
     if (validationErrors.length > 0) {
@@ -444,18 +446,18 @@ export const makeGraphQLRouter = <R>(
       operationName: body.operationName,
       schema,
       fieldComplexities,
-    }).pipe(Effect.provideService(ExtensionsService, extensionsService))
+    }).pipe(Effect.setContext(hookServices))
 
     const result = yield* executeGraphQLQuery(
       schema,
       document,
       body.variables,
       body.operationName,
-      runtime
+      services
     )
 
     yield* runExecuteEndHooks(extensions, result).pipe(
-      Effect.provideService(ExtensionsService, extensionsService)
+      Effect.setContext(hookServices)
     )
 
     // Build response
@@ -470,25 +472,27 @@ export const makeGraphQLRouter = <R>(
 
     return yield* buildGraphQLResponse(result, extensionData, cacheControlHeader)
   }).pipe(
-    Effect.provide(layer),
-    Effect.catchAll((error: GraphQLHandlerError) => {
+    Effect.catch((error: GraphQLHandlerError) => {
       if (error instanceof ComplexityLimitExceededError) {
         return handleComplexityError(error)
       }
       return Effect.fail(error)
     }),
-    Effect.catchAllCause(errorHandler)
+    Effect.catchCause(errorHandler)
   )
 
-  // Build router
-  let router = HttpRouter.empty.pipe(
-    HttpRouter.post(resolvedConfig.path as HttpRouter.PathInput, graphqlHandler)
+  let router = HttpRouter.add(
+    "POST",
+    resolvedConfig.path as HttpRouter.PathInput,
+    graphqlHandler
   )
 
   if (resolvedConfig.graphiql) {
     const { path, endpoint, subscriptionEndpoint } = resolvedConfig.graphiql
-    router = router.pipe(
-      HttpRouter.get(
+    router = Layer.merge(
+      router,
+      HttpRouter.add(
+        "GET",
         path as HttpRouter.PathInput,
         HttpServerResponse.html(graphiqlHtml(endpoint, subscriptionEndpoint))
       )

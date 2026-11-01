@@ -14,7 +14,7 @@ import * as S from "effect/Schema"
 // User Domain
 // =============================================================================
 
-export const UserRole = S.Literal("ADMIN", "USER", "GUEST")
+export const UserRole = S.Literals(["ADMIN", "USER", "GUEST"])
 export type UserRole = S.Schema.Type<typeof UserRole>
 
 export const User = S.Struct({

@@ -65,9 +65,9 @@ export const toEffectWebSocket = (ws: WebSocket): EffectWebSocket => toEffectWeb
  * httpServer.listen(4000)
  * ```
  */
-export const createGraphQLWSServer = <R>(
+export const createGraphQLWSServer = <R, LE = never>(
   schema: GraphQLSchema,
-  layer: Layer.Layer<R>,
+  layer: Layer.Layer<R, LE>,
   options?: NodeWSOptions<R>
 ): {
   /** The underlying WebSocketServer instance */
@@ -94,7 +94,7 @@ export const createGraphQLWSServer = <R>(
     // Run the handler
     Effect.runPromise(
       handler(effectSocket).pipe(
-        Effect.catchAll((error) => Effect.logError("GraphQL WebSocket handler error", error))
+        Effect.catch((error) => Effect.logError("GraphQL WebSocket handler error", error))
       )
     ).finally(() => {
       activeConnections.delete(ws)
@@ -167,10 +167,10 @@ export const createGraphQLWSServer = <R>(
  * await cleanup()
  * ```
  */
-export const attachWebSocketToServer = <R>(
+export const attachWebSocketToServer = <R, LE = never>(
   server: Server,
   schema: GraphQLSchema,
-  layer: Layer.Layer<R>,
+  layer: Layer.Layer<R, LE>,
   options?: NodeWSOptions<R>
 ): { close: () => Promise<void> } => {
   const { handleUpgrade, close } = createGraphQLWSServer(schema, layer, options)

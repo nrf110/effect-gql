@@ -578,13 +578,13 @@ function analyzeField(
  * - GRAPHQL_CACHE_CONTROL_HTTP_HEADERS: Set HTTP headers (default: true)
  */
 export const CacheControlConfigFromEnv: Config.Config<CacheControlConfig> = Config.all({
-  enabled: Config.boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(Config.withDefault(true)),
-  defaultMaxAge: Config.number("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(Config.withDefault(0)),
-  defaultScope: Config.string("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
+  enabled: Config.Boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(Config.withDefault(true)),
+  defaultMaxAge: Config.Number("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(Config.withDefault(0)),
+  defaultScope: Config.String("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
     Config.withDefault("PUBLIC"),
     Config.map((s) => (s === "PRIVATE" ? "PRIVATE" : "PUBLIC") as CacheControlScope)
   ),
-  calculateHttpHeaders: Config.boolean("GRAPHQL_CACHE_CONTROL_HTTP_HEADERS").pipe(
+  calculateHttpHeaders: Config.Boolean("GRAPHQL_CACHE_CONTROL_HTTP_HEADERS").pipe(
     Config.withDefault(true)
   ),
 })

@@ -32,8 +32,8 @@ A basic user API with:
 
    // Input for creating users
    const CreateUserInput = S.Struct({
-     name: S.String.pipe(S.minLength(1)),
-     email: S.String.pipe(S.pattern(/@/)),
+     name: S.String.check(S.isMinLength(1)),
+     email: S.String.check(S.isPattern(/@/)),
    })
 
    // TypeScript types are inferred automatically

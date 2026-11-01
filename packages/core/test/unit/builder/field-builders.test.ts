@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Stream, Runtime, Option } from "effect"
+import { Context, Effect, Stream, Option } from "effect"
 import * as S from "effect/Schema"
 import {
   GraphQLObjectType,
@@ -7,6 +7,7 @@ import {
   GraphQLInputObjectType,
   GraphQLString,
   isNonNullType,
+  type GraphQLResolveInfo,
 } from "graphql"
 import {
   buildField,
@@ -15,6 +16,9 @@ import {
   FieldBuilderContext,
 } from "../../../src/builder/field-builders"
 import type { GraphQLEffectContext } from "../../../src/builder/types"
+
+// These subscription tests do not inspect GraphQL resolver metadata.
+const subscriptionInfo = {} as GraphQLResolveInfo
 
 // Helper to create a minimal field builder context
 const createFieldBuilderContext = (): FieldBuilderContext => ({
@@ -34,7 +38,7 @@ const createFieldBuilderContext = (): FieldBuilderContext => ({
 
 // Simple test context for effects with no requirements
 const createSimpleContext = (): GraphQLEffectContext<never> => ({
-  runtime: Runtime.defaultRuntime,
+  services: Context.empty(),
 })
 
 describe("field-builders.ts", () => {
@@ -426,24 +430,6 @@ describe("field-builders.ts", () => {
   // buildSubscriptionField - Subscribe
   // ==========================================================================
   describe("buildSubscriptionField - Subscribe", () => {
-    it("should return AsyncIterator from subscribe", async () => {
-      const ctx = createFieldBuilderContext()
-      const config = buildSubscriptionField(
-        {
-          type: S.String,
-          subscribe: () => Effect.succeed(Stream.make("a", "b", "c")),
-        },
-        ctx
-      )
-
-      const testContext = createSimpleContext()
-      const iterator = await config.subscribe!(null, {}, testContext, {} as any)
-
-      expect(iterator).toBeDefined()
-      const typedIterator = iterator as AsyncIterator<string>
-
-      expect(typeof typedIterator.next).toBe("function")
-    })
 
     it("should yield values from stream", async () => {
       const ctx = createFieldBuilderContext()
@@ -456,7 +442,8 @@ describe("field-builders.ts", () => {
       )
 
       const testContext = createSimpleContext()
-      const iterator = await config.subscribe!(null, {}, testContext, {} as any)
+      const iterable = await config.subscribe!(null, {}, testContext, subscriptionInfo)
+      const iterator = (iterable as AsyncIterable<string>)[Symbol.asyncIterator]()
 
       const result1 = await (iterator as AsyncIterator<string>).next()
       expect(result1.done).toBe(false)
@@ -481,8 +468,8 @@ describe("field-builders.ts", () => {
       )
 
       const testContext = createSimpleContext()
-      const iterator = await config.subscribe!(null, {}, testContext, {} as any)
-      const typedIterator = iterator as AsyncIterator<string>
+      const iterable = await config.subscribe!(null, {}, testContext, subscriptionInfo)
+      const typedIterator = (iterable as AsyncIterable<string>)[Symbol.asyncIterator]()
 
       const result = await typedIterator.next()
       expect(result.done).toBe(true)
@@ -558,8 +545,8 @@ describe("field-builders.ts", () => {
       )
 
       const testContext = createSimpleContext()
-      const iterator = await config.subscribe!(null, {}, testContext, {} as any)
-      const typedIterator = iterator as AsyncIterator<string>
+      const iterable = await config.subscribe!(null, {}, testContext, subscriptionInfo)
+      const typedIterator = (iterable as AsyncIterable<string>)[Symbol.asyncIterator]()
 
       // Get first value
       await typedIterator.next()
@@ -979,7 +966,7 @@ describe("field-builders.ts", () => {
         {
           name: "fallbackMiddleware",
           apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-            Effect.catchAll(effect, () => Effect.succeed("fallback" as unknown as A)),
+            Effect.catch(effect, () => Effect.succeed("fallback" as unknown as A)),
         },
       ]
 

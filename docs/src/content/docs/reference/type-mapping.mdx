@@ -172,7 +172,7 @@ objectType({ schema: User })  // Name "User" is inferred
 ### String Literals
 
 ```typescript
-const StatusSchema = S.Literal("ACTIVE", "INACTIVE", "PENDING")
+const StatusSchema = S.Literals(["ACTIVE", "INACTIVE", "PENDING"])
 
 // Register as enum:
 enumType({
@@ -181,7 +181,7 @@ enumType({
 })
 ```
 
-### Using S.Enums
+### Using S.Enum
 
 ```typescript
 enum Status {
@@ -189,7 +189,7 @@ enum Status {
   INACTIVE = "INACTIVE"
 }
 
-const StatusSchema = S.Enums(Status)
+const StatusSchema = S.Enum(Status)
 
 // Register as enum:
 enumType({
@@ -211,7 +211,7 @@ const DogSchema = S.TaggedStruct("Dog", {
   barks: S.Boolean
 })
 
-const PetSchema = S.Union(CatSchema, DogSchema)
+const PetSchema = S.Union([CatSchema, DogSchema])
 
 // Register types and union:
 objectType({ schema: CatSchema })
@@ -251,7 +251,7 @@ Complex input structures:
 const CreateUserInputSchema = S.Struct({
   name: S.String,
   email: S.String,
-  role: S.optional(S.Literal("ADMIN", "USER"))
+  role: S.optional(S.Literals(["ADMIN", "USER"]))
 })
 
 inputType({
@@ -277,12 +277,7 @@ Effect Schema transformations are handled differently for input vs output:
 Uses the "to" type (the transformed result):
 
 ```typescript
-const DateSchema = S.transform(
-  S.String,     // "from" type
-  S.Date,       // "to" type
-  (s) => new Date(s),
-  (d) => d.toISOString()
-)
+const DateSchema = S.DateFromString
 
 // Output: Returns JavaScript Date → serialized as String
 query("now", {
@@ -307,20 +302,10 @@ For custom scalar types, use transformations:
 
 ```typescript
 // BigInt as string
-const BigIntSchema = S.transform(
-  S.String,
-  S.BigInt,
-  (s) => BigInt(s),
-  (n) => n.toString()
-)
+const BigIntSchema = S.BigIntFromString
 
 // JSON as string
-const JsonSchema = S.transform(
-  S.String,
-  S.Unknown,
-  (s) => JSON.parse(s),
-  (v) => JSON.stringify(v)
-)
+const JsonSchema = S.fromJsonString(S.Unknown)
 ```
 
 <Aside type="tip">
@@ -367,10 +352,14 @@ For unsupported types, use transformations:
 
 ```typescript
 // Record as array of key-value pairs
-const MetadataSchema = S.transform(
-  S.Array(S.Struct({ key: S.String, value: S.String })),
-  S.Record(S.String, S.String),
-  (arr) => Object.fromEntries(arr.map(({ key, value }) => [key, value])),
-  (obj) => Object.entries(obj).map(([key, value]) => ({ key, value }))
+import * as SchemaGetter from "effect/SchemaGetter"
+
+const MetadataSchema = S.Array(S.Struct({ key: S.String, value: S.String })).pipe(
+  S.decodeTo(S.Record(S.String, S.String), {
+    decode: SchemaGetter.transform((arr) =>
+      Object.fromEntries(arr.map(({ key, value }) => [key, value]))),
+    encode: SchemaGetter.transform((obj) =>
+      Object.entries(obj).map(([key, value]) => ({ key, value }))),
+  })
 )
 ```

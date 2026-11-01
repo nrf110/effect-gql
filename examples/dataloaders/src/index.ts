@@ -15,7 +15,7 @@
 
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import {
   GraphQLSchemaBuilder,
   query,
@@ -71,14 +71,12 @@ const posts: Post[] = [
  * Database service that simulates batch database queries.
  * In a real application, this would be your database client.
  */
-class DatabaseService extends Context.Tag("DatabaseService")<
-  DatabaseService,
-  {
-    readonly getUsersByIds: (ids: readonly string[]) => Effect.Effect<readonly User[]>
-    readonly getPostsByAuthorIds: (ids: readonly string[]) => Effect.Effect<readonly Post[]>
-    readonly getAllPosts: () => Effect.Effect<readonly Post[]>
-  }
->() {}
+class DatabaseService extends Context.Service<DatabaseService,
+{
+  readonly getUsersByIds: (ids: readonly string[]) => Effect.Effect<readonly User[]>
+  readonly getPostsByAuthorIds: (ids: readonly string[]) => Effect.Effect<readonly Post[]>
+  readonly getAllPosts: () => Effect.Effect<readonly Post[]>
+}>()("DatabaseService") {}
 
 const DatabaseServiceLive = Layer.succeed(DatabaseService, {
   getUsersByIds: (ids) =>
@@ -234,19 +232,17 @@ const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
   },
 })
 
-const router = HttpRouter.empty.pipe(
-  HttpRouter.options(
-    "/graphql",
-    HttpServerResponse.empty().pipe(
-      HttpServerResponse.setStatus(204),
-      HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type"),
-      Effect.orDie
-    )
-  ),
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const router = Layer.mergeAll(
+  // Handle OPTIONS preflight requests for CORS
+  HttpRouter.add("OPTIONS", "/graphql", HttpServerResponse.empty().pipe(
+    HttpServerResponse.setStatus(204),
+    HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
+    HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type")
+  )),
+  // Health check endpoint
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 // =============================================================================

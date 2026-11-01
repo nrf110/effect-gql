@@ -346,7 +346,7 @@ describe("ws-adapter.ts", () => {
             throw new Error("Cleanup error")
           }).pipe(
             Effect.asVoid,
-            Effect.catchAll(() => Effect.void)
+            Effect.catch(() => Effect.void)
           ),
       })
 
@@ -727,12 +727,12 @@ describe("ws-adapter.ts", () => {
 
   describe("Layer integration", () => {
     it("should accept a typed layer parameter", async () => {
-      class TestService extends Context.Tag("TestService")<
+      class TestService extends Context.Service<
         TestService,
         {
           readonly getValue: () => string
         }
-      >() {}
+      >()("TestService") {}
 
       const testLayer = Layer.succeed(TestService, {
         getValue: () => "test-value",

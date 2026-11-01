@@ -46,7 +46,7 @@ Define your domain with Effect Schema. These serve as the single source of truth
 // domain.ts
 import * as S from "effect/Schema"
 
-export const UserRole = S.Literal("ADMIN", "USER", "GUEST")
+export const UserRole = S.Literals(["ADMIN", "USER", "GUEST"])
 export type UserRole = S.Schema.Type<typeof UserRole>
 
 export const User = S.Struct({
@@ -58,9 +58,9 @@ export const User = S.Struct({
 export type User = S.Schema.Type<typeof User>
 
 export const CreateUserInput = S.Struct({
-  name: S.String.pipe(S.minLength(1), S.maxLength(100)),
-  email: S.String.pipe(S.pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
-  role: S.optional(UserRole).pipe(S.withDefault(() => "USER" as const)),
+  name: S.String.check(S.isMinLength(1), S.isMaxLength(100)),
+  email: S.String.check(S.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
+  role: UserRole.pipe(S.withDecodingDefaultKey(Effect.succeed("USER" as const))),
 })
 
 export const Post = S.Struct({
@@ -86,16 +86,16 @@ Services encapsulate business logic and external dependencies:
 import { Effect, Context, Layer } from "effect"
 import { NotFoundError, AuthorizationError } from "@effect-gql/core"
 
-export class AuthService extends Context.Tag("AuthService")<
+export class AuthService extends Context.Service<
   AuthService,
   {
     readonly getCurrentUser: () => Effect.Effect<User | null>
     readonly requireAuth: () => Effect.Effect<User, AuthorizationError>
     readonly requireRole: (role: string) => Effect.Effect<User, AuthorizationError>
   }
->() {}
+>()("AuthService") {}
 
-export class UserService extends Context.Tag("UserService")<
+export class UserService extends Context.Service<
   UserService,
   {
     readonly findById: (id: string) => Effect.Effect<User, NotFoundError>
@@ -103,16 +103,16 @@ export class UserService extends Context.Tag("UserService")<
     readonly findAll: () => Effect.Effect<readonly User[]>
     readonly create: (input: CreateUserInput) => Effect.Effect<User>
   }
->() {}
+>()("UserService") {}
 
-export class PostService extends Context.Tag("PostService")<
+export class PostService extends Context.Service<
   PostService,
   {
     readonly findById: (id: string) => Effect.Effect<Post, NotFoundError>
     readonly findByAuthorIds: (ids: readonly string[]) => Effect.Effect<readonly Post[]>
     readonly create: (authorId: string, input: CreatePostInput) => Effect.Effect<Post>
   }
->() {}
+>()("PostService") {}
 ```
 
 ### Service Implementations
@@ -254,7 +254,7 @@ Bring everything together:
 ```typescript
 // index.ts
 import { Layer } from "effect"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { makeGraphQLRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 
@@ -271,9 +271,9 @@ const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
   graphiql: { path: "/graphiql", endpoint: "/graphql" },
 })
 
-const app = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const app = Layer.mergeAll(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 // Start server

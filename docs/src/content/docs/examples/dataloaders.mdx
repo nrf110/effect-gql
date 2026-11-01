@@ -134,14 +134,14 @@ const Post = S.Struct({
 })
 
 // Database service
-class DatabaseService extends Context.Tag("DatabaseService")<
+class DatabaseService extends Context.Service<
   DatabaseService,
   {
     readonly getUsersByIds: (ids: readonly string[]) => Effect.Effect<readonly User[]>
     readonly getPostsByAuthorIds: (ids: readonly string[]) => Effect.Effect<readonly Post[]>
     readonly getAllPosts: () => Effect.Effect<readonly Post[]>
   }
->() {}
+>()("DatabaseService") {}
 
 // Define loaders
 const loaders = Loader.define({

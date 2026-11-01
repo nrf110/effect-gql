@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Layer } from "effect"
-import { HttpApp } from "@effect/platform"
+import { HttpRouter } from "effect/http"
 import { GraphQLSchema, GraphQLObjectType, GraphQLString, GraphQLNonNull } from "graphql"
 import { makePersistedQueriesRouter, makeSafelistStore, computeHash } from "../../src"
 
@@ -32,7 +32,7 @@ const executePost = async (
   body: Record<string, unknown>,
   path = "/graphql"
 ) => {
-  const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
   try {
     const response = await handler(
       new Request(`http://localhost${path}`, {
@@ -56,7 +56,7 @@ const executeGet = async (
   params: Record<string, string>,
   path = "/graphql"
 ) => {
-  const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
   try {
     const url = new URL(`http://localhost${path}`)
     for (const [key, value] of Object.entries(params)) {
@@ -371,7 +371,7 @@ describe("makePersistedQueriesRouter", () => {
         graphiql: { path: "/graphiql" },
       })
 
-      const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+      const { handler, dispose } = HttpRouter.toWebHandler(router)
       try {
         const response = await handler(new Request("http://localhost/graphiql", { method: "GET" }))
         const html = await response.text()

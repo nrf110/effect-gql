@@ -135,11 +135,11 @@ const PostSchema = S.Struct({
 })
 
 // Database service
-class Database extends Context.Tag("Database")<Database, {
+class Database extends Context.Service<Database, {
   getAllPosts: () => Effect.Effect<Post[]>
   getUsersByIds: (ids: readonly string[]) => Effect.Effect<User[]>
   getPostsByAuthorIds: (authorIds: readonly string[]) => Effect.Effect<Post[]>
-}>() {}
+}>()("Database") {}
 
 // Define all loaders
 const loaders = Loader.define({

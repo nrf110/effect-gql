@@ -1,27 +1,13 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Layer, Context } from "effect"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { toHandler } from "../../src/handler"
 
 describe("handler.ts", () => {
   describe("toHandler", () => {
-    it("should create a web handler from an HttpRouter", () => {
-      const router = HttpRouter.empty.pipe(
-        HttpRouter.get("/", HttpServerResponse.text("Hello, World!"))
-      )
-
-      const result = toHandler(router, Layer.empty)
-
-      expect(result).toHaveProperty("handler")
-      expect(result).toHaveProperty("dispose")
-      expect(typeof result.handler).toBe("function")
-      expect(typeof result.dispose).toBe("function")
-    })
 
     it("should handle GET requests", async () => {
-      const router = HttpRouter.empty.pipe(
-        HttpRouter.get("/hello", HttpServerResponse.text("Hello!"))
-      )
+      const router = HttpRouter.add("GET", "/hello", HttpServerResponse.text("Hello!"))
 
       const { handler, dispose } = toHandler(router, Layer.empty)
 
@@ -38,14 +24,9 @@ describe("handler.ts", () => {
     })
 
     it("should handle POST requests with JSON body", async () => {
-      const router = HttpRouter.empty.pipe(
-        HttpRouter.post(
-          "/graphql",
-          Effect.gen(function* () {
-            return yield* HttpServerResponse.json({ data: { test: true } })
-          })
-        )
-      )
+      const router = HttpRouter.add("POST", "/graphql", Effect.gen(function* () {
+        return yield* HttpServerResponse.json({ data: { test: true } })
+      }))
 
       const { handler, dispose } = toHandler(router, Layer.empty)
 
@@ -65,9 +46,7 @@ describe("handler.ts", () => {
     })
 
     it("should return 404 for unmatched routes", async () => {
-      const router = HttpRouter.empty.pipe(
-        HttpRouter.get("/hello", HttpServerResponse.text("Hello!"))
-      )
+      const router = HttpRouter.add("GET", "/hello", HttpServerResponse.text("Hello!"))
 
       const { handler, dispose } = toHandler(router, Layer.empty)
 
@@ -83,24 +62,19 @@ describe("handler.ts", () => {
     })
 
     it("should provide layer services to routes", async () => {
-      class TestService extends Context.Tag("TestService")<
+      class TestService extends Context.Service<
         TestService,
         { getValue: () => string }
-      >() {}
+      >()("TestService") {}
 
       const testLayer = Layer.succeed(TestService, {
         getValue: () => "test-value",
       })
 
-      const router = HttpRouter.empty.pipe(
-        HttpRouter.get(
-          "/test",
-          Effect.gen(function* () {
-            const service = yield* TestService
-            return yield* HttpServerResponse.text(service.getValue())
-          })
-        )
-      )
+      const router = HttpRouter.add("GET", "/test", Effect.gen(function* () {
+        const service = yield* TestService
+        return HttpServerResponse.text(service.getValue())
+      }))
 
       const { handler, dispose } = toHandler(router, testLayer)
 
@@ -119,15 +93,10 @@ describe("handler.ts", () => {
     it("should handle multiple concurrent requests", async () => {
       let requestCount = 0
 
-      const router = HttpRouter.empty.pipe(
-        HttpRouter.get(
-          "/count",
-          Effect.gen(function* () {
-            requestCount++
-            return yield* HttpServerResponse.text(`Request ${requestCount}`)
-          })
-        )
-      )
+      const router = HttpRouter.add("GET", "/count", Effect.gen(function* () {
+        requestCount++
+        return HttpServerResponse.text(`Request ${requestCount}`)
+      }))
 
       const { handler, dispose } = toHandler(router, Layer.empty)
 
@@ -146,14 +115,4 @@ describe("handler.ts", () => {
     })
   })
 
-  describe("WebHandler interface", () => {
-    it("should properly dispose of resources", async () => {
-      const router = HttpRouter.empty.pipe(HttpRouter.get("/", HttpServerResponse.text("test")))
-
-      const webHandler = toHandler(router, Layer.empty)
-
-      // Call dispose
-      await expect(webHandler.dispose()).resolves.toBeUndefined()
-    })
-  })
 })

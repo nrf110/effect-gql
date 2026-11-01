@@ -40,8 +40,28 @@ The CLI supports multiple server runtimes:
 ## Manual Installation
 
 ```bash
-npm install @effect-gql/core effect graphql
+npm install @effect-gql/core effect@^4.1.1 graphql
 ```
+
+Effect GraphQL targets stable Effect **4.1.1**. Platform integrations use the
+matching `@effect/platform-node` or `@effect/platform-bun` **4.1.1** release.
+HTTP APIs are included in `effect/http`; do not install `@effect/platform`.
+Node.js deployments require **Node.js 22.19.0 or later**, matching the runtime
+requirement of `@effect/platform-node` 4.1.1.
+
+
+### Migrating from Effect 3
+
+- Define service classes with `Context.Service<Self, Shape>()("Name")`.
+- Use `Schema.Literals([...])` for multiple literals and
+  `Schema.String.check(Schema.isMinLength(1))` for refinements.
+- `makeGraphQLRouter` and `toRouter` return route-registration layers. Combine
+  them with `Layer.mergeAll` and `HttpRouter.add`, then pass the layer to `serve`
+  or `toHandler`.
+- Resolver and subscription contexts carry `services: Context.Context<R>`,
+  not a runtime. Acquire services with `Effect.context<R>()` and run Effects
+  with `Effect.runPromiseWith(services)(effect)`. Keep request scopes open until
+  execution or stream consumption finishes.
 
 ## Quick Start
 
@@ -94,9 +114,12 @@ For full documentation, guides, and API reference, visit the [documentation site
 
 ## Development
 
+Install workspace dependencies with pnpm using the version in `packageManager`.
+`pnpm-lock.yaml` is the workspace lockfile; npm remains supported for running scripts.
+
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Build the project
 npm run build

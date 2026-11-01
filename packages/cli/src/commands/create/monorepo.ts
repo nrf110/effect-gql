@@ -61,7 +61,7 @@ export const detectMonorepo = (targetDir: string): Effect.Effect<MonorepoInfo, n
       // Check for package.json with workspaces
       const pkgPath = path.join(currentDir, "package.json")
       if (yield* fileExists(pkgPath)) {
-        const content = yield* readFile(pkgPath).pipe(Effect.catchAll(() => Effect.succeed("")))
+        const content = yield* readFile(pkgPath).pipe(Effect.catch(() => Effect.succeed("")))
         if (content) {
           try {
             const pkg = JSON.parse(content)

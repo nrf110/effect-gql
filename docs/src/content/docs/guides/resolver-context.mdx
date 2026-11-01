@@ -423,7 +423,7 @@ const maybeUser = yield* ResolverContext.getOption(CurrentUser)
 
 ### 5. Don't Overuse
 
-For simple cases, Effect's built-in `Context.Tag` system may be simpler. Use `ResolverContext` when you need:
+For simple cases, Effect's built-in `Context.Service` system may be simpler. Use `ResolverContext` when you need:
 - Values set dynamically during request processing
 - Hierarchical context (parent sets, children read)
 - Request-scoped mutation

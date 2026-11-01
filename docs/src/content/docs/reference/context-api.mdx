@@ -207,7 +207,7 @@ function makeStoreLayer(): Effect.Effect<Layer.Layer<ResolverContextStore>>
 The Effect Context tag for the store. Useful for advanced use cases.
 
 ```typescript
-const Store: Context.Tag<ResolverContextStore, ResolverContextStore>
+const Store: Context.Service<ResolverContextStore, ResolverContextStore>
 ```
 
 ## Type Definitions
@@ -280,7 +280,7 @@ interface GraphQLRequestContext {
   }
 }
 
-const GraphQLRequestContext: Context.Tag<GraphQLRequestContext, GraphQLRequestContext>
+const GraphQLRequestContext: Context.Service<GraphQLRequestContext, GraphQLRequestContext>
 ```
 
 **Example:**

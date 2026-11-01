@@ -174,6 +174,12 @@ httpServer.listen(4000)
   </TabItem>
 </Tabs>
 
+When managing servers manually, retain and await the adapter's `close()` during
+shutdown so connection-scoped Effect services finish releasing. Both
+`createGraphQLWSServer` and `createBunWSHandlers` expose this method. For Express,
+also retain the middleware returned by `toMiddleware` and await its `dispose()`.
+The Node and Bun `serve` helpers manage these lifecycles automatically.
+
 ### WebSocket Lifecycle Hooks
 
 ```typescript
@@ -443,10 +449,10 @@ A typical subscription setup requires a pub/sub system. Here's a simple in-memor
 ```typescript
 import { Context, Effect, Layer, Stream, PubSub } from "effect"
 
-class PubSubService extends Context.Tag("PubSubService")<PubSubService, {
+class PubSubService extends Context.Service<PubSubService, {
   publish: <A>(topic: string, message: A) => Effect.Effect<void>
   subscribe: <A>(topic: string) => Stream.Stream<A>
-}>() {}
+}>()("PubSubService") {}
 
 const makePubSubService = Effect.gen(function* () {
   const topics = new Map<string, PubSub.PubSub<any>>()

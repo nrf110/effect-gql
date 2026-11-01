@@ -99,12 +99,12 @@ The `match` function receives the GraphQL `info` object and returns `true` if mi
 Middleware can depend on Effect services:
 
 ```typescript
-class MetricsService extends Context.Tag("MetricsService")<
+class MetricsService extends Context.Service<
   MetricsService,
   {
     readonly recordTiming: (field: string, ms: number) => Effect.Effect<void>
   }
->() {}
+>()("MetricsService") {}
 
 middleware<MetricsService>({
   name: "metrics",
@@ -202,7 +202,7 @@ middleware({
 middleware({
   name: "errorNormalization",
   apply: (effect, ctx) =>
-    Effect.catchAll(effect, (error) =>
+    Effect.catch(effect, (error) =>
       Effect.fail(
         new Error(
           `Error in ${ctx.info.parentType.name}.${ctx.info.fieldName}: ${
@@ -298,15 +298,15 @@ import * as S from "effect/Schema"
 import { GraphQLSchemaBuilder, middleware, query, execute } from "@effect-gql/core"
 
 // Services
-class AuthService extends Context.Tag("AuthService")<
+class AuthService extends Context.Service<
   AuthService,
   { readonly requireAdmin: () => Effect.Effect<void, Error> }
->() {}
+>()("AuthService") {}
 
-class MetricsService extends Context.Tag("MetricsService")<
+class MetricsService extends Context.Service<
   MetricsService,
   { readonly recordTiming: (field: string, ms: number) => Effect.Effect<void> }
->() {}
+>()("MetricsService") {}
 
 // Build schema with middleware
 const builder = GraphQLSchemaBuilder.empty.pipe(

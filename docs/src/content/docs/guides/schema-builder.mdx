@@ -225,7 +225,7 @@ Use in queries with `S.Literal`:
 .query("usersByStatus", {
   type: S.Array(UserSchema),
   args: S.Struct({
-    status: S.Literal("ACTIVE", "INACTIVE", "PENDING"),
+    status: S.Literals(["ACTIVE", "INACTIVE", "PENDING"]),
   }),
   resolve: (args) => Effect.succeed([]),
 })
@@ -268,7 +268,7 @@ Register input types for complex arguments:
 const CreateUserInput = S.Struct({
   name: S.String,
   email: S.String,
-  role: S.optional(S.Literal("USER", "ADMIN")),
+  role: S.optional(S.Literals(["USER", "ADMIN"])),
 })
 
 builder
@@ -292,7 +292,7 @@ builder.directive({
   description: "Requires authentication",
   locations: [DirectiveLocation.FIELD_DEFINITION],
   args: S.Struct({
-    role: S.optional(S.Literal("USER", "ADMIN")),
+    role: S.optional(S.Literals(["USER", "ADMIN"])),
   }),
   transformer: (effect, args) =>
     Effect.gen(function* () {

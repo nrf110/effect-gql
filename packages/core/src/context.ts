@@ -13,7 +13,7 @@ export interface GraphQLRequestContext {
 }
 
 export const GraphQLRequestContext =
-  Context.GenericTag<GraphQLRequestContext>("GraphQLRequestContext")
+  Context.Service<GraphQLRequestContext>("GraphQLRequestContext")
 
 /**
  * Create a layer from request context

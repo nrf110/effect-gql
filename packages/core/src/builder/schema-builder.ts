@@ -181,8 +181,8 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   query<A, E, R2, Args = void>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -209,8 +209,8 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   mutation<A, E, R2, Args = void>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -246,8 +246,8 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   subscription<A, E, R2, Args = void>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -274,7 +274,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   objectType<A, R2 = never>(config: {
     name?: string
-    schema: S.Schema<A, any, any>
+    schema: S.Schema<A>
     description?: string
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
@@ -286,8 +286,8 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     fields?: Record<
       string,
       {
-        type: S.Schema<any, any, any>
-        args?: S.Schema<any, any, any>
+        type: S.Schema<any>
+        args?: S.Schema<any>
         description?: string
         directives?: readonly DirectiveApplication[]
         /**
@@ -349,7 +349,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   interfaceType(config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     resolveType?: (value: any) => string
     directives?: readonly DirectiveApplication[]
   }): GraphQLSchemaBuilder<R> {
@@ -412,7 +412,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   inputType(config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     description?: string
     directives?: readonly DirectiveApplication[]
   }): GraphQLSchemaBuilder<R> {
@@ -436,7 +436,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     name: string
     description?: string
     locations: readonly DirectiveLocation[]
-    args?: S.Schema<Args, any, any>
+    args?: S.Schema<Args>
     apply?: (
       args: Args
     ) => <A, E, R3>(effect: Effect.Effect<A, E, R3>) => Effect.Effect<A, E, R2 | R3>
@@ -541,8 +541,8 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     typeName: string,
     fieldName: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**

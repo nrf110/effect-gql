@@ -14,345 +14,127 @@ import {
   GraphQLInputType,
   GraphQLFieldConfigMap,
   GraphQLFieldConfigArgumentMap,
+  GraphQLType,
+  isNonNullType,
 } from "graphql"
 
-/**
- * Check if a number AST node represents an integer
- */
-const isIntegerType = (ast: AST.AST): boolean => {
-  // Check for Refinement with integer filter
-  if (ast._tag === "Refinement") {
-    const refinement = ast as any
+/** Option is a declaration in Effect 4, including schemas with an encoding link. */
+export const isOptionDeclaration = (ast: AST.AST): boolean => {
+  const representation = ast.annotations?.representation
+  return ast._tag === "Declaration" && typeof representation === "object" && representation !== null &&
+    "id" in representation && representation.id === "effect/schema/Option"
+}
 
-    // Check the annotations for the integer identifier or JSONSchema type
-    const annotations = refinement.annotations
-    if (annotations) {
-      // Check for identifier annotation (Int, NonNegativeInt, PositiveInt, etc.)
-      const identifier = AST.getIdentifierAnnotation(refinement)
-      if (identifier._tag === "Some") {
-        const id = identifier.value
-        // Check for any integer-related identifier
-        if (id === "Int" || id.includes("Int")) {
-          return true
-        }
-      }
-
-      // Check for JSONSchema annotation with type "integer"
-      const JSONSchemaSymbol = Symbol.for("effect/annotation/JSONSchema")
-      const jsonSchema = annotations[JSONSchemaSymbol]
-      if (jsonSchema && jsonSchema.type === "integer") {
-        return true
-      }
-    }
-
-    // Recursively check the base type
-    return isIntegerType(refinement.from)
-  }
+/** Whether a field can be omitted or contain a nullish/Option value. */
+export const isNullableAST = (ast: AST.AST): boolean => {
+  if (AST.isOptional(ast) || isOptionDeclaration(ast)) return true
+  if (ast._tag === "Null" || ast._tag === "Undefined" || ast._tag === "Void") return true
+  if (ast._tag === "Union") return ast.types.some(isNullableAST)
+  if (ast._tag === "Suspend") return isNullableAST(ast.thunk())
   return false
 }
 
-/**
- * Handle primitive AST nodes (StringKeyword, NumberKeyword, BooleanKeyword)
- */
-function handlePrimitiveAST(ast: AST.AST): GraphQLOutputType | GraphQLInputType | undefined {
-  if (ast._tag === "StringKeyword") return GraphQLString
-  if (ast._tag === "NumberKeyword") return GraphQLFloat
-  if (ast._tag === "BooleanKeyword") return GraphQLBoolean
-  return undefined
-}
-
-/**
- * Handle refinement AST nodes (e.g., S.Int)
- */
-function handleRefinementAST(
-  ast: AST.AST,
-  convertFn: (schema: S.Schema<any, any, any>) => GraphQLOutputType | GraphQLInputType
-): GraphQLOutputType | GraphQLInputType {
-  if (isIntegerType(ast)) {
-    return GraphQLInt
-  }
-  // For other refinements, use the base type
-  return convertFn(S.make((ast as any).from))
-}
-
-/**
- * Handle literal AST nodes
- */
-function handleLiteralAST(ast: AST.AST): GraphQLOutputType | GraphQLInputType | undefined {
-  if (ast._tag !== "Literal") return undefined
-
-  if (typeof ast.literal === "string") return GraphQLString
-  if (typeof ast.literal === "number") {
-    // Check if it's an integer literal
-    return Number.isInteger(ast.literal) ? GraphQLInt : GraphQLFloat
-  }
-  if (typeof ast.literal === "boolean") return GraphQLBoolean
-  return undefined
-}
-
-/**
- * Handle tuple type AST nodes (arrays)
- */
-function handleTupleTypeAST(
-  ast: AST.AST,
-  convertFn: (schema: S.Schema<any, any, any>) => GraphQLOutputType | GraphQLInputType
-): GraphQLList<any> | undefined {
-  if (ast._tag !== "TupleType") return undefined
-
-  const elements = ast.elements
-  if (elements.length > 0) {
-    const elementSchema = S.make(elements[0].type)
-    return new GraphQLList(convertFn(elementSchema))
+/** Resolve a class or suspended schema to its structural object representation. */
+export function getObjectAST(ast: AST.AST, direction: "output" | "input"): AST.Objects | undefined {
+  const seen = new Set<AST.AST>()
+  while (!seen.has(ast)) {
+    seen.add(ast)
+    ast = direction === "input" ? AST.toEncoded(ast) : AST.toType(ast)
+    if (ast._tag === "Objects") return ast
+    if (ast._tag === "Suspend") ast = ast.thunk()
+    else if (ast._tag === "Declaration" && ast.typeParameters[0]) ast = ast.typeParameters[0]
+    else return undefined
   }
   return undefined
 }
 
-/**
- * Build fields from TypeLiteral property signatures
- */
-function buildFieldsFromPropertySignatures(
-  propertySignatures: readonly any[],
-  convertFn: (schema: S.Schema<any, any, any>) => GraphQLOutputType | GraphQLInputType
-): Record<string, { type: any }> {
-  const fields: Record<string, { type: any }> = {}
+/** Names are string-keyed annotations in Effect 4; tagged structs retain their discriminator. */
+export function getASTName(ast: AST.AST): string | undefined {
+  const identifier = ast.annotations?.identifier
+  if (typeof identifier === "string") return identifier
+  const object = getObjectAST(ast, "output")
+  const tag = object?.propertySignatures.find((property) => property.name === "_tag")?.type
+  return tag?._tag === "Literal" && typeof tag.literal === "string" ? tag.literal : undefined
+}
 
-  for (const field of propertySignatures) {
-    const fieldName = String(field.name)
+function isIntegerCheck(check: AST.Check<unknown>): boolean {
+  if (check.annotations?.representation?.id === "effect/schema/isInt") return true
+  return check._tag === "FilterGroup" && check.checks.some(isIntegerCheck)
+}
 
-    // Skip _tag field from TaggedStruct/TaggedClass - it's an internal discriminator
-    if (fieldName === "_tag") continue
+/** Conversion state is per projected AST graph, so recursive references share one GraphQL type. */
+type ConversionCache = WeakMap<AST.AST, GraphQLOutputType | GraphQLInputType>
+function makeConverter(direction: "output", cache?: ConversionCache): (ast: AST.AST) => GraphQLOutputType
+function makeConverter(direction: "input", cache?: ConversionCache): (ast: AST.AST) => GraphQLInputType
+function makeConverter(direction: "output" | "input", cache: ConversionCache = new WeakMap()) {
+  const convert = (ast: AST.AST): GraphQLOutputType | GraphQLInputType => {
+    const cached = cache.get(ast)
+    if (cached) return cached
 
-    const fieldSchema = S.make(field.type)
-    let fieldType = convertFn(fieldSchema) as any
-
-    // Make non-optional fields non-null, unless they're Option transformations
-    // Option transformations (like S.OptionFromNullOr) should always be nullable
-    const isOptionField = isOptionTransformation(field.type) || isOptionDeclaration(field.type)
-    if (!field.isOptional && !isOptionField) {
-      fieldType = new GraphQLNonNull(fieldType)
+    // Project only at entry points: re-encoding projected child nodes can clone recursive graphs.
+    // Plain Option has an Option-shaped encoding, but GraphQL deliberately exposes its value.
+    if (isOptionDeclaration(ast) && ast._tag === "Declaration") {
+      const inner = ast.typeParameters[0]
+      if (inner) return convert(inner)
     }
-
-    fields[fieldName] = { type: fieldType }
+    switch (ast._tag) {
+      case "String": return GraphQLString
+      case "Number": return ast.checks?.some(isIntegerCheck) ? GraphQLInt : GraphQLFloat
+      case "Boolean": return GraphQLBoolean
+      case "Literal":
+        if (typeof ast.literal === "number") return Number.isInteger(ast.literal) ? GraphQLInt : GraphQLFloat
+        if (typeof ast.literal === "boolean") return GraphQLBoolean
+        return GraphQLString
+      case "Arrays": {
+        const element = ast.rest[0] ?? ast.elements[0]
+        return element ? new GraphQLList(convert(element) as GraphQLOutputType) : GraphQLString
+      }
+      case "Objects": {
+        const name = getASTName(ast) ?? `${direction === "input" ? "Input" : "Object"}_${Math.random().toString(36).slice(2, 11)}`
+        const fields = () => buildFields(ast, convert)
+        const type = direction === "input"
+          ? new GraphQLInputObjectType({ name, fields: fields as () => Record<string, { type: GraphQLInputType }> })
+          : new GraphQLObjectType({ name, fields: fields as () => GraphQLFieldConfigMap<any, any> })
+        cache.set(ast, type)
+        return type
+      }
+      case "Declaration": {
+        const inner = ast.typeParameters[0]
+        if (inner) return convert(inner)
+        break
+      }
+      case "Union": {
+        const member = ast.types.find((type) => type._tag !== "Null" && type._tag !== "Undefined" && type._tag !== "Void")
+        if (member) return convert(member)
+        break
+      }
+      case "Suspend": return convert(ast.thunk())
+    }
+    return GraphQLString
   }
+  return convert
+}
 
+function buildFields(
+  ast: AST.Objects,
+  convert: (ast: AST.AST) => GraphQLOutputType | GraphQLInputType
+): Record<string, { type: GraphQLType }> {
+  const fields: Record<string, { type: GraphQLType }> = {}
+  for (const field of ast.propertySignatures) {
+    if (field.name === "_tag") continue
+    const type = convert(field.type)
+    fields[String(field.name)] = { type: isNullableAST(field.type) || isNonNullType(type) ? type : new GraphQLNonNull(type) }
+  }
   return fields
 }
 
-/**
- * Check if a Declaration AST node represents an Option type.
- * Option declarations have a TypeConstructor annotation of 'effect/Option'.
- */
-export const isOptionDeclaration = (ast: AST.AST): boolean => {
-  if (ast._tag === "Declaration") {
-    const annotations = (ast as any).annotations
-    if (annotations) {
-      const TypeConstructorSymbol = Symbol.for("effect/annotation/TypeConstructor")
-      const typeConstructor = annotations[TypeConstructorSymbol]
-      if (typeConstructor && typeConstructor._tag === "effect/Option") {
-        return true
-      }
-    }
-  }
-  return false
-}
+/** Convert the decoded schema representation to a GraphQL output type. */
+export const toGraphQLType = (schema: S.Top): GraphQLOutputType => makeConverter("output")(AST.toType(schema.ast))
 
-/**
- * Check if a Transformation represents an Option schema (e.g., S.OptionFromNullOr).
- * These have a Declaration with "Option" identifier on the "to" side.
- */
-export const isOptionTransformation = (ast: AST.AST): boolean => {
-  if (ast._tag === "Transformation") {
-    return isOptionDeclaration((ast as any).to)
-  }
-  return false
-}
+/** Convert the encoded schema representation to a GraphQL input type. */
+export const toGraphQLInputType = (schema: S.Top): GraphQLInputType => makeConverter("input")(AST.toEncoded(schema.ast))
 
-/**
- * Get the inner type from an Option Declaration.
- * Option<A> has A as the first type parameter.
- */
-const getOptionInnerType = (ast: AST.AST): AST.AST | undefined => {
-  if (ast._tag === "Declaration") {
-    const typeParams = (ast as any).typeParameters
-    if (typeParams && typeParams.length > 0) {
-      return typeParams[0]
-    }
-  }
-  return undefined
-}
-
-/**
- * Convert an Effect Schema to a GraphQL output type
- */
-export const toGraphQLType = (schema: S.Schema<any, any, any>): GraphQLOutputType => {
-  const ast = schema.ast
-
-  // Handle primitives
-  const primitiveResult = handlePrimitiveAST(ast)
-  if (primitiveResult) return primitiveResult as GraphQLOutputType
-
-  // Handle refinements (e.g., S.Int)
-  if (ast._tag === "Refinement") {
-    return handleRefinementAST(ast, toGraphQLType) as GraphQLOutputType
-  }
-
-  // Handle literals
-  const literalResult = handleLiteralAST(ast)
-  if (literalResult) return literalResult as GraphQLOutputType
-
-  // Handle arrays - check for TupleType
-  const tupleResult = handleTupleTypeAST(ast, toGraphQLType)
-  if (tupleResult) return tupleResult
-
-  // Handle structs/objects
-  if (ast._tag === "TypeLiteral") {
-    const fields = buildFieldsFromPropertySignatures(ast.propertySignatures, toGraphQLType)
-
-    // Generate a name from the schema or use a default
-    const typeName =
-      (schema as any).annotations?.identifier || `Object_${Math.random().toString(36).slice(2, 11)}`
-
-    return new GraphQLObjectType({
-      name: typeName,
-      fields,
-    })
-  }
-
-  // Handle transformations - use the "to" side
-  if (ast._tag === "Transformation") {
-    // Special handling for Option transformations (e.g., S.OptionFromNullOr)
-    // These should map to the nullable inner type
-    if (isOptionTransformation(ast)) {
-      const innerType = getOptionInnerType(ast.to)
-      if (innerType) {
-        // Return the inner type as nullable (not wrapped in NonNull)
-        return toGraphQLType(S.make(innerType))
-      }
-    }
-    return toGraphQLType(S.make(ast.to))
-  }
-
-  // Handle Declaration (e.g., Option from S.Option)
-  if (ast._tag === "Declaration") {
-    // Option declarations map to nullable inner type
-    if (isOptionDeclaration(ast)) {
-      const innerType = getOptionInnerType(ast)
-      if (innerType) {
-        return toGraphQLType(S.make(innerType))
-      }
-    }
-    // For other declarations (like Schema.Class), extract TypeLiteral from typeParameters
-    const typeParams = (ast as any).typeParameters
-    if (typeParams && typeParams.length > 0) {
-      return toGraphQLType(S.make(typeParams[0]))
-    }
-  }
-
-  // Handle unions (use first type as fallback)
-  if (ast._tag === "Union") {
-    const types = ast.types
-    if (types.length > 0) {
-      return toGraphQLType(S.make(types[0]))
-    }
-  }
-
-  // Handle Suspend (recursive/self-referential schemas)
-  if (ast._tag === "Suspend") {
-    const innerAst = (ast as any).f()
-    return toGraphQLType(S.make(innerAst))
-  }
-
-  // Default fallback
-  return GraphQLString
-}
-
-/**
- * Convert an Effect Schema to a GraphQL input type
- */
-export const toGraphQLInputType = (schema: S.Schema<any, any, any>): GraphQLInputType => {
-  const ast = schema.ast
-
-  // Handle primitives
-  const primitiveResult = handlePrimitiveAST(ast)
-  if (primitiveResult) return primitiveResult as GraphQLInputType
-
-  // Handle refinements (e.g., S.Int)
-  if (ast._tag === "Refinement") {
-    return handleRefinementAST(ast, toGraphQLInputType) as GraphQLInputType
-  }
-
-  // Handle literals
-  const literalResult = handleLiteralAST(ast)
-  if (literalResult) return literalResult as GraphQLInputType
-
-  // Handle arrays
-  const tupleResult = handleTupleTypeAST(ast, toGraphQLInputType)
-  if (tupleResult) return tupleResult
-
-  // Handle structs/objects as input types
-  if (ast._tag === "TypeLiteral") {
-    const fields = buildFieldsFromPropertySignatures(ast.propertySignatures, toGraphQLInputType)
-
-    const typeName =
-      (schema as any).annotations?.identifier || `Input_${Math.random().toString(36).slice(2, 11)}`
-
-    return new GraphQLInputObjectType({
-      name: typeName,
-      fields,
-    })
-  }
-
-  // Handle transformations - use the "from" side for input
-  if (ast._tag === "Transformation") {
-    // For Option transformations, the "from" side is Union(T, null/undefined)
-    // which the Union handler below will process correctly
-    return toGraphQLInputType(S.make(ast.from))
-  }
-
-  // Handle Declaration (for completeness, though inputs typically use "from" side)
-  if (ast._tag === "Declaration") {
-    // Option declarations - use the inner type
-    if (isOptionDeclaration(ast)) {
-      const innerType = getOptionInnerType(ast)
-      if (innerType) {
-        return toGraphQLInputType(S.make(innerType))
-      }
-    }
-    // For other declarations, extract from typeParameters
-    const typeParams = (ast as any).typeParameters
-    if (typeParams && typeParams.length > 0) {
-      return toGraphQLInputType(S.make(typeParams[0]))
-    }
-  }
-
-  // Handle unions (use first non-null/undefined type)
-  if (ast._tag === "Union") {
-    const types = ast.types
-    // Filter out null and undefined for nullable unions
-    const nonNullTypes = types
-      .filter((t: AST.AST) => t._tag !== "Literal" || (t as any).literal !== null)
-      .filter((t: AST.AST) => t._tag !== "UndefinedKeyword")
-    if (nonNullTypes.length > 0) {
-      return toGraphQLInputType(S.make(nonNullTypes[0]))
-    }
-    if (types.length > 0) {
-      return toGraphQLInputType(S.make(types[0]))
-    }
-  }
-
-  // Handle Suspend (recursive/self-referential schemas)
-  if (ast._tag === "Suspend") {
-    const innerAst = (ast as any).f()
-    return toGraphQLInputType(S.make(innerAst))
-  }
-
-  // Default fallback
-  return GraphQLString
-}
-
-/**
- * Additional field configuration for computed/relational fields
- */
+/** Additional configuration for computed/relational fields. */
 export interface AdditionalField<Parent, Args, R, E, A> {
   type: GraphQLOutputType
   args?: GraphQLFieldConfigArgumentMap
@@ -360,72 +142,38 @@ export interface AdditionalField<Parent, Args, R, E, A> {
   resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
 }
 
-/**
- * Create a GraphQL Object Type from an Effect Schema with a name
- * Optionally add computed/relational fields with resolvers
- */
 export const toGraphQLObjectType = <T>(
   name: string,
-  schema: S.Schema<any, any, any>,
+  schema: S.Top,
   additionalFields?: Record<string, AdditionalField<T, any, any, any, any>>
 ): GraphQLObjectType => {
-  let ast = schema.ast
-
-  // Handle Transformation wrappers (e.g., from optionalWith, Schema.Class)
-  // Recurse through transformations to find the TypeLiteral
-  while (ast._tag === "Transformation") {
-    ast = (ast as any).to
-  }
-
-  // Handle Declaration (e.g., Schema.Class)
-  if (ast._tag === "Declaration") {
-    const typeParams = (ast as any).typeParameters
-    if (typeParams && typeParams.length > 0) {
-      ast = typeParams[0]
-      // May need to recurse through more transformations
-      while (ast._tag === "Transformation") {
-        ast = (ast as any).to
-      }
-    }
-  }
-
-  if (ast._tag === "TypeLiteral") {
-    // Add fields from schema
-    const baseFields = buildFieldsFromPropertySignatures(ast.propertySignatures, toGraphQLType)
-    const fields: GraphQLFieldConfigMap<any, any> = { ...baseFields }
-
-    // Add additional computed/relational fields
-    if (additionalFields) {
-      for (const [fieldName, fieldConfig] of Object.entries(additionalFields)) {
+  const ast = getObjectAST(schema.ast, "output")
+  if (!ast) throw new Error("Schema must be an object type to convert to GraphQLObjectType")
+  const cache: ConversionCache = new WeakMap()
+  const convert = makeConverter("output", cache)
+  const type = new GraphQLObjectType({
+    name,
+    fields: () => {
+      const fields = buildFields(ast, convert) as GraphQLFieldConfigMap<T, unknown>
+      for (const [fieldName, config] of Object.entries(additionalFields ?? {})) {
         fields[fieldName] = {
-          type: fieldConfig.type,
-          args: fieldConfig.args,
-          description: fieldConfig.description,
-          // Note: resolve will be set later when runtime is available
-          resolve: fieldConfig.resolve as any,
+          type: config.type,
+          args: config.args,
+          description: config.description,
+          resolve: config.resolve,
         }
       }
-    }
-
-    return new GraphQLObjectType({
-      name,
-      fields,
-    })
-  }
-
-  throw new Error(`Schema must be an object type to convert to GraphQLObjectType`)
+      return fields
+    },
+  })
+  cache.set(schema.ast, type)
+  cache.set(AST.toType(schema.ast), type)
+  cache.set(ast, type)
+  return type
 }
 
-/**
- * Convert an Effect Schema to GraphQL arguments
- */
-export const toGraphQLArgs = (schema: S.Schema<any, any, any>): GraphQLFieldConfigArgumentMap => {
-  const ast = schema.ast
-
-  if (ast._tag === "TypeLiteral") {
-    const args = buildFieldsFromPropertySignatures(ast.propertySignatures, toGraphQLInputType)
-    return args as GraphQLFieldConfigArgumentMap
-  }
-
-  throw new Error(`Schema must be an object type to convert to GraphQL arguments`)
+export const toGraphQLArgs = (schema: S.Top): GraphQLFieldConfigArgumentMap => {
+  const ast = getObjectAST(schema.ast, "input")
+  if (!ast) throw new Error("Schema must be an object type to convert to GraphQL arguments")
+  return buildFields(ast, makeConverter("input")) as GraphQLFieldConfigArgumentMap
 }

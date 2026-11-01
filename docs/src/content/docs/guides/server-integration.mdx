@@ -5,7 +5,7 @@ description: Run your GraphQL server on Node.js, Bun, Express, or any platform
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Effect GraphQL provides platform-specific packages for running your GraphQL server. Each package integrates seamlessly with `@effect/platform` and provides consistent APIs across different runtimes.
+Effect GraphQL provides platform-specific packages for running your GraphQL server. Each package integrates seamlessly with `effect/http` and provides consistent APIs across different runtimes.
 
 ## Available Packages
 
@@ -47,7 +47,7 @@ serve(router, Layer.empty, {
 
 ### The Router
 
-The `HttpRouter` from `@effect/platform` is the central abstraction for HTTP handling. Effect GraphQL provides two ways to create a GraphQL router:
+The `HttpRouter` from `effect/http` is the central abstraction for HTTP handling. Effect GraphQL provides two ways to create a GraphQL router:
 
 #### Using `toRouter` (Recommended)
 
@@ -173,12 +173,15 @@ serve(router, serviceLayer, {
   </TabItem>
   <TabItem label="Custom HTTP Server">
 ```typescript
-import { HttpApp } from "@effect/platform"
+import { HttpRouter } from "effect/http"
+import { Layer } from "effect"
 import { createServer } from "node:http"
 import { createGraphQLWSServer } from "@effect-gql/node"
 
 const schema = builder.buildSchema()
-const { handler } = HttpApp.toWebHandlerLayer(router, serviceLayer)
+const { handler, dispose } = HttpRouter.toWebHandler(
+  router.pipe(Layer.provideMerge(serviceLayer))
+)
 
 const httpServer = createServer(async (req, res) => {
   // Handle HTTP requests with Effect router
@@ -224,6 +227,11 @@ app.use("/graphql", graphqlMiddleware(schema, serviceLayer))
 app.listen(4000)
 ```
 
+For route-layer composition, `toMiddleware(routes, serviceLayer)` creates an
+Express request handler with a `dispose(): Promise<void>` method. Retain the
+handler and call `await middleware.dispose()` during server shutdown to release
+its scoped Effect services.
+
 ### Web Standards (Cloudflare Workers, Deno)
 
 The `@effect-gql/web` package provides a handler for Web standard environments:
@@ -261,15 +269,15 @@ Deno.serve({ port: 4000 }, (request) => handler(request))
 ```typescript
 import { toRouter } from "@effect-gql/core"
 import { toHandler } from "@effect-gql/web"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { Layer } from "effect"
 
 // Compose GraphQL with other routes
 const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
 
-const app = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const app = Layer.mergeAll(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 const { handler } = toHandler(app, serviceLayer)
@@ -282,6 +290,10 @@ export default {
 ```
   </TabItem>
 </Tabs>
+
+`toHandler` also returns `dispose(): Promise<void>`. Retain it and await it when
+your host shuts down the handler to release scoped services. Do not dispose a
+shared handler after each request.
 
 ## Environment Configuration
 
@@ -326,20 +338,20 @@ GRAPHQL_MAX_COMPLEXITY=1000
 The GraphQL router can be composed with other routes:
 
 ```typescript
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { toRouter } from "@effect-gql/core"
 
 const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
 
-const app = HttpRouter.empty.pipe(
+const app = Layer.mergeAll(
   // Health check endpoint
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
 
   // Static files
-  HttpRouter.get("/docs/*", serveStaticFiles),
+  HttpRouter.add("GET", "/docs/*", serveStaticFiles),
 
   // GraphQL routes
-  HttpRouter.concat(graphqlRouter)
+  graphqlRouter
 )
 ```
 
@@ -364,31 +376,31 @@ This verifies the entire GraphQL execution pipeline is working. Add the `apollo-
 Use `HttpRouter` to add a health endpoint before the GraphQL router:
 
 ```typescript
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { toRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node" // or @effect-gql/bun
 
 const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
 
-const app = HttpRouter.empty.pipe(
+const app = Layer.mergeAll(
   // Simple health check
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
 
   // Readiness check with service verification
-  HttpRouter.get("/ready",
+  HttpRouter.add("GET", "/ready",
     Effect.gen(function* () {
       const db = yield* Database
       yield* db.ping()
       return yield* HttpServerResponse.json({ status: "ready" })
     }).pipe(
-      Effect.catchAll(() =>
+      Effect.catch(() =>
         HttpServerResponse.json({ status: "not ready" }, { status: 503 })
       )
     )
   ),
 
   // GraphQL routes
-  HttpRouter.concat(graphqlRouter)
+  graphqlRouter
 )
 
 serve(app, serviceLayer, { port: 4000 })
@@ -490,14 +502,15 @@ CORS is HTTP infrastructure that should be configured at the platform level, not
 Use Effect's `HttpMiddleware.cors` for declarative CORS configuration:
 
 ```typescript
-import { HttpMiddleware, HttpRouter } from "@effect/platform"
+import { HttpMiddleware, HttpRouter } from "effect/http"
 import { toRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node" // or @effect-gql/bun
 
 const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
 
-const app = graphqlRouter.pipe(
-  HttpRouter.use(
+const app = Layer.merge(
+  graphqlRouter,
+  HttpRouter.use((router) => router.addGlobalMiddleware(
     HttpMiddleware.cors({
       allowedOrigins: ["https://myapp.com", "https://studio.apollographql.com"],
       allowedMethods: ["GET", "POST", "OPTIONS"],
@@ -505,7 +518,7 @@ const app = graphqlRouter.pipe(
       allowCredentials: true,
       maxAge: 86400, // 24 hours
     })
-  )
+  ))
 )
 
 serve(app, serviceLayer, { port: 4000 })
@@ -645,9 +658,9 @@ The service layer you provide is used to resolve Effect service dependencies in 
 import { Context, Effect, Layer } from "effect"
 
 // Define a service
-class Database extends Context.Tag("Database")<Database, {
+class Database extends Context.Service<Database, {
   getUsers: () => Effect.Effect<User[]>
-}>() {}
+}>()("Database") {}
 
 // Create the layer
 const DatabaseLive = Layer.succeed(Database, {

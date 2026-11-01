@@ -1,4 +1,4 @@
-import { Effect, Layer, Runtime, Stream, Queue, Fiber, Deferred } from "effect"
+import { Context, Effect, Layer, Stream, Queue, Fiber, Deferred } from "effect"
 import { GraphQLSchema, subscribe, GraphQLError } from "graphql"
 import type { ServerOptions } from "graphql-ws"
 import type { GraphQLEffectContext } from "../builder/types"
@@ -17,7 +17,7 @@ import { validateComplexity, type FieldComplexityMap } from "./complexity"
  */
 interface WSExtra<R> {
   socket: EffectWebSocket
-  runtime: Runtime.Runtime<R>
+  services: Context.Context<R>
   connectionParams: Record<string, unknown>
 }
 
@@ -25,7 +25,7 @@ interface WSExtra<R> {
  * Create a ConnectionContext from WSExtra for use in lifecycle hooks.
  */
 const createConnectionContext = <R>(extra: WSExtra<R>): ConnectionContext<R> => ({
-  runtime: extra.runtime,
+  services: extra.services,
   connectionParams: extra.connectionParams,
   socket: extra.socket,
 })
@@ -41,7 +41,7 @@ const makeOnConnectHandler = <R>(
   return async (ctx) => {
     const extra = ctx.extra as WSExtra<R>
     try {
-      const result = await Runtime.runPromise(extra.runtime)(
+      const result = await Effect.runPromiseWith(extra.services)(
         options.onConnect!(ctx.connectionParams ?? {})
       )
       if (typeof result === "object" && result !== null) {
@@ -64,7 +64,7 @@ const makeOnDisconnectHandler = <R>(
 
   return async (ctx) => {
     const extra = ctx.extra as WSExtra<R>
-    await Runtime.runPromise(extra.runtime)(
+    await Effect.runPromiseWith(extra.services)(
       options.onDisconnect!(createConnectionContext(extra))
     ).catch(() => {
       // Ignore cleanup errors
@@ -96,7 +96,7 @@ const makeOnSubscribeHandler = <R>(
         fieldComplexities,
         complexityConfig
       ).pipe(
-        Effect.catchAll((error) => {
+        Effect.catch((error) => {
           if (error._tag === "ComplexityLimitExceededError") {
             throw new GraphQLError(error.message, {
               extensions: {
@@ -116,7 +116,7 @@ const makeOnSubscribeHandler = <R>(
 
     // Call user's onSubscribe hook if provided
     if (options?.onSubscribe) {
-      await Runtime.runPromise(extra.runtime)(
+      await Effect.runPromiseWith(extra.services)(
         options.onSubscribe(connectionCtx, {
           id,
           payload: {
@@ -142,7 +142,7 @@ const makeOnCompleteHandler = <R>(
   // graphql-ws 6.0: signature changed from (ctx, msg) to (ctx, id, payload)
   return async (ctx, id, _payload) => {
     const extra = ctx.extra as WSExtra<R>
-    await Runtime.runPromise(extra.runtime)(
+    await Effect.runPromiseWith(extra.services)(
       options.onComplete!(createConnectionContext(extra), { id })
     ).catch(() => {
       // Ignore cleanup errors
@@ -161,7 +161,7 @@ const makeOnErrorHandler = <R>(
   // graphql-ws 6.0: signature changed from (ctx, msg, errors) to (ctx, id, payload, errors)
   return async (ctx, _id, _payload, errors) => {
     const extra = ctx.extra as WSExtra<R>
-    await Runtime.runPromise(extra.runtime)(
+    await Effect.runPromiseWith(extra.services)(
       options.onError!(createConnectionContext(extra), errors)
     ).catch(() => {
       // Ignore error handler errors
@@ -172,7 +172,7 @@ const makeOnErrorHandler = <R>(
 /**
  * Create a graphql-ws compatible socket adapter from an EffectWebSocket.
  */
-const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, runtime: Runtime.Runtime<R>) => {
+const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, services: Context.Context<R>) => {
   let messageCallback: ((message: string) => Promise<void>) | null = null
 
   return {
@@ -180,14 +180,14 @@ const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, runtime: Runti
       protocol: socket.protocol,
 
       send: (data: string) =>
-        Runtime.runPromise(runtime)(
+        Effect.runPromiseWith(services)(
           socket
             .send(data)
-            .pipe(Effect.catchAll((error) => Effect.logError("WebSocket send error", error)))
+            .pipe(Effect.catch((error) => Effect.logError("WebSocket send error", error)))
         ),
 
       close: (code?: number, reason?: string) => {
-        Runtime.runPromise(runtime)(socket.close(code, reason)).catch(() => {
+        Effect.runPromiseWith(services)(socket.close(code, reason)).catch(() => {
           // Ignore close errors
         })
       },
@@ -229,42 +229,42 @@ const runConnectionLifecycle = <R>(
     const closedDeferred = yield* Deferred.make<CloseEvent, WebSocketError>()
 
     // Fork fiber to consume socket messages and push to queue
-    const messageFiber = yield* Effect.fork(
+    const messageFiber = yield* Effect.forkChild(
       Stream.runForEach(socket.messages, (msg) => Queue.offer(messageQueue, msg)).pipe(
-        Effect.catchAll((error) => Deferred.fail(closedDeferred, error))
+        Effect.catch((error) => Deferred.fail(closedDeferred, error))
       )
     )
 
     // Fork fiber to handle socket close
-    const closeFiber = yield* Effect.fork(
+    const closeFiber = yield* Effect.forkChild(
       socket.closed.pipe(
         Effect.tap((event) => Deferred.succeed(closedDeferred, event)),
-        Effect.catchAll((error) => Deferred.fail(closedDeferred, error))
+        Effect.catch((error) => Deferred.fail(closedDeferred, error))
       )
     )
 
     // Create the graphql-ws socket adapter
-    const { adapter, dispatchMessage } = createGraphqlWsSocketAdapter(socket, extra.runtime)
+    const { adapter, dispatchMessage } = createGraphqlWsSocketAdapter(socket, extra.services)
 
     // Open the connection with graphql-ws
     const closedHandler = wsServer.opened(adapter, extra)
 
     // Fork fiber to process messages from queue
-    const processMessagesFiber = yield* Effect.fork(
+    const processMessagesFiber = yield* Effect.forkChild(
       Effect.gen(function* () {
         while (true) {
           const message = yield* Queue.take(messageQueue)
           yield* Effect.tryPromise({
             try: () => dispatchMessage(message),
             catch: (error) => error,
-          }).pipe(Effect.catchAll(() => Effect.void))
+          }).pipe(Effect.catch(() => Effect.void))
         }
       })
     )
 
     // Wait for connection to close
     yield* Deferred.await(closedDeferred).pipe(
-      Effect.catchAll(() => Effect.succeed({ code: 1000, reason: "Error" }))
+      Effect.catch(() => Effect.succeed({ code: 1000, reason: "Error" }))
     )
 
     // Cleanup
@@ -274,7 +274,7 @@ const runConnectionLifecycle = <R>(
     yield* Fiber.interrupt(processMessagesFiber)
     yield* Queue.shutdown(messageQueue)
   }).pipe(
-    Effect.catchAllCause(() => Effect.void),
+    Effect.catchCause(() => Effect.void),
     Effect.scoped
   )
 
@@ -300,7 +300,7 @@ const importGraphqlWs = Effect.tryPromise({
  *
  * The handler:
  * - Uses the graphql-ws protocol for client communication
- * - Creates an Effect runtime from the provided layer for each connection
+ * - Builds scoped services from the provided layer for each connection
  * - Executes subscriptions using GraphQL's subscribe() function
  * - Properly cleans up resources when connections close
  *
@@ -325,9 +325,9 @@ const importGraphqlWs = Effect.tryPromise({
  * await Effect.runPromise(handler(effectSocket))
  * ```
  */
-export const makeGraphQLWSHandler = <R>(
+export const makeGraphQLWSHandler = <R, LE = never>(
   schema: GraphQLSchema,
-  layer: Layer.Layer<R>,
+  layer: Layer.Layer<R, LE>,
   options?: GraphQLWSOptions<R>
 ): ((socket: EffectWebSocket) => Effect.Effect<void, never, never>) => {
   const complexityConfig = options?.complexity
@@ -346,7 +346,7 @@ export const makeGraphQLWSHandler = <R>(
           context: async (ctx): Promise<GraphQLEffectContext<R> & Record<string, unknown>> => {
             const extra = ctx.extra as WSExtra<R>
             return {
-              runtime: extra.runtime,
+              services: extra.services,
               ...extra.connectionParams,
             }
           },
@@ -374,17 +374,17 @@ export const makeGraphQLWSHandler = <R>(
         catch: (error) => error as Error,
       })
 
-      const runtime = yield* Effect.provide(Effect.runtime<R>(), layer)
+      const services = yield* Layer.build(layer)
 
       const extra: WSExtra<R> = {
         socket,
-        runtime,
+        services,
         connectionParams: {},
       }
 
       yield* runConnectionLifecycle(socket, wsServer, extra)
     }).pipe(
-      Effect.catchAllCause(() => Effect.void),
+      Effect.catchCause(() => Effect.void),
       Effect.scoped
     )
 }

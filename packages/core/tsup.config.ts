@@ -14,7 +14,6 @@ export default defineConfig({
   treeshake: true,
   external: [
     "effect",
-    "@effect/platform",
     "graphql",
     "graphql-ws",
   ],

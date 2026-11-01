@@ -194,7 +194,7 @@ const result = yield* loaders.use(async (instances) => {
 The Effect Context tag for the loader instances.
 
 ```typescript
-readonly Service: Context.Tag<LoaderInstances<Defs>, LoaderInstances<Defs>>
+readonly Service: Context.Service<LoaderInstances<Defs>, LoaderInstances<Defs>>
 ```
 
 **Example:**
@@ -307,7 +307,7 @@ The registry class returned by `Loader.define()`.
 ```typescript
 class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
   readonly definitions: Defs
-  readonly Service: Context.Tag<LoaderInstances<Defs>>
+  readonly Service: Context.Service<LoaderInstances<Defs>>
 
   toLayer(): Layer.Layer<LoaderInstances<Defs>, never, LoaderRequirements<Defs>>
   load<Name>(name: Name, key: K): Effect.Effect<V, Error, LoaderInstances<Defs>>
@@ -324,10 +324,10 @@ import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
 
 // Database service
-class Database extends Context.Tag("Database")<Database, {
+class Database extends Context.Service<Database, {
   getUsersByIds: (ids: readonly string[]) => Effect.Effect<User[]>
   getPostsByAuthorIds: (ids: readonly string[]) => Effect.Effect<Post[]>
-}>() {}
+}>()("Database") {}
 
 // Define loaders
 const loaders = Loader.define({

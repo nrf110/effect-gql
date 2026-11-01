@@ -19,7 +19,7 @@ import type { FieldComplexity } from "../server/complexity"
 export const objectType =
   <A, R2 = never>(config: {
     name?: string
-    schema: S.Schema<A, any, any>
+    schema: S.Schema<A>
     description?: string
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
@@ -31,8 +31,8 @@ export const objectType =
     fields?: Record<
       string,
       {
-        type: S.Schema<any, any, any>
-        args?: S.Schema<any, any, any>
+        type: S.Schema<any>
+        args?: S.Schema<any>
         description?: string
         directives?: readonly DirectiveApplication[]
         complexity?: FieldComplexity
@@ -51,7 +51,7 @@ export const objectType =
 export const interfaceType =
   (config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     resolveType?: (value: any) => string
     directives?: readonly DirectiveApplication[]
   }) =>
@@ -91,7 +91,7 @@ export const unionType =
 export const inputType =
   (config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     description?: string
     directives?: readonly DirectiveApplication[]
   }) =>
@@ -113,7 +113,7 @@ export const directive =
     name: string
     description?: string
     locations: readonly DirectiveLocation[]
-    args?: S.Schema<Args, any, any>
+    args?: S.Schema<Args>
     apply?: (
       args: Args
     ) => <A, E, R3>(effect: Effect.Effect<A, E, R3>) => Effect.Effect<A, E, R2 | R3>
@@ -219,8 +219,8 @@ export const query =
   <A, E, R2, Args = void>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       complexity?: FieldComplexity
@@ -238,8 +238,8 @@ export const mutation =
   <A, E, R2, Args = void>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       complexity?: FieldComplexity
@@ -271,8 +271,8 @@ export const subscription =
   <A, E, R2, Args = void>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       complexity?: FieldComplexity
@@ -292,8 +292,8 @@ export const field =
     typeName: string,
     fieldName: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       complexity?: FieldComplexity

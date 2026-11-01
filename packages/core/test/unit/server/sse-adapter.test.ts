@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Stream, Layer } from "effect"
+import { Context, Effect, Stream, Layer } from "effect"
 import * as S from "effect/Schema"
 import {
   GraphQLSchema,
@@ -631,6 +631,49 @@ describe("sse-adapter.ts", () => {
 
       // The iterator's return() method should be called when the stream is cancelled
       expect(iteratorCleanedUp).toBe(true)
+    })
+
+    it("shares scoped services with hooks and releases them on cancellation", async () => {
+      let open = false
+      let releases = 0
+      const Resource = Context.Service<{ readonly isOpen: () => boolean }>("sse/Resource")
+      const layer = Layer.effect(
+        Resource,
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            open = true
+            return { isOpen: () => open }
+          }),
+          () => Effect.sync(() => {
+            open = false
+            releases++
+          })
+        )
+      )
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+        .subscription("open", {
+          type: S.Boolean,
+          subscribe: () => Effect.succeed(Stream.fromEffect(
+            Effect.map(Resource, (resource) => resource.isOpen())
+          )),
+        })
+        .buildSchema()
+      let hookOpen = false
+      const stream = makeSSESubscriptionStream(
+        schema, layer, { query: "subscription { open }" }, new Headers(), {
+          onComplete: () => Effect.map(Resource, (resource) => {
+            hookOpen = resource.isOpen()
+          }),
+        }
+      )
+
+      const events = await Effect.runPromise(stream.pipe(Stream.take(1), Stream.runCollect))
+
+      expect(events).toEqual([formatNextEvent({ data: { open: true } })])
+      expect(hookOpen).toBe(true)
+      expect(open).toBe(false)
+      expect(releases).toBe(1)
     })
   })
 

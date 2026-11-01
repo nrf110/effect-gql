@@ -66,7 +66,7 @@ describe("schema-mapping.ts", () => {
 
     it("should handle nested refinements with Int base", () => {
       // S.Int with additional refinement (positive)
-      const PositiveInt = S.Int.pipe(S.positive())
+      const PositiveInt = S.Int.check(S.isGreaterThan(0))
       const result = toGraphQLType(PositiveInt)
       // Should still be GraphQLInt since base is Int
       expect(result).toBe(GraphQLInt)
@@ -74,14 +74,14 @@ describe("schema-mapping.ts", () => {
 
     it("should handle non-integer refinements (fallback to base type)", () => {
       // A string with a pattern refinement
-      const Email = S.String.pipe(S.pattern(/@/))
+      const Email = S.String.check(S.isPattern(/@/))
       const result = toGraphQLType(Email)
       expect(result).toBe(GraphQLString)
     })
 
     it("should handle number refinements without integer filter", () => {
       // S.Number with positive refinement should stay Float
-      const PositiveNumber = S.Number.pipe(S.positive())
+      const PositiveNumber = S.Number.check(S.isGreaterThan(0))
       const result = toGraphQLType(PositiveNumber)
       expect(result).toBe(GraphQLFloat)
     })
@@ -119,36 +119,27 @@ describe("schema-mapping.ts", () => {
 
   // ==========================================================================
   // toGraphQLType - Arrays
-  // Note: The current implementation uses TupleType.elements which doesn't
-  // handle S.Array properly (S.Array uses rest elements). These tests document
-  // the current fallback behavior.
   // ==========================================================================
   describe("toGraphQLType - Arrays", () => {
     it("should handle tuple with explicit elements", () => {
       // Use S.Tuple which puts types in elements array
-      const result = toGraphQLType(S.Tuple(S.String))
+      const result = toGraphQLType(S.Tuple([S.String]))
       expect(isListType(result)).toBe(true)
       expect((result as any).ofType).toBe(GraphQLString)
     })
 
     it("should handle tuple with Int element", () => {
-      const result = toGraphQLType(S.Tuple(S.Int))
+      const result = toGraphQLType(S.Tuple([S.Int]))
       expect(isListType(result)).toBe(true)
       expect((result as any).ofType).toBe(GraphQLInt)
     })
 
     it("should handle tuple with Boolean element", () => {
-      const result = toGraphQLType(S.Tuple(S.Boolean))
+      const result = toGraphQLType(S.Tuple([S.Boolean]))
       expect(isListType(result)).toBe(true)
       expect((result as any).ofType).toBe(GraphQLBoolean)
     })
 
-    it("should fallback to GraphQLString for S.Array (uses rest elements)", () => {
-      // S.Array uses rest elements, not elements array, so it falls through to default
-      const result = toGraphQLType(S.Array(S.String))
-      // Current behavior: falls back to GraphQLString
-      expect(result).toBe(GraphQLString)
-    })
   })
 
   // ==========================================================================
@@ -242,7 +233,6 @@ describe("schema-mapping.ts", () => {
   // ==========================================================================
   describe("toGraphQLType - Transformations", () => {
     it("should use 'to' side for transformations", () => {
-      // TaggedStruct creates a transformation
       const UserSchema = S.TaggedStruct("User", {
         id: S.String,
         name: S.String,
@@ -263,14 +253,14 @@ describe("schema-mapping.ts", () => {
   // ==========================================================================
   describe("toGraphQLType - Unions", () => {
     it("should use first type for literal unions (enum-like)", () => {
-      const StatusSchema = S.Literal("ACTIVE", "INACTIVE")
+      const StatusSchema = S.Literals(["ACTIVE", "INACTIVE"])
       const result = toGraphQLType(StatusSchema)
       // Uses first type which is a string literal
       expect(result).toBe(GraphQLString)
     })
 
     it("should handle union of primitive types", () => {
-      const MixedSchema = S.Union(S.String, S.Number)
+      const MixedSchema = S.Union([S.String, S.Number])
       const result = toGraphQLType(MixedSchema)
       // Uses first type
       expect(result).toBe(GraphQLString)
@@ -283,7 +273,7 @@ describe("schema-mapping.ts", () => {
   describe("toGraphQLType - Default fallback", () => {
     it("should return GraphQLString for unknown/unsupported types", () => {
       // Symbol type is not directly supported
-      const schema = S.SymbolFromSelf
+      const schema = S.Symbol
       const result = toGraphQLType(schema)
       expect(result).toBe(GraphQLString)
     })
@@ -362,28 +352,23 @@ describe("schema-mapping.ts", () => {
 
   // ==========================================================================
   // toGraphQLInputType - Arrays
-  // Note: Same limitation as toGraphQLType - S.Array uses rest elements
   // ==========================================================================
   describe("toGraphQLInputType - Arrays", () => {
     it("should handle tuple with explicit elements", () => {
-      const result = toGraphQLInputType(S.Tuple(S.String))
+      const result = toGraphQLInputType(S.Tuple([S.String]))
       expect(isListType(result)).toBe(true)
       expect((result as any).ofType).toBe(GraphQLString)
     })
 
     it("should handle tuple of input objects", () => {
       const ItemInput = S.Struct({ id: S.String })
-      const result = toGraphQLInputType(S.Tuple(ItemInput))
+      const result = toGraphQLInputType(S.Tuple([ItemInput]))
 
       expect(isListType(result)).toBe(true)
       const inner = (result as any).ofType
       expect(inner).toBeInstanceOf(GraphQLInputObjectType)
     })
 
-    it("should fallback to GraphQLString for S.Array (uses rest elements)", () => {
-      const result = toGraphQLInputType(S.Array(S.String))
-      expect(result).toBe(GraphQLString)
-    })
   })
 
   // ==========================================================================
@@ -485,7 +470,7 @@ describe("schema-mapping.ts", () => {
         intField: S.Int,
         floatField: S.Number,
         boolField: S.Boolean,
-        tupleField: S.Tuple(S.String), // Use Tuple instead of Array for proper list handling
+        tupleField: S.Tuple([S.String]), // Use Tuple instead of Array for proper list handling
         optionalField: S.optional(S.String),
       })
 
@@ -570,7 +555,7 @@ describe("schema-mapping.ts", () => {
 
     it("should handle tuple arguments", () => {
       const ArgsSchema = S.Struct({
-        ids: S.Tuple(S.String), // Use Tuple for proper list handling
+        ids: S.Tuple([S.String]), // Use Tuple for proper list handling
       })
       const result = toGraphQLArgs(ArgsSchema)
 
@@ -578,16 +563,6 @@ describe("schema-mapping.ts", () => {
       expect(isListType(idsType)).toBe(true)
     })
 
-    it("should fallback to String for S.Array arguments", () => {
-      const ArgsSchema = S.Struct({
-        ids: S.Array(S.String),
-      })
-      const result = toGraphQLArgs(ArgsSchema)
-
-      // Current behavior: S.Array falls back to String
-      const idsType = unwrapNonNull(result.ids.type)
-      expect(idsType).toBe(GraphQLString)
-    })
   })
 
   // ==========================================================================
@@ -641,9 +616,6 @@ describe("schema-mapping.ts", () => {
       expect(addressType).toBeInstanceOf(GraphQLObjectType)
     })
 
-    // Note: True self-referential types require the registry-aware version
-    // (toGraphQLTypeWithRegistry) to avoid infinite recursion. The base
-    // toGraphQLType function cannot handle cycles on its own.
   })
 
   // ==========================================================================
@@ -687,8 +659,6 @@ describe("schema-mapping.ts", () => {
       expect(addressType).toBeInstanceOf(GraphQLInputObjectType)
     })
 
-    // Note: True self-referential input types require the registry-aware version
-    // (toGraphQLInputTypeWithRegistry) to avoid infinite recursion.
   })
 
   // ==========================================================================
@@ -697,7 +667,7 @@ describe("schema-mapping.ts", () => {
   describe("Edge Cases", () => {
     it("should handle optional fields with tuple type", () => {
       const Schema = S.Struct({
-        data: S.optional(S.Tuple(S.String)),
+        data: S.optional(S.Tuple([S.String])),
       })
       const result = toGraphQLType(Schema) as GraphQLObjectType
       const fields = result.getFields()
@@ -708,18 +678,6 @@ describe("schema-mapping.ts", () => {
       expect(isListType(fields.data.type)).toBe(true)
     })
 
-    it("should handle optional S.Array (falls back to String)", () => {
-      const Schema = S.Struct({
-        data: S.optional(S.Array(S.String)),
-      })
-      const result = toGraphQLType(Schema) as GraphQLObjectType
-      const fields = result.getFields()
-
-      // data should be nullable (optional)
-      expect(isNonNullType(fields.data.type)).toBe(false)
-      // Current behavior: S.Array falls back to String
-      expect(fields.data.type).toBe(GraphQLString)
-    })
 
     it("should handle struct with numeric field names", () => {
       const Schema = S.Struct({
@@ -740,8 +698,69 @@ describe("schema-mapping.ts", () => {
       })
       const result = toGraphQLType(UserSchema)
 
-      // TaggedStruct creates a transformation, so we get an object type
       expect(result).toBeInstanceOf(GraphQLObjectType)
+    })
+
+    it("keeps transformed fields decoded for output and encoded for arguments", () => {
+      const RecordSchema = S.Struct({ amount: S.NumberFromString })
+      const output = toGraphQLObjectType("Record", RecordSchema).getFields()
+      const args = toGraphQLArgs(RecordSchema)
+
+      expect(unwrapNonNull(output.amount.type)).toBe(GraphQLFloat)
+      expect(unwrapNonNull(args.amount.type)).toBe(GraphQLString)
+    })
+
+    it("recognizes integer checks inside filter groups", () => {
+      const schema = S.Number.check(S.isInt32())
+      expect(toGraphQLType(schema)).toBe(GraphQLInt)
+      expect(toGraphQLInputType(schema)).toBe(GraphQLInt)
+    })
+
+    it("preserves list element types and nullable fields in both directions", () => {
+      const RecordSchema = S.Struct({
+        values: S.Array(S.Int),
+        label: S.NullOr(S.String),
+        count: S.OptionFromNullOr(S.Int),
+        enabled: S.Option(S.Boolean),
+      })
+      const output = toGraphQLObjectType("Record", RecordSchema).getFields()
+      const args = toGraphQLArgs(RecordSchema)
+
+      expect(String(output.values.type)).toBe("[Int]!")
+      expect(String(args.values.type)).toBe("[Int]!")
+      expect(output.label.type).toBe(GraphQLString)
+      expect(args.label.type).toBe(GraphQLString)
+      expect(output.count.type).toBe(GraphQLInt)
+      expect(args.count.type).toBe(GraphQLInt)
+      expect(output.enabled.type).toBe(GraphQLBoolean)
+      expect(args.enabled.type).toBe(GraphQLBoolean)
+    })
+
+    it("shares recursive output and input object references", () => {
+      interface Tree {
+        readonly value: string
+        readonly children: readonly Tree[]
+      }
+      const TreeSchema: S.Schema<Tree> = S.Struct({
+        value: S.String,
+        children: S.Array(S.suspend(() => TreeSchema)),
+      })
+      const output = toGraphQLObjectType("Tree", TreeSchema)
+      const input = toGraphQLInputType(TreeSchema) as GraphQLInputObjectType
+      const outputChildren = unwrapNonNull(output.getFields().children.type)
+      const inputChildren = unwrapNonNull(input.getFields().children.type)
+
+      expect(outputChildren.ofType).toBe(output)
+      expect(inputChildren.ofType).toBe(input)
+    })
+
+    it("uses class field encodings for arguments", () => {
+      class Count extends S.Class<Count>("Count")({ value: S.NumberFromString }) {}
+      const output = toGraphQLObjectType("Count", Count).getFields()
+      const args = toGraphQLArgs(Count)
+
+      expect(unwrapNonNull(output.value.type)).toBe(GraphQLFloat)
+      expect(unwrapNonNull(args.value.type)).toBe(GraphQLString)
     })
   })
 })

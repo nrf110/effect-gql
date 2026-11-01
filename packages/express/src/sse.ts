@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream, Deferred } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import type { Request, Response, NextFunction, RequestHandler } from "express"
 import { GraphQLSchema } from "graphql"
 import {
@@ -125,45 +125,29 @@ export const sseMiddleware = <R>(
     const eventStream = sseHandler(subscriptionRequest, headers)
 
     // Create the streaming effect
-    const streamEffect = Effect.gen(function* () {
-      // Track client disconnection
-      const clientDisconnected = yield* Deferred.make<void, SSEError>()
-
-      req.on("close", () => {
-        Effect.runPromise(Deferred.succeed(clientDisconnected, undefined)).catch(() => {})
-      })
-
-      req.on("error", (error) => {
-        Effect.runPromise(Deferred.fail(clientDisconnected, new SSEError({ cause: error }))).catch(
-          () => {}
-        )
-      })
-
-      // Stream events to the client
-      const runStream = Stream.runForEach(eventStream, (event) =>
-        Effect.async<void, SSEError>((resume) => {
-          const message = formatSSEMessage(event)
-          res.write(message, (error) => {
-            if (error) {
-              resume(Effect.fail(new SSEError({ cause: error })))
-            } else {
-              resume(Effect.succeed(undefined))
-            }
+    const streamEffect = Effect.raceFirst(
+          Stream.runForEach(eventStream, (event) => Effect.callback<void, SSEError>((resume) => {
+            res.write(formatSSEMessage(event), (error) => {
+              resume(error ? Effect.fail(new SSEError({ cause: error })) : Effect.void)
+            })
+          })).pipe(Effect.catch((error) => Effect.logWarning("SSE stream error", error))),
+          Effect.callback<void, SSEError>((resume) => {
+            const onClose = () => resume(Effect.void)
+            const onError = (error: Error) => resume(Effect.fail(new SSEError({ cause: error })))
+            res.once("close", onClose)
+            res.once("error", onError)
+            if (res.destroyed) resume(Effect.void)
+            return Effect.sync(() => {
+              res.off("close", onClose)
+              res.off("error", onError)
+            })
           })
-        })
-      )
-
-      // Race between stream completion and client disconnection
-      yield* Effect.race(
-        runStream.pipe(Effect.catchAll((error) => Effect.logWarning("SSE stream error", error))),
-        Deferred.await(clientDisconnected)
-      )
-    })
+        )
 
     await Effect.runPromise(
       streamEffect.pipe(
         Effect.ensuring(Effect.sync(() => res.end())),
-        Effect.catchAll(() => Effect.void)
+        Effect.catch(() => Effect.void)
       )
     )
   }
@@ -240,45 +224,29 @@ export const createSSEHandler = <R>(
     const eventStream = sseHandler(subscriptionRequest, headers)
 
     // Create the streaming effect
-    const streamEffect = Effect.gen(function* () {
-      // Track client disconnection
-      const clientDisconnected = yield* Deferred.make<void, SSEError>()
-
-      req.on("close", () => {
-        Effect.runPromise(Deferred.succeed(clientDisconnected, undefined)).catch(() => {})
-      })
-
-      req.on("error", (error) => {
-        Effect.runPromise(Deferred.fail(clientDisconnected, new SSEError({ cause: error }))).catch(
-          () => {}
-        )
-      })
-
-      // Stream events to the client
-      const runStream = Stream.runForEach(eventStream, (event) =>
-        Effect.async<void, SSEError>((resume) => {
-          const message = formatSSEMessage(event)
-          res.write(message, (error) => {
-            if (error) {
-              resume(Effect.fail(new SSEError({ cause: error })))
-            } else {
-              resume(Effect.succeed(undefined))
-            }
+    const streamEffect = Effect.raceFirst(
+          Stream.runForEach(eventStream, (event) => Effect.callback<void, SSEError>((resume) => {
+            res.write(formatSSEMessage(event), (error) => {
+              resume(error ? Effect.fail(new SSEError({ cause: error })) : Effect.void)
+            })
+          })).pipe(Effect.catch((error) => Effect.logWarning("SSE stream error", error))),
+          Effect.callback<void, SSEError>((resume) => {
+            const onClose = () => resume(Effect.void)
+            const onError = (error: Error) => resume(Effect.fail(new SSEError({ cause: error })))
+            res.once("close", onClose)
+            res.once("error", onError)
+            if (res.destroyed) resume(Effect.void)
+            return Effect.sync(() => {
+              res.off("close", onClose)
+              res.off("error", onError)
+            })
           })
-        })
-      )
-
-      // Race between stream completion and client disconnection
-      yield* Effect.race(
-        runStream.pipe(Effect.catchAll((error) => Effect.logWarning("SSE stream error", error))),
-        Deferred.await(clientDisconnected)
-      )
-    })
+        )
 
     await Effect.runPromise(
       streamEffect.pipe(
         Effect.ensuring(Effect.sync(() => res.end())),
-        Effect.catchAll(() => Effect.void)
+        Effect.catch(() => Effect.void)
       )
     )
   }

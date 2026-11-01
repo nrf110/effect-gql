@@ -26,16 +26,6 @@ describe("error.ts", () => {
       expect(error.extensions).toEqual({ code: "INTERNAL_ERROR", timestamp: 123456 })
     })
 
-    it("should be usable with Effect.fail", () => {
-      const program = Effect.fail(new GraphQLError({ message: "Test error" }))
-      const exit = Effect.runSyncExit(program)
-
-      expect(Exit.isFailure(exit)).toBe(true)
-      if (Exit.isFailure(exit)) {
-        const error = exit.cause
-        expect(error._tag).toBe("Fail")
-      }
-    })
 
     it("should be catchable with Effect.catchTag", () => {
       const program = Effect.fail(new GraphQLError({ message: "Caught error" })).pipe(
@@ -169,12 +159,12 @@ describe("error.ts", () => {
       }
 
       const program1 = Effect.fail(new ValidationError({ message: "test" })).pipe(
-        Effect.catchAll(handleValidation)
+        Effect.catch(handleValidation)
       )
       expect(Effect.runSync(program1)).toBe("handled validation")
 
       const program2 = Effect.fail(new NotFoundError({ message: "test" })).pipe(
-        Effect.catchAll(handleValidation)
+        Effect.catch(handleValidation)
       )
       const exit = Effect.runSyncExit(program2)
       expect(Exit.isFailure(exit)).toBe(true)

@@ -298,10 +298,10 @@ Response:
 Extensions can depend on Effect services:
 
 ```typescript
-class TracingService extends Context.Tag("TracingService")<
+class TracingService extends Context.Service<
   TracingService,
   { readonly createSpan: (name: string) => Effect.Effect<Span> }
->() {}
+>()("TracingService") {}
 
 extension<TracingService>({
   name: "openTelemetry",

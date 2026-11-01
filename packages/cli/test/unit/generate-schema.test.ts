@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Effect } from "effect"
+import { Context, Effect } from "effect"
 import * as S from "effect/Schema"
 import * as path from "path"
 import { execSync } from "child_process"
@@ -160,10 +160,10 @@ describe("generate-schema", () => {
 
     it("should fail for non-existent module", async () => {
       const result = await Effect.runPromise(
-        generateSDLFromModule(path.join(fixturesDir, "non-existent-module.ts")).pipe(Effect.either)
+        generateSDLFromModule(path.join(fixturesDir, "non-existent-module.ts")).pipe(Effect.result)
       )
 
-      expect(result._tag).toBe("Left")
+      expect(result._tag).toBe("Failure")
     })
   })
 
@@ -171,11 +171,9 @@ describe("generate-schema", () => {
     it("should build schema without requiring Effect layer", () => {
       // This demonstrates that schema building works without any services
       // Define a service that would normally require a layer
-      class DatabaseService extends Effect.Service<DatabaseService>()("@app/DatabaseService", {
-        effect: Effect.succeed({
-          getUsers: () => Effect.succeed([] as readonly string[]),
-        }),
-      }) {}
+      class DatabaseService extends Context.Service<DatabaseService, {
+        getUsers: () => Effect.Effect<readonly string[]>
+      }>()("@app/DatabaseService") {}
 
       const builder = GraphQLSchemaBuilder.empty.pipe(
         query("users", {

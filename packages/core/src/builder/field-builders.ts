@@ -1,4 +1,4 @@
-import { Effect, Runtime, Stream, Queue, Fiber, Option } from "effect"
+import { Effect, Option, Stream } from "effect"
 import * as S from "effect/Schema"
 import { GraphQLFieldConfig, GraphQLResolveInfo } from "graphql"
 import type {
@@ -16,30 +16,8 @@ import {
   type TypeConversionContext,
   type InputTypeLookupCache,
 } from "./type-registry"
+import { isOptionDeclaration } from "../schema-mapping"
 
-/**
- * Check if a schema represents an Option type (e.g., S.OptionFromNullOr).
- * These schemas have a Transformation with a Declaration on the "to" side
- * that has a TypeConstructor annotation of 'effect/Option'.
- */
-function isOptionSchema(schema: S.Schema<any, any, any>): boolean {
-  const ast = schema.ast
-  if (ast._tag === "Transformation") {
-    const toAst = (ast as any).to
-    if (toAst._tag === "Declaration") {
-      // Check for the TypeConstructor annotation which identifies Option types
-      const annotations = toAst.annotations
-      if (annotations) {
-        const TypeConstructorSymbol = Symbol.for("effect/annotation/TypeConstructor")
-        const typeConstructor = annotations[TypeConstructorSymbol]
-        if (typeConstructor && typeConstructor._tag === "effect/Option") {
-          return true
-        }
-      }
-    }
-  }
-  return false
-}
 
 /**
  * Encode a resolver's output value using the schema.
@@ -48,18 +26,17 @@ function isOptionSchema(schema: S.Schema<any, any, any>): boolean {
  *
  * For non-Option schemas, this is a no-op pass-through.
  */
-function encodeResolverOutput<A, I, R>(
-  schema: S.Schema<A, I, R>,
-  value: A
-): Effect.Effect<I, never, R> {
-  // Only encode Option schemas - other schemas pass through unchanged
-  // This optimization avoids the overhead of encoding for simple types
-  if (isOptionSchema(schema)) {
-    // Use Schema.encode to convert Option<A> back to I (null | A)
-    return Effect.orDie(S.encode(schema)(value))
+function encodeResolverOutput(
+  schema: S.Top,
+  value: unknown
+): Effect.Effect<unknown, never, unknown> {
+  if (isOptionDeclaration(schema.ast)) {
+    return S.encodeUnknownEffect(schema)(value).pipe(
+      Effect.orDie,
+      Effect.map((encoded) => Option.isOption(encoded) ? Option.getOrNull(encoded) : encoded)
+    )
   }
-  // For non-Option types, pass through unchanged
-  return Effect.succeed(value as unknown as I)
+  return Effect.succeed(value)
 }
 
 /**
@@ -152,10 +129,10 @@ export function buildField(
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       // Execute the resolver
-      const result = await Runtime.runPromise(context.runtime)(effect)
+      const result = await Effect.runPromiseWith(context.services)(effect)
 
       // Encode the result (converts Option.none() to null, Option.some(x) to x)
-      return await Runtime.runPromise(context.runtime)(encodeResolverOutput(config.type, result))
+      return await Effect.runPromiseWith(context.services)(encodeResolverOutput(config.type, result))
     },
   }
 
@@ -198,10 +175,10 @@ export function buildObjectField(
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       // Execute the resolver
-      const result = await Runtime.runPromise(context.runtime)(effect)
+      const result = await Effect.runPromiseWith(context.services)(effect)
 
       // Encode the result (converts Option.none() to null, Option.some(x) to x)
-      return await Runtime.runPromise(context.runtime)(encodeResolverOutput(config.type, result))
+      return await Effect.runPromiseWith(context.services)(encodeResolverOutput(config.type, result))
     },
   }
 
@@ -229,7 +206,7 @@ export function buildObjectField(
  * - `subscribe` returns an AsyncIterator that yields the "root value" for each event
  * - `resolve` transforms each yielded value into the final result
  *
- * We convert Effect's Stream to an AsyncIterator using a Queue-based approach.
+ * Effect's native AsyncIterable adapter preserves stream failure and cancellation.
  */
 export function buildSubscriptionField(
   config: SubscriptionFieldRegistration,
@@ -259,10 +236,9 @@ export function buildSubscriptionField(
       const middlewareContext: MiddlewareContext = { parent: _parent, args, info }
       subscribeEffect = applyMiddleware(subscribeEffect, middlewareContext, ctx.middlewares) as any
 
-      const stream = await Runtime.runPromise(context.runtime)(subscribeEffect)
+      const stream = await Effect.runPromiseWith(context.services)(subscribeEffect)
 
-      // Convert Stream to AsyncIterator using queue-based approach
-      return streamToAsyncIterator(stream, context.runtime)
+      return Stream.toAsyncIterableWith(stream, context.services)
     },
 
     // The resolve function transforms each yielded value
@@ -276,16 +252,16 @@ export function buildSubscriptionField(
           effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
           // Execute the resolver
-          const result = await Runtime.runPromise(context.runtime)(effect)
+          const result = await Effect.runPromiseWith(context.services)(effect)
 
           // Encode the result (converts Option.none() to null, Option.some(x) to x)
-          return await Runtime.runPromise(context.runtime)(
+          return await Effect.runPromiseWith(context.services)(
             encodeResolverOutput(config.type, result)
           )
         }
       : async (value, _args, context: GraphQLEffectContext<any>) => {
           // Even without custom resolve, encode Option values
-          return await Runtime.runPromise(context.runtime)(encodeResolverOutput(config.type, value))
+          return await Effect.runPromiseWith(context.services)(encodeResolverOutput(config.type, value))
         },
   }
 
@@ -304,82 +280,4 @@ export function buildSubscriptionField(
   }
 
   return fieldConfig
-}
-
-/**
- * Convert an Effect Stream to an AsyncIterator using a Queue-based approach.
- *
- * This is needed because Stream.toAsyncIterable() requires R = never,
- * but our streams may have service requirements that need to be provided
- * by the runtime context.
- */
-function streamToAsyncIterator<A, E, R>(
-  stream: Stream.Stream<A, E, R>,
-  runtime: Runtime.Runtime<R>
-): AsyncIterator<A> {
-  // Create the queue synchronously via runSync since unbounded queue creation is synchronous
-  let queue: Queue.Queue<Option.Option<A>>
-  let fiber: Fiber.RuntimeFiber<void, E>
-  let initialized = false
-  let done = false
-
-  const initialize = async () => {
-    if (initialized) return
-    initialized = true
-
-    queue = await Runtime.runPromise(runtime)(Queue.unbounded<Option.Option<A>>())
-
-    // Fork a fiber to run the stream and push values to the queue
-    fiber = Runtime.runFork(runtime)(
-      Effect.ensuring(
-        Stream.runForEach(stream, (value) => Queue.offer(queue, Option.some(value))),
-        // Signal completion by pushing None
-        Queue.offer(queue, Option.none())
-      )
-    )
-  }
-
-  return {
-    [Symbol.asyncIterator]() {
-      return this
-    },
-
-    async next(): Promise<IteratorResult<A>> {
-      await initialize()
-
-      if (done) {
-        return { done: true, value: undefined }
-      }
-
-      try {
-        const optionValue = await Runtime.runPromise(runtime)(Queue.take(queue))
-
-        if (Option.isNone(optionValue)) {
-          done = true
-          return { done: true, value: undefined }
-        }
-
-        return { done: false, value: optionValue.value }
-      } catch (error) {
-        done = true
-        throw error
-      }
-    },
-
-    async return(): Promise<IteratorResult<A>> {
-      // Cleanup - interrupt the fiber and shutdown the queue
-      done = true
-      if (initialized) {
-        try {
-          await Runtime.runPromise(runtime)(
-            Fiber.interrupt(fiber as unknown as Fiber.Fiber<any, any>)
-          )
-          await Runtime.runPromise(runtime)(Queue.shutdown(queue))
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
-      return { done: true, value: undefined }
-    },
-  } as AsyncIterator<A>
 }

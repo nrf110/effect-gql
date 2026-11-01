@@ -185,8 +185,8 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
   query<A, E, R2, Args = void>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R2>
@@ -203,8 +203,8 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
   mutation<A, E, R2, Args = void>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R2>
@@ -221,8 +221,8 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
   subscription<A, E, R2, Args = void>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R2>, E, R2>
@@ -239,7 +239,7 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   objectType<A, R2 = never>(config: {
     name?: string
-    schema: S.Schema<A, any, any>
+    schema: S.Schema<A>
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
   }): FederatedSchemaBuilder<R | R2> {
@@ -253,7 +253,7 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   interfaceType(config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     resolveType?: (value: any) => string
     directives?: readonly DirectiveApplication[]
   }): FederatedSchemaBuilder<R> {
@@ -295,7 +295,7 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   inputType(config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     description?: string
     directives?: readonly DirectiveApplication[]
   }): FederatedSchemaBuilder<R> {
@@ -311,8 +311,8 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
     typeName: string,
     fieldName: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Schema<Args>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>

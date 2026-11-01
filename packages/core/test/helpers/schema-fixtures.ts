@@ -78,15 +78,15 @@ export type Organization = S.Schema.Type<typeof OrganizationSchema>
 // ============================================================================
 
 export const StatusValues = ["ACTIVE", "INACTIVE", "PENDING"] as const
-export const StatusSchema = S.Literal(...StatusValues)
+export const StatusSchema = S.Literals(StatusValues)
 export type Status = S.Schema.Type<typeof StatusSchema>
 
 export const PriorityValues = ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const
-export const PrioritySchema = S.Literal(...PriorityValues)
+export const PrioritySchema = S.Literals(PriorityValues)
 export type Priority = S.Schema.Type<typeof PrioritySchema>
 
 export const RoleValues = ["ADMIN", "USER", "GUEST"] as const
-export const RoleSchema = S.Literal(...RoleValues)
+export const RoleSchema = S.Literals(RoleValues)
 export type Role = S.Schema.Type<typeof RoleSchema>
 
 // ============================================================================
@@ -135,9 +135,9 @@ export type Profile = S.Schema.Type<typeof ProfileSchema>
 // With Refinements
 // ============================================================================
 
-export const EmailSchema = S.String.pipe(S.pattern(/@/))
+export const EmailSchema = S.String.check(S.isPattern(/@/))
 
-export const PositiveIntSchema = S.Int.pipe(S.positive())
+export const PositiveIntSchema = S.Int.check(S.isGreaterThan(0))
 
 // ============================================================================
 // Complex Nested with Optionals

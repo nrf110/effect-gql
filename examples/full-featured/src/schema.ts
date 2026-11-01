@@ -223,7 +223,7 @@ export const schema = schemaWithQueries
     mutation("addComment", {
       args: S.Struct({
         postId: S.String,
-        content: S.String.pipe(S.minLength(1)),
+        content: S.String.check(S.isMinLength(1)),
       }),
       type: Comment,
       description: "Add a comment to a post",

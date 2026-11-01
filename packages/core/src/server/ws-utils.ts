@@ -81,7 +81,7 @@ export const toEffectWebSocketFromWs = (ws: WsWebSocket): EffectWebSocket => {
   // Create the message stream
   const messages: Stream.Stream<string, WebSocketError> = Stream.unwrap(
     messagesEffect.pipe(
-      Effect.map(({ queue }) => Stream.fromQueue(queue).pipe(Stream.catchAll(() => Stream.empty)))
+      Effect.map(({ queue }) => Stream.fromQueue(queue).pipe(Stream.catch(() => Stream.empty)))
     )
   )
 
@@ -89,7 +89,7 @@ export const toEffectWebSocketFromWs = (ws: WsWebSocket): EffectWebSocket => {
     protocol: ws.protocol || "graphql-transport-ws",
 
     send: (data: string) =>
-      Effect.async<void, WebSocketError>((resume) => {
+      Effect.callback<void, WebSocketError>((resume) => {
         ws.send(data, (error) => {
           if (error) {
             resume(Effect.fail(new WebSocketError({ cause: error })))
@@ -106,7 +106,7 @@ export const toEffectWebSocketFromWs = (ws: WsWebSocket): EffectWebSocket => {
 
     messages,
 
-    closed: Effect.async<CloseEvent, WebSocketError>((resume) => {
+    closed: Effect.callback<CloseEvent, WebSocketError>((resume) => {
       if (ws.readyState === WS_CLOSED) {
         resume(Effect.succeed({ code: 1000, reason: "" }))
         return
