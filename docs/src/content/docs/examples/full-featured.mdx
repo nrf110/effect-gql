@@ -44,6 +44,7 @@ Define your domain with Effect Schema. These serve as the single source of truth
 
 ```typescript
 // domain.ts
+import { Effect } from "effect"
 import * as S from "effect/Schema"
 
 export const UserRole = S.Literals(["ADMIN", "USER", "GUEST"])

@@ -331,9 +331,9 @@ When Effect Schema validation fails on input arguments, a `ValidationError` is a
 ```typescript
 mutation("createUser", {
   type: UserSchema,
-  args: {
-    age: S.Number.pipe(S.int(), S.isGreaterThan(0))
-  },
+  args: S.Struct({
+    age: S.Int.check(S.isGreaterThan(0))
+  }),
   resolve: ({ age }) => { ... }
 })
 

@@ -338,6 +338,7 @@ GRAPHQL_MAX_COMPLEXITY=1000
 The GraphQL router can be composed with other routes:
 
 ```typescript
+import { Layer } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
 import { toRouter } from "@effect-gql/core"
 
@@ -376,6 +377,7 @@ This verifies the entire GraphQL execution pipeline is working. Add the `apollo-
 Use `HttpRouter` to add a health endpoint before the GraphQL router:
 
 ```typescript
+import { Effect, Layer } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
 import { toRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node" // or @effect-gql/bun
@@ -502,6 +504,7 @@ CORS is HTTP infrastructure that should be configured at the platform level, not
 Use Effect's `HttpMiddleware.cors` for declarative CORS configuration:
 
 ```typescript
+import { Layer } from "effect"
 import { HttpMiddleware, HttpRouter } from "effect/http"
 import { toRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node" // or @effect-gql/bun
