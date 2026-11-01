@@ -12,8 +12,7 @@ export interface GraphQLRequestContext {
   }
 }
 
-export const GraphQLRequestContext =
-  Context.Service<GraphQLRequestContext>("GraphQLRequestContext")
+export const GraphQLRequestContext = Context.Service<GraphQLRequestContext>("GraphQLRequestContext")
 
 /**
  * Create a layer from request context

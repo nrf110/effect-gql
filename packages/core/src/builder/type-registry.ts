@@ -16,8 +16,21 @@ import {
   GraphQLNullableType,
   isNonNullType,
 } from "graphql"
-import { toGraphQLType, toGraphQLInputType, getASTName, getObjectAST, isNullableAST, isOptionDeclaration } from "../schema-mapping"
-import type { TypeRegistration, InterfaceRegistration, EnumRegistration, UnionRegistration, InputTypeRegistration } from "./types"
+import {
+  toGraphQLType,
+  toGraphQLInputType,
+  getASTName,
+  getObjectAST,
+  isNullableAST,
+  isOptionDeclaration,
+} from "../schema-mapping"
+import type {
+  TypeRegistration,
+  InterfaceRegistration,
+  EnumRegistration,
+  UnionRegistration,
+  InputTypeRegistration,
+} from "./types"
 
 export function getSchemaName(schema: S.Top): string | undefined {
   return getASTName(schema.ast)
@@ -88,7 +101,8 @@ export function buildReverseLookups(ctx: TypeConversionContext): void {
   }
   if (!ctx.unionSortedTypes) {
     ctx.unionSortedTypes = new Map()
-    for (const [name, registration] of ctx.unions) ctx.unionSortedTypes.set(name, [...registration.types].sort())
+    for (const [name, registration] of ctx.unions)
+      ctx.unionSortedTypes.set(name, [...registration.types].sort())
   }
 }
 
@@ -103,7 +117,9 @@ export function getNonNull<T extends GraphQLNullableType>(type: T): GraphQLNonNu
 }
 
 function nonNullMembers(ast: AST.Union): readonly AST.AST[] {
-  return ast.types.filter((member) => member._tag !== "Null" && member._tag !== "Undefined" && member._tag !== "Void")
+  return ast.types.filter(
+    (member) => member._tag !== "Null" && member._tag !== "Undefined" && member._tag !== "Void"
+  )
 }
 
 function findEnum(
@@ -121,16 +137,20 @@ function findEnum(
     if (members.length > 0 && members.every((member) => member._tag === "Literal")) {
       const values = members.map((member) => String((member as AST.Literal).literal)).sort()
       for (const [name, expected] of cache.enumSortedValues ?? []) {
-        if (values.length === expected.length && values.every((value, i) => value === expected[i])) return registry.get(name)
+        if (values.length === expected.length && values.every((value, i) => value === expected[i]))
+          return registry.get(name)
       }
     }
   }
   return undefined
 }
 
-export function toGraphQLTypeWithRegistry(schema: S.Top, ctx: TypeConversionContext): GraphQLOutputType {
+export function toGraphQLTypeWithRegistry(
+  schema: S.Top,
+  ctx: TypeConversionContext
+): GraphQLOutputType {
   buildReverseLookups(ctx)
-  const converted = ctx.convertedOutputTypes ??= new WeakMap()
+  const converted = (ctx.convertedOutputTypes ??= new WeakMap())
   const convert = (original: AST.AST): GraphQLOutputType => {
     const ast = AST.toType(original)
     const name = ctx.astToTypeName?.get(original) ?? ctx.astToTypeName?.get(ast)
@@ -155,7 +175,8 @@ export function toGraphQLTypeWithRegistry(schema: S.Top, ctx: TypeConversionCont
       case "Declaration":
         if (ast.typeParameters[0]) return convert(ast.typeParameters[0])
         break
-      case "Suspend": return convert(ast.thunk())
+      case "Suspend":
+        return convert(ast.thunk())
       case "Arrays": {
         const element = ast.rest[0] ?? ast.elements[0]
         if (element) return new GraphQLList(convert(element))
@@ -163,11 +184,19 @@ export function toGraphQLTypeWithRegistry(schema: S.Top, ctx: TypeConversionCont
       }
       case "Union": {
         const members = nonNullMembers(ast)
-        const names = members.map((member) => ctx.astToTypeName?.get(member) ?? ctx.astToTypeName?.get(AST.toType(member)) ?? getASTName(member))
+        const names = members.map(
+          (member) =>
+            ctx.astToTypeName?.get(member) ??
+            ctx.astToTypeName?.get(AST.toType(member)) ??
+            getASTName(member)
+        )
         if (names.every((name): name is string => name !== undefined)) {
           const sorted = names.sort()
           for (const [name, expected] of ctx.unionSortedTypes ?? []) {
-            if (sorted.length === expected.length && sorted.every((value, i) => value === expected[i])) {
+            if (
+              sorted.length === expected.length &&
+              sorted.every((value, i) => value === expected[i])
+            ) {
               const union = ctx.unionRegistry.get(name)
               if (union) return union
             }
@@ -181,13 +210,18 @@ export function toGraphQLTypeWithRegistry(schema: S.Top, ctx: TypeConversionCont
   return convert(schema.ast)
 }
 
-export function schemaToFields(schema: S.Top, ctx: TypeConversionContext): GraphQLFieldConfigMap<unknown, unknown> {
+export function schemaToFields(
+  schema: S.Top,
+  ctx: TypeConversionContext
+): GraphQLFieldConfigMap<unknown, unknown> {
   const ast = getObjectAST(schema.ast, "output")
   const fields: GraphQLFieldConfigMap<unknown, unknown> = {}
   for (const field of ast?.propertySignatures ?? []) {
     if (field.name === "_tag") continue
     const type = toGraphQLTypeWithRegistry(S.make<S.Top>(field.type), ctx)
-    fields[String(field.name)] = { type: isNullableAST(field.type) || isNonNullType(type) ? type : getNonNull(type) }
+    fields[String(field.name)] = {
+      type: isNullableAST(field.type) || isNonNullType(type) ? type : getNonNull(type),
+    }
   }
   return fields
 }
@@ -200,7 +234,10 @@ export interface InputTypeLookupCache {
   convertedInputTypes?: WeakMap<AST.AST, GraphQLInputType>
 }
 
-export function buildInputTypeLookupCache(inputs: Map<string, InputTypeRegistration>, enums: Map<string, EnumRegistration>): InputTypeLookupCache {
+export function buildInputTypeLookupCache(
+  inputs: Map<string, InputTypeRegistration>,
+  enums: Map<string, EnumRegistration>
+): InputTypeLookupCache {
   const cache: InputTypeLookupCache = {
     schemaToInputName: new Map(),
     astToInputName: new Map(),
@@ -226,12 +263,17 @@ export function toGraphQLInputTypeWithRegistry(
   enums: Map<string, EnumRegistration>,
   cache: InputTypeLookupCache = buildInputTypeLookupCache(inputs, enums)
 ): GraphQLInputType {
-  const converted = cache.convertedInputTypes ??= new WeakMap()
+  const converted = (cache.convertedInputTypes ??= new WeakMap())
   const convert = (original: AST.AST): GraphQLInputType => {
     const name = cache.astToInputName?.get(original)
     const registered = name ? inputRegistry.get(name) : undefined
     if (registered) return registered
-    if (isOptionDeclaration(original) && original._tag === "Declaration" && !original.encoding && original.typeParameters[0]) {
+    if (
+      isOptionDeclaration(original) &&
+      original._tag === "Declaration" &&
+      !original.encoding &&
+      original.typeParameters[0]
+    ) {
       return convert(original.typeParameters[0])
     }
     const ast = AST.toEncoded(original)
@@ -246,13 +288,24 @@ export function toGraphQLInputTypeWithRegistry(
       case "Objects": {
         const schemaName = getASTName(original)
         const type = new GraphQLInputObjectType({
-          name: schemaName ? `${schemaName}Input` : `Input_${Math.random().toString(36).slice(2, 11)}`,
-          fields: () => schemaToInputFields(S.make<S.Top>(ast), enumRegistry, inputRegistry, inputs, enums, cache),
+          name: schemaName
+            ? `${schemaName}Input`
+            : `Input_${Math.random().toString(36).slice(2, 11)}`,
+          fields: () =>
+            schemaToInputFields(
+              S.make<S.Top>(ast),
+              enumRegistry,
+              inputRegistry,
+              inputs,
+              enums,
+              cache
+            ),
         })
         converted.set(ast, type)
         return type
       }
-      case "Suspend": return convert(ast.thunk())
+      case "Suspend":
+        return convert(ast.thunk())
       case "Declaration":
         if (ast.typeParameters[0]) return convert(ast.typeParameters[0])
         break
@@ -283,8 +336,17 @@ export function schemaToInputFields(
   const fields: GraphQLInputFieldConfigMap = {}
   for (const field of ast?.propertySignatures ?? []) {
     if (field.name === "_tag") continue
-    const type = toGraphQLInputTypeWithRegistry(S.make<S.Top>(field.type), enumRegistry, inputRegistry, inputs, enums, cache)
-    fields[String(field.name)] = { type: isNullableAST(field.type) || isNonNullType(type) ? type : getNonNull(type) }
+    const type = toGraphQLInputTypeWithRegistry(
+      S.make<S.Top>(field.type),
+      enumRegistry,
+      inputRegistry,
+      inputs,
+      enums,
+      cache
+    )
+    fields[String(field.name)] = {
+      type: isNullableAST(field.type) || isNonNullType(type) ? type : getNonNull(type),
+    }
   }
   return fields
 }
@@ -297,6 +359,7 @@ export function toGraphQLArgsWithRegistry(
   enums: Map<string, EnumRegistration>,
   cache?: InputTypeLookupCache
 ): GraphQLFieldConfigArgumentMap {
-  if (!getObjectAST(schema.ast, "input")) throw new Error("Schema must be an object type to convert to GraphQL arguments")
+  if (!getObjectAST(schema.ast, "input"))
+    throw new Error("Schema must be an object type to convert to GraphQL arguments")
   return schemaToInputFields(schema, enumRegistry, inputRegistry, inputs, enums, cache)
 }

@@ -56,7 +56,11 @@ export interface WebHandler {
  * ```
  */
 export const toHandler = <E, R, RE>(
-  router: Layer.Layer<never, E, HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>>,
+  router: Layer.Layer<
+    never,
+    E,
+    HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>
+  >,
   layer: Layer.Layer<R, RE>
 ): WebHandler => {
   return HttpRouter.toWebHandler(Layer.merge(router, layer))

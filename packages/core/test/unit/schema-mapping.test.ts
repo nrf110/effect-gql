@@ -139,7 +139,6 @@ describe("schema-mapping.ts", () => {
       expect(isListType(result)).toBe(true)
       expect((result as any).ofType).toBe(GraphQLBoolean)
     })
-
   })
 
   // ==========================================================================
@@ -368,7 +367,6 @@ describe("schema-mapping.ts", () => {
       const inner = (result as any).ofType
       expect(inner).toBeInstanceOf(GraphQLInputObjectType)
     })
-
   })
 
   // ==========================================================================
@@ -562,7 +560,6 @@ describe("schema-mapping.ts", () => {
       const idsType = unwrapNonNull(result.ids.type)
       expect(isListType(idsType)).toBe(true)
     })
-
   })
 
   // ==========================================================================
@@ -615,7 +612,6 @@ describe("schema-mapping.ts", () => {
       const addressType = unwrapNonNull(fields.address.type)
       expect(addressType).toBeInstanceOf(GraphQLObjectType)
     })
-
   })
 
   // ==========================================================================
@@ -658,7 +654,6 @@ describe("schema-mapping.ts", () => {
       const addressType = unwrapNonNull(fields.address.type)
       expect(addressType).toBeInstanceOf(GraphQLInputObjectType)
     })
-
   })
 
   // ==========================================================================
@@ -677,7 +672,6 @@ describe("schema-mapping.ts", () => {
       // Should be a list
       expect(isListType(fields.data.type)).toBe(true)
     })
-
 
     it("should handle struct with numeric field names", () => {
       const Schema = S.Struct({

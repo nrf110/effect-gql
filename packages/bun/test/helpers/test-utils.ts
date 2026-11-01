@@ -237,9 +237,7 @@ const toEffectWebSocket = (ws: WebSocket): EffectWebSocket => {
   })
 
   const messages: Stream.Stream<string, WebSocketError> = Stream.unwrap(
-    messagesEffect.pipe(
-      Effect.map(({ queue }) => Stream.fromQueue(queue))
-    )
+    messagesEffect.pipe(Effect.map(({ queue }) => Stream.fromQueue(queue)))
   )
 
   return {

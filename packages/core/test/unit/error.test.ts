@@ -26,7 +26,6 @@ describe("error.ts", () => {
       expect(error.extensions).toEqual({ code: "INTERNAL_ERROR", timestamp: 123456 })
     })
 
-
     it("should be catchable with Effect.catchTag", () => {
       const program = Effect.fail(new GraphQLError({ message: "Caught error" })).pipe(
         Effect.catchTag("GraphQLError", (e) => Effect.succeed(`Caught: ${e.message}`))

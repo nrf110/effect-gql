@@ -21,8 +21,13 @@ import {
 /** Option is a declaration in Effect 4, including schemas with an encoding link. */
 export const isOptionDeclaration = (ast: AST.AST): boolean => {
   const representation = ast.annotations?.representation
-  return ast._tag === "Declaration" && typeof representation === "object" && representation !== null &&
-    "id" in representation && representation.id === "effect/schema/Option"
+  return (
+    ast._tag === "Declaration" &&
+    typeof representation === "object" &&
+    representation !== null &&
+    "id" in representation &&
+    representation.id === "effect/schema/Option"
+  )
 }
 
 /** Whether a field can be omitted or contain a nullish/Option value. */
@@ -64,8 +69,14 @@ function isIntegerCheck(check: AST.Check<unknown>): boolean {
 
 /** Conversion state is per projected AST graph, so recursive references share one GraphQL type. */
 type ConversionCache = WeakMap<AST.AST, GraphQLOutputType | GraphQLInputType>
-function makeConverter(direction: "output", cache?: ConversionCache): (ast: AST.AST) => GraphQLOutputType
-function makeConverter(direction: "input", cache?: ConversionCache): (ast: AST.AST) => GraphQLInputType
+function makeConverter(
+  direction: "output",
+  cache?: ConversionCache
+): (ast: AST.AST) => GraphQLOutputType
+function makeConverter(
+  direction: "input",
+  cache?: ConversionCache
+): (ast: AST.AST) => GraphQLInputType
 function makeConverter(direction: "output" | "input", cache: ConversionCache = new WeakMap()) {
   const convert = (ast: AST.AST): GraphQLOutputType | GraphQLInputType => {
     const cached = cache.get(ast)
@@ -78,11 +89,15 @@ function makeConverter(direction: "output" | "input", cache: ConversionCache = n
       if (inner) return convert(inner)
     }
     switch (ast._tag) {
-      case "String": return GraphQLString
-      case "Number": return ast.checks?.some(isIntegerCheck) ? GraphQLInt : GraphQLFloat
-      case "Boolean": return GraphQLBoolean
+      case "String":
+        return GraphQLString
+      case "Number":
+        return ast.checks?.some(isIntegerCheck) ? GraphQLInt : GraphQLFloat
+      case "Boolean":
+        return GraphQLBoolean
       case "Literal":
-        if (typeof ast.literal === "number") return Number.isInteger(ast.literal) ? GraphQLInt : GraphQLFloat
+        if (typeof ast.literal === "number")
+          return Number.isInteger(ast.literal) ? GraphQLInt : GraphQLFloat
         if (typeof ast.literal === "boolean") return GraphQLBoolean
         return GraphQLString
       case "Arrays": {
@@ -90,11 +105,20 @@ function makeConverter(direction: "output" | "input", cache: ConversionCache = n
         return element ? new GraphQLList(convert(element) as GraphQLOutputType) : GraphQLString
       }
       case "Objects": {
-        const name = getASTName(ast) ?? `${direction === "input" ? "Input" : "Object"}_${Math.random().toString(36).slice(2, 11)}`
+        const name =
+          getASTName(ast) ??
+          `${direction === "input" ? "Input" : "Object"}_${Math.random().toString(36).slice(2, 11)}`
         const fields = () => buildFields(ast, convert)
-        const type = direction === "input"
-          ? new GraphQLInputObjectType({ name, fields: fields as () => Record<string, { type: GraphQLInputType }> })
-          : new GraphQLObjectType({ name, fields: fields as () => GraphQLFieldConfigMap<any, any> })
+        const type =
+          direction === "input"
+            ? new GraphQLInputObjectType({
+                name,
+                fields: fields as () => Record<string, { type: GraphQLInputType }>,
+              })
+            : new GraphQLObjectType({
+                name,
+                fields: fields as () => GraphQLFieldConfigMap<any, any>,
+              })
         cache.set(ast, type)
         return type
       }
@@ -104,11 +128,14 @@ function makeConverter(direction: "output" | "input", cache: ConversionCache = n
         break
       }
       case "Union": {
-        const member = ast.types.find((type) => type._tag !== "Null" && type._tag !== "Undefined" && type._tag !== "Void")
+        const member = ast.types.find(
+          (type) => type._tag !== "Null" && type._tag !== "Undefined" && type._tag !== "Void"
+        )
         if (member) return convert(member)
         break
       }
-      case "Suspend": return convert(ast.thunk())
+      case "Suspend":
+        return convert(ast.thunk())
     }
     return GraphQLString
   }
@@ -123,16 +150,20 @@ function buildFields(
   for (const field of ast.propertySignatures) {
     if (field.name === "_tag") continue
     const type = convert(field.type)
-    fields[String(field.name)] = { type: isNullableAST(field.type) || isNonNullType(type) ? type : new GraphQLNonNull(type) }
+    fields[String(field.name)] = {
+      type: isNullableAST(field.type) || isNonNullType(type) ? type : new GraphQLNonNull(type),
+    }
   }
   return fields
 }
 
 /** Convert the decoded schema representation to a GraphQL output type. */
-export const toGraphQLType = (schema: S.Top): GraphQLOutputType => makeConverter("output")(AST.toType(schema.ast))
+export const toGraphQLType = (schema: S.Top): GraphQLOutputType =>
+  makeConverter("output")(AST.toType(schema.ast))
 
 /** Convert the encoded schema representation to a GraphQL input type. */
-export const toGraphQLInputType = (schema: S.Top): GraphQLInputType => makeConverter("input")(AST.toEncoded(schema.ast))
+export const toGraphQLInputType = (schema: S.Top): GraphQLInputType =>
+  makeConverter("input")(AST.toEncoded(schema.ast))
 
 /** Additional configuration for computed/relational fields. */
 export interface AdditionalField<Parent, Args, R, E, A> {

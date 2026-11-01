@@ -75,7 +75,11 @@ export interface ServeOptions<R = never> {
  * ```
  */
 export const serve = <E, R, RE>(
-  router: Layer.Layer<never, E, HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>>,
+  router: Layer.Layer<
+    never,
+    E,
+    HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>
+  >,
   layer: Layer.Layer<R, RE>,
   options: ServeOptions<R> = {}
 ): void => {
@@ -110,17 +114,17 @@ export const serve = <E, R, RE>(
           resume(Effect.void)
         })
       }),
-      () => Effect.promise(() => new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve())
-        server.closeIdleConnections()
-      }))
+      () =>
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve, reject) => {
+              server.close((error) => (error ? reject(error) : resolve()))
+              server.closeIdleConnections()
+            })
+        )
     )
     if (onStart) yield* Effect.sync(() => onStart(url))
     yield* Effect.never
-  }).pipe(
-    Effect.provide(layer),
-    Effect.provide(NodeHttpServer.layerHttpServices),
-    Effect.scoped
-  )
+  }).pipe(Effect.provide(layer), Effect.provide(NodeHttpServer.layerHttpServices), Effect.scoped)
   NodeRuntime.runMain(program)
 }

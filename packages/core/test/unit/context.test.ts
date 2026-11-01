@@ -4,7 +4,6 @@ import { GraphQLRequestContext, makeRequestContextLayer } from "../../src/contex
 import { runSyncWithLayer } from "../helpers/effect-test-utils"
 
 describe("context.ts", () => {
-
   // ==========================================================================
   // makeRequestContextLayer
   // ==========================================================================

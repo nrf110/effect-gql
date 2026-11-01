@@ -74,7 +74,11 @@ export interface ServeOptions<R = never> {
  * ```
  */
 export const serve = <E, R, RE>(
-  router: Layer.Layer<never, E, HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>>,
+  router: Layer.Layer<
+    never,
+    E,
+    HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>
+  >,
   layer: Layer.Layer<R, RE>,
   options: ServeOptions<R> = {}
 ): void => {
@@ -93,13 +97,17 @@ export const serve = <E, R, RE>(
     const { createBunWSHandlers } = yield* Effect.tryPromise(() => import("./ws"))
     const app = yield* Effect.acquireRelease(
       // The merged layer supplies all R services; no per-request context remains.
-      Effect.sync(() => HttpRouter.toWebHandler<
-        R,
-        E | RE,
-        HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>,
-        never,
-        never
-      >(Layer.merge(router, layer))),
+      Effect.sync(() =>
+        HttpRouter.toWebHandler<
+          R,
+          E | RE,
+          | HttpRouter.HttpRouter
+          | HttpRouter.Request<"Requires", R>
+          | HttpRouter.Request<"Error", unknown>,
+          never,
+          never
+        >(Layer.merge(router, layer))
+      ),
       ({ dispose }) => Effect.promise(dispose)
     )
     const { upgrade, websocket } = yield* Effect.acquireRelease(
@@ -107,13 +115,18 @@ export const serve = <E, R, RE>(
       ({ close }) => Effect.promise(close)
     )
     yield* Effect.acquireRelease(
-      Effect.sync(() => Bun.serve({
-        port,
-        hostname: host,
-        fetch: (request, server) => upgrade(request, server) ? undefined : app.handler(request),
-        websocket,
-      })),
-      (server) => Effect.promise(async () => { await server.stop(true) })
+      Effect.sync(() =>
+        Bun.serve({
+          port,
+          hostname: host,
+          fetch: (request, server) => (upgrade(request, server) ? undefined : app.handler(request)),
+          websocket,
+        })
+      ),
+      (server) =>
+        Effect.promise(async () => {
+          await server.stop(true)
+        })
     )
     if (onStart) yield* Effect.sync(() => onStart(url))
     yield* Effect.never

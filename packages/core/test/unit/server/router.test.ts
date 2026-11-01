@@ -127,7 +127,6 @@ const getGraphiQL = async <R>(
 }
 
 describe("router.ts", () => {
-
   // ==========================================================================
   // makeGraphQLRouter - GraphQL execution
   // ==========================================================================
@@ -732,7 +731,6 @@ describe("router.ts", () => {
       expect(result.status).toBe(503)
       expect(result.body.errors[0].message).toBe("Custom error response")
     })
-
 
     it("should return 500 for empty request body", async () => {
       const schema = GraphQLSchemaBuilder.empty

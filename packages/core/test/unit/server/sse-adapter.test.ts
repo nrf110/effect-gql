@@ -644,27 +644,34 @@ describe("sse-adapter.ts", () => {
             open = true
             return { isOpen: () => open }
           }),
-          () => Effect.sync(() => {
-            open = false
-            releases++
-          })
+          () =>
+            Effect.sync(() => {
+              open = false
+              releases++
+            })
         )
       )
       const schema = GraphQLSchemaBuilder.empty
         .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
         .subscription("open", {
           type: S.Boolean,
-          subscribe: () => Effect.succeed(Stream.fromEffect(
-            Effect.map(Resource, (resource) => resource.isOpen())
-          )),
+          subscribe: () =>
+            Effect.succeed(
+              Stream.fromEffect(Effect.map(Resource, (resource) => resource.isOpen()))
+            ),
         })
         .buildSchema()
       let hookOpen = false
       const stream = makeSSESubscriptionStream(
-        schema, layer, { query: "subscription { open }" }, new Headers(), {
-          onComplete: () => Effect.map(Resource, (resource) => {
-            hookOpen = resource.isOpen()
-          }),
+        schema,
+        layer,
+        { query: "subscription { open }" },
+        new Headers(),
+        {
+          onComplete: () =>
+            Effect.map(Resource, (resource) => {
+              hookOpen = resource.isOpen()
+            }),
         }
       )
 

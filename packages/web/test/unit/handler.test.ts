@@ -5,7 +5,6 @@ import { toHandler } from "../../src/handler"
 
 describe("handler.ts", () => {
   describe("toHandler", () => {
-
     it("should handle GET requests", async () => {
       const router = HttpRouter.add("GET", "/hello", HttpServerResponse.text("Hello!"))
 
@@ -24,9 +23,13 @@ describe("handler.ts", () => {
     })
 
     it("should handle POST requests with JSON body", async () => {
-      const router = HttpRouter.add("POST", "/graphql", Effect.gen(function* () {
-        return yield* HttpServerResponse.json({ data: { test: true } })
-      }))
+      const router = HttpRouter.add(
+        "POST",
+        "/graphql",
+        Effect.gen(function* () {
+          return yield* HttpServerResponse.json({ data: { test: true } })
+        })
+      )
 
       const { handler, dispose } = toHandler(router, Layer.empty)
 
@@ -62,19 +65,22 @@ describe("handler.ts", () => {
     })
 
     it("should provide layer services to routes", async () => {
-      class TestService extends Context.Service<
-        TestService,
-        { getValue: () => string }
-      >()("TestService") {}
+      class TestService extends Context.Service<TestService, { getValue: () => string }>()(
+        "TestService"
+      ) {}
 
       const testLayer = Layer.succeed(TestService, {
         getValue: () => "test-value",
       })
 
-      const router = HttpRouter.add("GET", "/test", Effect.gen(function* () {
-        const service = yield* TestService
-        return HttpServerResponse.text(service.getValue())
-      }))
+      const router = HttpRouter.add(
+        "GET",
+        "/test",
+        Effect.gen(function* () {
+          const service = yield* TestService
+          return HttpServerResponse.text(service.getValue())
+        })
+      )
 
       const { handler, dispose } = toHandler(router, testLayer)
 
@@ -93,10 +99,14 @@ describe("handler.ts", () => {
     it("should handle multiple concurrent requests", async () => {
       let requestCount = 0
 
-      const router = HttpRouter.add("GET", "/count", Effect.gen(function* () {
-        requestCount++
-        return HttpServerResponse.text(`Request ${requestCount}`)
-      }))
+      const router = HttpRouter.add(
+        "GET",
+        "/count",
+        Effect.gen(function* () {
+          requestCount++
+          return HttpServerResponse.text(`Request ${requestCount}`)
+        })
+      )
 
       const { handler, dispose } = toHandler(router, Layer.empty)
 
@@ -114,5 +124,4 @@ describe("handler.ts", () => {
       await dispose()
     })
   })
-
 })

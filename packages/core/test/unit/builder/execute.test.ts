@@ -128,20 +128,24 @@ describe("execute.ts", () => {
             open = true
             return { isOpen: () => open }
           }),
-          () => Effect.sync(() => {
-            open = false
-            releases++
-          })
+          () =>
+            Effect.sync(() => {
+              open = false
+              releases++
+            })
         )
       )
-      const schema = GraphQLSchemaBuilder.empty.query("open", {
-        type: S.Boolean,
-        resolve: () => Effect.gen(function* () {
-          const resource = yield* Resource
-          yield* Effect.sleep("1 millis")
-          return resource.isOpen()
-        }),
-      }).buildSchema()
+      const schema = GraphQLSchemaBuilder.empty
+        .query("open", {
+          type: S.Boolean,
+          resolve: () =>
+            Effect.gen(function* () {
+              const resource = yield* Resource
+              yield* Effect.sleep("1 millis")
+              return resource.isOpen()
+            }),
+        })
+        .buildSchema()
 
       const result = await Effect.runPromise(execute(schema, layer)("{ open }"))
 

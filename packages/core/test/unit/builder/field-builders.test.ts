@@ -430,7 +430,6 @@ describe("field-builders.ts", () => {
   // buildSubscriptionField - Subscribe
   // ==========================================================================
   describe("buildSubscriptionField - Subscribe", () => {
-
     it("should yield values from stream", async () => {
       const ctx = createFieldBuilderContext()
       const config = buildSubscriptionField(

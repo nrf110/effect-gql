@@ -120,7 +120,9 @@ export const createSSEHandler = <R>(
     const encoder = new TextEncoder()
     const readableStream = eventStream.pipe(
       Stream.map((event) => encoder.encode(formatSSEMessage(event))),
-      Stream.catch((error) => Stream.fromEffect(Effect.logWarning("SSE stream error", error)).pipe(Stream.drain)),
+      Stream.catch((error) =>
+        Stream.fromEffect(Effect.logWarning("SSE stream error", error)).pipe(Stream.drain)
+      ),
       (stream) => Stream.toReadableStream(stream)
     )
 

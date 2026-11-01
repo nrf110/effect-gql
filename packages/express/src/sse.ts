@@ -126,23 +126,25 @@ export const sseMiddleware = <R>(
 
     // Create the streaming effect
     const streamEffect = Effect.raceFirst(
-          Stream.runForEach(eventStream, (event) => Effect.callback<void, SSEError>((resume) => {
-            res.write(formatSSEMessage(event), (error) => {
-              resume(error ? Effect.fail(new SSEError({ cause: error })) : Effect.void)
-            })
-          })).pipe(Effect.catch((error) => Effect.logWarning("SSE stream error", error))),
-          Effect.callback<void, SSEError>((resume) => {
-            const onClose = () => resume(Effect.void)
-            const onError = (error: Error) => resume(Effect.fail(new SSEError({ cause: error })))
-            res.once("close", onClose)
-            res.once("error", onError)
-            if (res.destroyed) resume(Effect.void)
-            return Effect.sync(() => {
-              res.off("close", onClose)
-              res.off("error", onError)
-            })
+      Stream.runForEach(eventStream, (event) =>
+        Effect.callback<void, SSEError>((resume) => {
+          res.write(formatSSEMessage(event), (error) => {
+            resume(error ? Effect.fail(new SSEError({ cause: error })) : Effect.void)
           })
-        )
+        })
+      ).pipe(Effect.catch((error) => Effect.logWarning("SSE stream error", error))),
+      Effect.callback<void, SSEError>((resume) => {
+        const onClose = () => resume(Effect.void)
+        const onError = (error: Error) => resume(Effect.fail(new SSEError({ cause: error })))
+        res.once("close", onClose)
+        res.once("error", onError)
+        if (res.destroyed) resume(Effect.void)
+        return Effect.sync(() => {
+          res.off("close", onClose)
+          res.off("error", onError)
+        })
+      })
+    )
 
     await Effect.runPromise(
       streamEffect.pipe(
@@ -225,23 +227,25 @@ export const createSSEHandler = <R>(
 
     // Create the streaming effect
     const streamEffect = Effect.raceFirst(
-          Stream.runForEach(eventStream, (event) => Effect.callback<void, SSEError>((resume) => {
-            res.write(formatSSEMessage(event), (error) => {
-              resume(error ? Effect.fail(new SSEError({ cause: error })) : Effect.void)
-            })
-          })).pipe(Effect.catch((error) => Effect.logWarning("SSE stream error", error))),
-          Effect.callback<void, SSEError>((resume) => {
-            const onClose = () => resume(Effect.void)
-            const onError = (error: Error) => resume(Effect.fail(new SSEError({ cause: error })))
-            res.once("close", onClose)
-            res.once("error", onError)
-            if (res.destroyed) resume(Effect.void)
-            return Effect.sync(() => {
-              res.off("close", onClose)
-              res.off("error", onError)
-            })
+      Stream.runForEach(eventStream, (event) =>
+        Effect.callback<void, SSEError>((resume) => {
+          res.write(formatSSEMessage(event), (error) => {
+            resume(error ? Effect.fail(new SSEError({ cause: error })) : Effect.void)
           })
-        )
+        })
+      ).pipe(Effect.catch((error) => Effect.logWarning("SSE stream error", error))),
+      Effect.callback<void, SSEError>((resume) => {
+        const onClose = () => resume(Effect.void)
+        const onError = (error: Error) => resume(Effect.fail(new SSEError({ cause: error })))
+        res.once("close", onClose)
+        res.once("error", onError)
+        if (res.destroyed) resume(Effect.void)
+        return Effect.sync(() => {
+          res.off("close", onClose)
+          res.off("error", onError)
+        })
+      })
+    )
 
     await Effect.runPromise(
       streamEffect.pipe(

@@ -257,9 +257,7 @@ export const makePersistedQueriesRouter = <R>(
       }
 
       // Run onParse hooks
-      yield* runParseHooks(extensions, body.query, document).pipe(
-        Effect.setContext(hookServices)
-      )
+      yield* runParseHooks(extensions, body.query, document).pipe(Effect.setContext(hookServices))
 
       // Phase 2: Validate
       // Add NoSchemaIntrospectionCustomRule if introspection is disabled
@@ -317,9 +315,7 @@ export const makePersistedQueriesRouter = <R>(
       }
 
       // Run onExecuteStart hooks
-      yield* runExecuteStartHooks(extensions, executionArgs).pipe(
-        Effect.setContext(hookServices)
-      )
+      yield* runExecuteStartHooks(extensions, executionArgs).pipe(Effect.setContext(hookServices))
 
       // Execute GraphQL query
       const executeResult = yield* Effect.try({
@@ -341,9 +337,7 @@ export const makePersistedQueriesRouter = <R>(
           : executeResult
 
       // Run onExecuteEnd hooks
-      yield* runExecuteEndHooks(extensions, resolvedResult).pipe(
-        Effect.setContext(hookServices)
-      )
+      yield* runExecuteEndHooks(extensions, resolvedResult).pipe(Effect.setContext(hookServices))
 
       // Merge extension data into result
       const extensionData = yield* extensionsService.get()
@@ -406,7 +400,10 @@ export const makePersistedQueriesRouter = <R>(
 
   // Add GET handler if enabled
   if (enableGet) {
-    router = Layer.merge(router, HttpRouter.add("GET", resolvedConfig.path as HttpRouter.PathInput, getHandler))
+    router = Layer.merge(
+      router,
+      HttpRouter.add("GET", resolvedConfig.path as HttpRouter.PathInput, getHandler)
+    )
   }
 
   // Add GraphiQL route if enabled
@@ -414,7 +411,11 @@ export const makePersistedQueriesRouter = <R>(
     const { path, endpoint } = resolvedConfig.graphiql
     router = Layer.merge(
       router,
-      HttpRouter.add("GET", path as HttpRouter.PathInput, HttpServerResponse.html(graphiqlHtml(endpoint)))
+      HttpRouter.add(
+        "GET",
+        path as HttpRouter.PathInput,
+        HttpServerResponse.html(graphiqlHtml(endpoint))
+      )
     )
   }
 

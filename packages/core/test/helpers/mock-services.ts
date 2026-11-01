@@ -17,10 +17,9 @@ export interface MockDatabase {
   readonly deleteUser: (id: string) => Effect.Effect<boolean>
 }
 
-export class MockDatabaseService extends Context.Service<
-  MockDatabaseService,
-  MockDatabase
->()("MockDatabase") {}
+export class MockDatabaseService extends Context.Service<MockDatabaseService, MockDatabase>()(
+  "MockDatabase"
+) {}
 
 /**
  * Create a mock database layer with initial data
@@ -109,7 +108,9 @@ export interface MockLogger {
   readonly clear: () => Effect.Effect<void>
 }
 
-export class MockLoggerService extends Context.Service<MockLoggerService, MockLogger>()("MockLogger") {}
+export class MockLoggerService extends Context.Service<MockLoggerService, MockLogger>()(
+  "MockLogger"
+) {}
 
 /**
  * Create a mock logger layer that captures logs
@@ -137,10 +138,9 @@ export interface MockPubSub<T> {
   readonly subscribe: (topic: string) => Effect.Effect<Stream.Stream<T>>
 }
 
-export class MockPubSubService extends Context.Service<
-  MockPubSubService,
-  MockPubSub<unknown>
->()("MockPubSub") {}
+export class MockPubSubService extends Context.Service<MockPubSubService, MockPubSub<unknown>>()(
+  "MockPubSub"
+) {}
 
 /**
  * Create a mock pubsub layer for testing subscriptions

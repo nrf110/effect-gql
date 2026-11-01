@@ -20,7 +20,9 @@ const runValidation = (
   variables?: Record<string, unknown>
 ) =>
   Effect.runPromise(
-    Effect.result(validateComplexity(query, operationName, variables, schema, fieldComplexities, config))
+    Effect.result(
+      validateComplexity(query, operationName, variables, schema, fieldComplexities, config)
+    )
   )
 
 // Test schema

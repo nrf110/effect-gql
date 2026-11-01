@@ -62,7 +62,9 @@ export function createEntitiesResolver<R>(entities: Map<string, EntityRegistrati
       )
     })
 
-    return Effect.runPromiseWith(context.services)(Effect.all(effects, { concurrency: "unbounded" }))
+    return Effect.runPromiseWith(context.services)(
+      Effect.all(effects, { concurrency: "unbounded" })
+    )
   }
 }
 

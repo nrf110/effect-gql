@@ -170,7 +170,6 @@ describe("toGraphQLType - S.NullOr vs S.optional comparison", () => {
     const result = toGraphQLType(NullableString)
 
     expect(result).toBe(GraphQLString)
-
   })
 
   it("should handle S.NullOr with Int", () => {

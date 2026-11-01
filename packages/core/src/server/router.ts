@@ -406,9 +406,7 @@ export const makeGraphQLRouter = <R>(
     }
     const document = parseResult.document
 
-    yield* runParseHooks(extensions, body.query, document).pipe(
-      Effect.setContext(hookServices)
-    )
+    yield* runParseHooks(extensions, body.query, document).pipe(Effect.setContext(hookServices))
 
     // Phase 2: Validate
     const validationRules = resolvedConfig.introspection
@@ -456,9 +454,7 @@ export const makeGraphQLRouter = <R>(
       services
     )
 
-    yield* runExecuteEndHooks(extensions, result).pipe(
-      Effect.setContext(hookServices)
-    )
+    yield* runExecuteEndHooks(extensions, result).pipe(Effect.setContext(hookServices))
 
     // Build response
     const extensionData = yield* extensionsService.get()
@@ -481,11 +477,7 @@ export const makeGraphQLRouter = <R>(
     Effect.catchCause(errorHandler)
   )
 
-  let router = HttpRouter.add(
-    "POST",
-    resolvedConfig.path as HttpRouter.PathInput,
-    graphqlHandler
-  )
+  let router = HttpRouter.add("POST", resolvedConfig.path as HttpRouter.PathInput, graphqlHandler)
 
   if (resolvedConfig.graphiql) {
     const { path, endpoint, subscriptionEndpoint } = resolvedConfig.graphiql

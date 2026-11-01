@@ -76,10 +76,10 @@ export const makeSSESubscriptionStream = <R>(
         const connected = yield* options.onConnect(request, headers).pipe(
           Effect.provide(services),
           Effect.match({
-            onFailure: (error) => new GraphQLError(
-              error instanceof Error ? error.message : String(error),
-              { extensions: { code: "CONNECTION_REJECTED" } }
-            ),
+            onFailure: (error) =>
+              new GraphQLError(error instanceof Error ? error.message : String(error), {
+                extensions: { code: "CONNECTION_REJECTED" },
+              }),
             onSuccess: (value) => value,
           })
         )
@@ -217,10 +217,9 @@ export const makeSSESubscriptionStream = <R>(
             formatErrorEvent([
               error instanceof GraphQLError
                 ? error
-                : new GraphQLError(
-                    error instanceof Error ? error.message : "Subscription error",
-                    { extensions: { code: "SUBSCRIPTION_ERROR" } }
-                  ),
+                : new GraphQLError(error instanceof Error ? error.message : "Subscription error", {
+                    extensions: { code: "SUBSCRIPTION_ERROR" },
+                  }),
             ])
           )
         ),

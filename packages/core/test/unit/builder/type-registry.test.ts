@@ -255,8 +255,10 @@ describe("type-registry.ts", () => {
 
       // Create a union schema - this is the S.Union of the tagged structs
       // Note: In practice this happens via schema AST matching
-      const UnionSchema = S.Union([S.Struct({ _tag: S.Literal("Text"), body: S.String }),
-      S.Struct({ _tag: S.Literal("Image"), url: S.String })])
+      const UnionSchema = S.Union([
+        S.Struct({ _tag: S.Literal("Text"), body: S.String }),
+        S.Struct({ _tag: S.Literal("Image"), url: S.String }),
+      ])
 
       const result = toGraphQLTypeWithRegistry(UnionSchema, ctx)
       expect(result).toBe(contentUnion)
@@ -1284,7 +1286,6 @@ describe("type-registry.ts", () => {
       // The cursor type should be the registered CursorInput (nullable since it's optional)
       expect(args.cursor.type).toBe(cursorInputType)
     })
-
   })
 
   // ==========================================================================

@@ -32,14 +32,20 @@ import type { ReadableStream as NodeReadableStream } from "node:stream/web"
  * ```
  */
 export const toMiddleware = <E, R, RE>(
-  router: Layer.Layer<never, E, HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>>,
+  router: Layer.Layer<
+    never,
+    E,
+    HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>
+  >,
   layer: Layer.Layer<R, RE>
 ): RequestHandler & { readonly dispose: () => Promise<void> } => {
   // The merged layer supplies all R services; no per-request context remains.
   const { handler, dispose } = HttpRouter.toWebHandler<
     R,
     E | RE,
-    HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>,
+    | HttpRouter.HttpRouter
+    | HttpRouter.Request<"Requires", R>
+    | HttpRouter.Request<"Error", unknown>,
     never,
     never
   >(Layer.merge(router, layer))
@@ -54,16 +60,20 @@ export const toMiddleware = <E, R, RE>(
 
       const hasBody = !["GET", "HEAD"].includes(req.method)
       const abort = new AbortController()
-      const onClose = () => { if (!res.writableFinished) abort.abort() }
+      const onClose = () => {
+        if (!res.writableFinished) abort.abort()
+      }
       res.once("close", onClose)
       const webRequest = new Request(url, {
         method: req.method,
         headers,
-        body: !hasBody ? undefined : req.body === undefined
-          ? Readable.toWeb(req) as ReadableStream<Uint8Array>
-          : Buffer.isBuffer(req.body) || typeof req.body === "string"
-            ? req.body
-            : JSON.stringify(req.body),
+        body: !hasBody
+          ? undefined
+          : req.body === undefined
+            ? (Readable.toWeb(req) as ReadableStream<Uint8Array>)
+            : Buffer.isBuffer(req.body) || typeof req.body === "string"
+              ? req.body
+              : JSON.stringify(req.body),
         signal: abort.signal,
         duplex: "half",
       } as RequestInit)

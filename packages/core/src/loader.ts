@@ -150,7 +150,9 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
   readonly Service: Context.Service<LoaderInstances<Defs>, LoaderInstances<Defs>>
 
   constructor(readonly definitions: Defs) {
-    this.Service = Context.Service<LoaderInstances<Defs>>(`DataLoaders(${Object.keys(definitions).join(", ")})`)
+    this.Service = Context.Service<LoaderInstances<Defs>>(
+      `DataLoaders(${Object.keys(definitions).join(", ")})`
+    )
   }
 
   /**

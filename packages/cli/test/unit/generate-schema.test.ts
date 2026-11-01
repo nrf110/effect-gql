@@ -171,9 +171,12 @@ describe("generate-schema", () => {
     it("should build schema without requiring Effect layer", () => {
       // This demonstrates that schema building works without any services
       // Define a service that would normally require a layer
-      class DatabaseService extends Context.Service<DatabaseService, {
-        getUsers: () => Effect.Effect<readonly string[]>
-      }>()("@app/DatabaseService") {}
+      class DatabaseService extends Context.Service<
+        DatabaseService,
+        {
+          getUsers: () => Effect.Effect<readonly string[]>
+        }
+      >()("@app/DatabaseService") {}
 
       const builder = GraphQLSchemaBuilder.empty.pipe(
         query("users", {

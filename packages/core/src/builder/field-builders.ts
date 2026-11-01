@@ -18,7 +18,6 @@ import {
 } from "./type-registry"
 import { isOptionDeclaration } from "../schema-mapping"
 
-
 /**
  * Encode a resolver's output value using the schema.
  * This is primarily needed for Option types where Option.none() needs to become null
@@ -33,7 +32,7 @@ function encodeResolverOutput(
   if (isOptionDeclaration(schema.ast)) {
     return S.encodeUnknownEffect(schema)(value).pipe(
       Effect.orDie,
-      Effect.map((encoded) => Option.isOption(encoded) ? Option.getOrNull(encoded) : encoded)
+      Effect.map((encoded) => (Option.isOption(encoded) ? Option.getOrNull(encoded) : encoded))
     )
   }
   return Effect.succeed(value)
@@ -132,7 +131,9 @@ export function buildField(
       const result = await Effect.runPromiseWith(context.services)(effect)
 
       // Encode the result (converts Option.none() to null, Option.some(x) to x)
-      return await Effect.runPromiseWith(context.services)(encodeResolverOutput(config.type, result))
+      return await Effect.runPromiseWith(context.services)(
+        encodeResolverOutput(config.type, result)
+      )
     },
   }
 
@@ -178,7 +179,9 @@ export function buildObjectField(
       const result = await Effect.runPromiseWith(context.services)(effect)
 
       // Encode the result (converts Option.none() to null, Option.some(x) to x)
-      return await Effect.runPromiseWith(context.services)(encodeResolverOutput(config.type, result))
+      return await Effect.runPromiseWith(context.services)(
+        encodeResolverOutput(config.type, result)
+      )
     },
   }
 
@@ -261,7 +264,9 @@ export function buildSubscriptionField(
         }
       : async (value, _args, context: GraphQLEffectContext<any>) => {
           // Even without custom resolve, encode Option values
-          return await Effect.runPromiseWith(context.services)(encodeResolverOutput(config.type, value))
+          return await Effect.runPromiseWith(context.services)(
+            encodeResolverOutput(config.type, value)
+          )
         },
   }
 

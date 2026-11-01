@@ -157,7 +157,9 @@ export const createBunWSHandlers = <R, LE = never>(
           Effect.flatMap((effectSocket) => handler(effectSocket)),
           Effect.catchCause(() => Effect.void)
         )
-      ).finally(() => { activeHandlers.delete(ws) })
+      ).finally(() => {
+        activeHandlers.delete(ws)
+      })
 
       activeHandlers.set(ws, handlerPromise)
     },

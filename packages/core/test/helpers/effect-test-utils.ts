@@ -41,7 +41,6 @@ export const mockService = <I, S extends I>(
   implementation: S
 ): Layer.Layer<I, never, never> => Layer.succeed(tag, implementation)
 
-
 /**
  * Helper to test async iterator behavior (for subscriptions)
  */
