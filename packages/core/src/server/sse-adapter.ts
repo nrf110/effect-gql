@@ -64,6 +64,7 @@ export const makeSSESubscriptionStream = <R>(
 ): Stream.Stream<SSEEvent, SSEError> => {
   const complexityConfig = options?.complexity
   const fieldComplexities: FieldComplexityMap = options?.fieldComplexities ?? new Map()
+  const onComplete = options?.onComplete
 
   return Stream.unwrap(
     Effect.gen(function* () {
@@ -225,10 +226,11 @@ export const makeSSESubscriptionStream = <R>(
         ),
         Stream.concat(Stream.make(formatCompleteEvent())),
         Stream.ensuring(
-          options?.onComplete
-            ? Effect.provide(options.onComplete(ctx), services).pipe(
-                Effect.catch(() => Effect.void)
-              )
+          onComplete
+            ? Effect.provide(
+                Effect.suspend(() => onComplete(ctx)),
+                services
+              ).pipe(Effect.catch(() => Effect.void))
             : Effect.void
         )
       )

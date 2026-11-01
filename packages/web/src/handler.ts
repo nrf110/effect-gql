@@ -59,7 +59,11 @@ export const toHandler = <E, R, RE>(
   router: Layer.Layer<
     never,
     E,
-    HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.HttpRouter
+    | HttpRouter.Request<"Requires", R>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalError", unknown>
   >,
   layer: Layer.Layer<R, RE>
 ): WebHandler => {

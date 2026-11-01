@@ -179,6 +179,8 @@ shutdown so connection-scoped Effect services finish releasing. Both
 `createGraphQLWSServer` and `createBunWSHandlers` expose this method. For Express,
 also retain the middleware returned by `toMiddleware` and await its `dispose()`.
 The Node and Bun `serve` helpers manage these lifecycles automatically.
+The Node helper closes WebSocket connections before awaiting HTTP shutdown, so
+an active WebSocket does not prevent SIGTERM cleanup.
 
 ### WebSocket Lifecycle Hooks
 
@@ -328,6 +330,10 @@ export default {
 </Tabs>
 
 ### SSE Lifecycle Hooks
+
+The SSE `onComplete` callback is constructed and its Effect runs only when the
+subscription stream finalizes, including cancellation. Request-scoped services
+remain available to the hook and are released afterward.
 
 ```typescript
 const sseHandler = createSSEHandler(schema, Layer.empty, {

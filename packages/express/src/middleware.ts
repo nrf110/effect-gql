@@ -35,7 +35,11 @@ export const toMiddleware = <E, R, RE>(
   router: Layer.Layer<
     never,
     E,
-    HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.HttpRouter
+    | HttpRouter.Request<"Requires", R>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalError", unknown>
   >,
   layer: Layer.Layer<R, RE>
 ): RequestHandler & { readonly dispose: () => Promise<void> } => {
@@ -45,7 +49,9 @@ export const toMiddleware = <E, R, RE>(
     E | RE,
     | HttpRouter.HttpRouter
     | HttpRouter.Request<"Requires", R>
-    | HttpRouter.Request<"Error", unknown>,
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalError", unknown>,
     never,
     never
   >(Layer.merge(router, layer))

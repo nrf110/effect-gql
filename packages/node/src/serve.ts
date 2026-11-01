@@ -78,7 +78,11 @@ export const serve = <E, R, RE>(
   router: Layer.Layer<
     never,
     E,
-    HttpRouter.HttpRouter | HttpRouter.Request<"Requires", R> | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.HttpRouter
+    | HttpRouter.Request<"Requires", R>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalError", unknown>
   >,
   layer: Layer.Layer<R, RE>,
   options: ServeOptions<R> = {}
@@ -100,11 +104,6 @@ export const serve = <E, R, RE>(
     const httpEffect = yield* HttpRouter.toHttpEffect(router)
     const requestHandler = yield* NodeHttpServer.makeHandler(httpEffect, { scope })
     const server = createServer(requestHandler)
-    const ws = yield* Effect.acquireRelease(
-      Effect.sync(() => createGraphQLWSServer(subscriptions.schema, layer, subscriptions)),
-      (ws) => Effect.promise(() => ws.close())
-    )
-    server.on("upgrade", ws.handleUpgrade)
     yield* Effect.acquireRelease(
       Effect.callback<void, Error>((resume) => {
         const onError = (error: Error) => resume(Effect.fail(error))
@@ -123,6 +122,12 @@ export const serve = <E, R, RE>(
             })
         )
     )
+    // Scope finalizers run in reverse order: close upgraded connections before HTTP.
+    const ws = yield* Effect.acquireRelease(
+      Effect.sync(() => createGraphQLWSServer(subscriptions.schema, layer, subscriptions)),
+      (ws) => Effect.promise(() => ws.close())
+    )
+    server.on("upgrade", ws.handleUpgrade)
     if (onStart) yield* Effect.sync(() => onStart(url))
     yield* Effect.never
   }).pipe(Effect.provide(layer), Effect.provide(NodeHttpServer.layerHttpServices), Effect.scoped)

@@ -5,6 +5,36 @@ import { toHandler } from "../../src/handler"
 
 describe("handler.ts", () => {
   describe("toHandler", () => {
+    it("provides services to global middleware and renders its failures", async () => {
+      const Auth = Context.Service<{ readonly allowed: boolean }>("web/GlobalAuth")
+      let calls = 0
+      const router = HttpRouter.add("GET", "/protected", HttpServerResponse.text("protected")).pipe(
+        Layer.provide(
+          HttpRouter.middleware(
+            (effect) =>
+              Effect.gen(function* () {
+                const { allowed } = yield* Auth
+                calls++
+                if (!allowed) yield* Effect.fail(HttpServerResponse.empty({ status: 403 }))
+                return yield* effect
+              }),
+            { global: true }
+          )
+        )
+      )
+      for (const allowed of [true, false]) {
+        const app = toHandler(router, Layer.succeed(Auth, { allowed }))
+        try {
+          const response = await app.handler(new Request("http://localhost/protected"))
+          expect(response.status).toBe(allowed ? 200 : 403)
+          expect(await response.text()).toBe(allowed ? "protected" : "")
+        } finally {
+          await app.dispose()
+        }
+      }
+      expect(calls).toBe(2)
+    })
+
     it("should handle GET requests", async () => {
       const router = HttpRouter.add("GET", "/hello", HttpServerResponse.text("Hello!"))
 

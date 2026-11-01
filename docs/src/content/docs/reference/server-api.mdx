@@ -11,6 +11,11 @@ Effect GraphQL provides server integration APIs in `@effect-gql/core` for HTTP r
 
 Create an HttpRouter configured for GraphQL.
 
+The Node and Bun `serve`, Express `toMiddleware`, and Web `toHandler` adapters
+accept router layers with both route-local and global middleware requirements
+and errors. Supply middleware services through the adapter's service layer,
+including middleware registered with `HttpRouter.middleware(..., { global: true })`.
+
 ```typescript
 import { makeGraphQLRouter } from "@effect-gql/core"
 
