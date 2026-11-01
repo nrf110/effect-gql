@@ -244,6 +244,71 @@ describe("sse-adapter.ts", () => {
       })
     })
 
+    it("isolates and releases each subscription when its layer is already ambient", async () => {
+      const Resource = Context.Service<{ readonly id: number }>("sse/SubscriptionResource")
+      const Mirror = Context.Service<number>("sse/SubscriptionMirror")
+      let acquired = 0
+      const released: number[] = []
+      const observed: Array<{ id: number; mirror: number }> = []
+      const resource = Layer.effect(
+        Resource,
+        Effect.acquireRelease(
+          Effect.sync(() => ({ id: ++acquired })),
+          ({ id }) => Effect.sync(() => released.push(id))
+        )
+      )
+      const layer = Layer.merge(
+        resource,
+        Layer.effect(
+          Mirror,
+          Effect.map(Resource, ({ id }) => id)
+        ).pipe(Layer.provide(resource))
+      )
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+        .subscription("instance", {
+          type: S.Int,
+          subscribe: () => Effect.map(Resource, ({ id }) => Stream.succeed(id)),
+        })
+        .buildSchema()
+      const events = await Effect.runPromise(
+        Effect.gen(function* () {
+          expect((yield* Resource).id).toBe(1)
+          const subscriptions: SSEEvent[][] = []
+          for (let subscription = 0; subscription < 2; subscription++) {
+            subscriptions.push(
+              yield* makeSSESubscriptionStream(
+                schema,
+                layer,
+                { query: "subscription { instance }" },
+                new Headers(),
+                {
+                  onSubscribe: () =>
+                    Effect.gen(function* () {
+                      observed.push({ id: (yield* Resource).id, mirror: yield* Mirror })
+                    }),
+                }
+              ).pipe(Stream.runCollect)
+            )
+            expect(released).toEqual(subscription === 0 ? [2] : [2, 3])
+          }
+          expect((yield* Resource).id).toBe(1)
+          return subscriptions
+        }).pipe(Effect.provide(layer))
+      )
+
+      expect(events).toEqual([
+        [formatNextEvent({ data: { instance: 2 } }), formatCompleteEvent()],
+        [formatNextEvent({ data: { instance: 3 } }), formatCompleteEvent()],
+      ])
+      expect(observed).toEqual([
+        { id: 2, mirror: 2 },
+        { id: 3, mirror: 3 },
+      ])
+      expect(acquired).toBe(3)
+      expect(released).toEqual([2, 3, 1])
+    })
+
     it("preserves ambient annotations and spans across hooks and detached subscription effects", async () => {
       const Setting = Context.Service<string>("sse/AnnotationSetting")
       const observations: Array<{

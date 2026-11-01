@@ -7,6 +7,11 @@ import {
   normalizeConfig,
 } from "../../../src/server/config"
 import { ComplexityConfigFromEnv, validateComplexity } from "../../../src/server/complexity"
+import {
+  CacheControlConfigFromEnv,
+  computeCachePolicyFromQuery,
+  toCacheControlHeader,
+} from "../../../src/server/cache-control"
 
 describe("config.ts", () => {
   // ==========================================================================
@@ -247,5 +252,62 @@ describe.each([
         actual: 3,
       })
     }
+  })
+})
+
+describe.each([
+  ["standalone", CacheControlConfigFromEnv],
+  ["router", GraphQLRouterConfigFromEnv.pipe(Config.map((config) => config.cacheControl))],
+] as const)("%s cache control environment configuration", (entrypoint, config) => {
+  const load = (env: Record<string, string>) => config.parse(ConfigProvider.fromEnv({ env }))
+
+  it.each([undefined, "false", "true"])("rejects NaN with enabled=%s", async (enabled) => {
+    const env: Record<string, string> = { GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE: "NaN" }
+    if (enabled !== undefined) env.GRAPHQL_CACHE_CONTROL_ENABLED = enabled
+    const result = await Effect.runPromise(Effect.result(load(env)))
+
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") {
+      expect(result.failure._tag).toBe("ConfigError")
+      expect(result.failure.message).toContain("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE")
+    }
+  })
+
+  it.each([0, -1, 1.5, 60, Infinity, -Infinity])(
+    "preserves max age %s in the computed policy and header",
+    async (value) => {
+      for (const scope of ["PUBLIC", "PRIVATE"] as const) {
+        const loaded = await Effect.runPromise(
+          load({
+            GRAPHQL_CACHE_CONTROL_ENABLED: "true",
+            GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE: String(value),
+            GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE: scope,
+          })
+        )
+        if (!loaded) throw new Error("Expected enabled cache control")
+        expect(loaded.defaultMaxAge).toBe(value)
+
+        const policy = await Effect.runPromise(
+          computeCachePolicyFromQuery("{ hello }", undefined, configSchema, new Map(), loaded)
+        )
+        expect(policy).toEqual({ maxAge: value, scope })
+        expect(toCacheControlHeader(policy)).toBe(
+          value === 0 ? "no-store" : `${scope.toLowerCase()}, max-age=${value}`
+        )
+      }
+    }
+  )
+
+  it("does not load environment settings belonging only to the other entrypoint", async () => {
+    const unrelatedVariable =
+      entrypoint === "standalone" ? "GRAPHQL_MAX_DEPTH" : "GRAPHQL_CACHE_CONTROL_HTTP_HEADERS"
+    const loaded = await Effect.runPromise(
+      load({
+        GRAPHQL_CACHE_CONTROL_ENABLED: "true",
+        GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE: "60",
+        [unrelatedVariable]: "not-a-valid-value",
+      })
+    )
+    expect(loaded).toMatchObject({ enabled: true, defaultMaxAge: 60 })
   })
 })

@@ -17,7 +17,7 @@ import {
   type TypeConversionContext,
   type InputTypeLookupCache,
 } from "./type-registry"
-import { isOptionDeclaration } from "../schema-mapping"
+import { getASTView, isOptionDeclaration } from "../schema-mapping"
 
 /**
  * Encode a resolver's output value using the schema.
@@ -40,22 +40,31 @@ function encodeResolverOutput(
 }
 
 /**
- * GraphQL hides discriminator fields. Restore only encoded literal `_tag` values
- * before schema decoding, without inventing omitted inputs or decoding defaults.
+ * Restore the representations hidden by GraphQL before full-schema decoding.
+ * Optional keys stay absent so schema defaults and key-level codecs still run.
  */
-function restoreHiddenInputTags(ast: AST.AST, value: unknown): unknown {
-  if (value === null || typeof value !== "object") return value
+function restoreGraphQLInput(original: AST.AST, value: unknown): unknown {
+  const ast = getASTView(original, "input")
+  if (ast._tag === "Suspend") return restoreGraphQLInput(ast.thunk(), value)
+  if (isOptionDeclaration(ast) && ast._tag === "Declaration") {
+    const inner = ast.typeParameters[0]
+    return value == null
+      ? Option.none()
+      : Option.some(inner ? restoreGraphQLInput(inner, value) : value)
+  }
+  if (value === undefined && isOptionDeclaration(original) && ast._tag === "Union") {
+    if (ast.types.some((member) => member._tag === "Null")) return null
+  }
+  if (value === null || value === undefined) return value
   switch (ast._tag) {
-    case "Suspend":
-      return restoreHiddenInputTags(ast.thunk(), value)
     case "Declaration":
-      return ast.typeParameters[0] ? restoreHiddenInputTags(ast.typeParameters[0], value) : value
+      return ast.typeParameters[0] ? restoreGraphQLInput(ast.typeParameters[0], value) : value
     case "Union": {
       // Input unions expose their first non-null member in GraphQL.
       const member = ast.types.find(
         (type) => type._tag !== "Null" && type._tag !== "Undefined" && type._tag !== "Void"
       )
-      return member ? restoreHiddenInputTags(member, value) : value
+      return member ? restoreGraphQLInput(member, value) : value
     }
     case "Arrays": {
       if (!Array.isArray(value)) return value
@@ -63,7 +72,7 @@ function restoreHiddenInputTags(ast: AST.AST, value: unknown): unknown {
       for (let index = 0; index < value.length; index++) {
         const element = ast.elements[index] ?? ast.rest[0]
         if (!element) continue
-        const item = restoreHiddenInputTags(element, value[index])
+        const item = restoreGraphQLInput(element, value[index])
         if (item !== value[index]) {
           if (restored === value) restored = value.slice()
           restored[index] = item
@@ -72,16 +81,17 @@ function restoreHiddenInputTags(ast: AST.AST, value: unknown): unknown {
       return restored
     }
     case "Objects": {
-      if (Array.isArray(value)) return value
+      if (typeof value !== "object" || Array.isArray(value)) return value
       const record = value as Record<PropertyKey, unknown>
       let restored = record
       for (const field of ast.propertySignatures) {
         const present = Object.hasOwn(record, field.name)
-        if (!present && (field.name !== "_tag" || field.type._tag !== "Literal")) continue
+        if (!present && AST.isOptional(AST.toEncoded(field.type))) continue
         const item =
-          !present && field.type._tag === "Literal"
+          !present && field.name === "_tag" && field.type._tag === "Literal"
             ? field.type.literal
-            : restoreHiddenInputTags(field.type, record[field.name])
+            : restoreGraphQLInput(field.type, record[field.name])
+        if (!present && item === undefined) continue
         if (!present || item !== record[field.name]) {
           if (restored === record) restored = { ...record }
           restored[field.name] = item
@@ -95,9 +105,16 @@ function restoreHiddenInputTags(ast: AST.AST, value: unknown): unknown {
 }
 
 function makeArgsDecoder(schema: S.Top) {
-  const encoded = AST.toEncoded(schema.ast)
   const decode = S.decodeUnknownEffect(schema)
-  return (args: unknown) => decode(restoreHiddenInputTags(encoded, args))
+  return (args: unknown) => decode(restoreGraphQLInput(schema.ast, args))
+}
+
+/** Each emitted root value owns its subscription operation's decoded arguments. */
+class SubscriptionEvent {
+  constructor(
+    readonly value: unknown,
+    readonly args: unknown
+  ) {}
 }
 
 /**
@@ -318,17 +335,22 @@ export function buildSubscriptionField(
 
       const stream = await Effect.runPromiseWith(context.services)(subscribeEffect)
 
-      return Stream.toAsyncIterableWith(stream, context.services)
+      const events = config.resolve
+        ? Stream.map(stream, (value) => new SubscriptionEvent(value, decodedArgs))
+        : stream
+      return Stream.toAsyncIterableWith(events, context.services)
     },
 
     // The resolve function transforms each yielded value
     // If no custom resolve is provided, encode and return the payload directly
     resolve: config.resolve
-      ? async (value, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
-          const decodedArgs = decodeArgs
-            ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
-            : args
-
+      ? async (
+          event: SubscriptionEvent,
+          _args,
+          context: GraphQLEffectContext<any>,
+          info: GraphQLResolveInfo
+        ) => {
+          const { value, args: decodedArgs } = event
           let effect = config.resolve!(value, decodedArgs)
 
           // Apply middleware to the resolve effect

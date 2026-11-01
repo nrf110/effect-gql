@@ -84,6 +84,8 @@ S.Struct({
 })
 ```
 
+Tuples also map to homogeneous GraphQL lists, not positional GraphQL types. The first fixed element determines the list item type; the rest element is used only when there are no fixed elements. For example, `S.TupleWithRest(S.Tuple([S.Number]), [S.Int])` maps to a list of `Float`, preserving the valid value `[1.5, 2]` for both output and input. Effect Schema still validates the fixed and rest positions when decoding resolver arguments.
+
 ## Structs (Object Types)
 
 `S.Struct` maps to GraphQL Object types:
@@ -356,6 +358,10 @@ objectType({
 
 Registrations match schema identity, not structural similarity. `S.optionalKey(UserSchema)` changes field nullability without losing the registered object's computed fields, interface identity, or input type. A separate `S.Struct` with the same properties remains a separate type.
 
+Exact schema and original-AST registrations take precedence over directional projection aliases. Distinct transformation wrappers can therefore have separate object, interface, or input registrations even when they share a decoded or encoded representation. Their registered names and computed fields are preserved at root fields and nested references, including optional keys and lists. Use the original registered wrapper when its identity matters: a projection alone cannot distinguish wrappers that share that projection.
+
+This includes separate `X.pipe(S.decodeTo(Y))` wrappers that reuse the same `X` and `Y` schemas and the default transformation. `S.optionalKey`, `S.mutableKey`, and their combinations retain the originating wrapper's registration rather than merging wrappers with shared transformations.
+
 Output registrations apply only to the decoded representation. Registering an object decoded from a string does not turn unrelated string fields into that object. Input registrations apply to the encoded representation. Recursive input references reuse the registered input object, and inferred output types share one conversion context across registered fields and root operations.
 
 Within a builder, inferred types also share their directional projection identity: using a schema alongside `S.toType(schema)` for outputs, or alongside `S.toEncoded(schema)` for inputs, reuses the corresponding GraphQL type. Projection does not merge unrelated schemas with the same shape or schemas with different annotations, and optional keys retain their field nullability.
@@ -366,7 +372,7 @@ Some Schema features don't have direct GraphQL equivalents:
 
 | Effect Schema | Handling |
 |--------------|----------|
-| `S.Tuple` | Converted to `[T!]!` (loses positional info) |
+| `S.Tuple` / `S.TupleWithRest` | Homogeneous list using the first fixed element, or the rest element when no fixed elements exist; loses positional info |
 | `S.Record` | Not directly supported |
 | `S.Map` | Not directly supported |
 | `S.Set` | Converted to array |

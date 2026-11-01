@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import * as S from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 import {
   GraphQLObjectType,
   GraphQLInterfaceType,
@@ -8,6 +9,8 @@ import {
   GraphQLInputObjectType,
   GraphQLString,
   GraphQLInt,
+  GraphQLSchema,
+  graphql,
   isListType,
   isNonNullType,
 } from "graphql"
@@ -1332,4 +1335,71 @@ describe("type-registry.ts", () => {
       expect(args.limit).toBeDefined()
     })
   })
+})
+
+describe("exact registration precedence", () => {
+  it.each([false, true])(
+    "keeps an explicitly registered transformation distinct from its registered projection (%s)",
+    async (projectedFirst) => {
+      const decoded = S.Struct({ id: S.String })
+      const original = S.String.pipe(
+        S.decodeTo(decoded, {
+          decode: SchemaGetter.transform((id) => ({ id })),
+          encode: SchemaGetter.transform((value) => value.id),
+        })
+      )
+      const projected = S.toType(original)
+      const ctx = createEmptyContext()
+      const registrations = [
+        { name: "Original", schema: original },
+        { name: "Projected", schema: projected },
+      ]
+      for (const registration of projectedFirst ? registrations.reverse() : registrations) {
+        ctx.types.set(registration.name, registration)
+        ctx.typeRegistry.set(
+          registration.name,
+          new GraphQLObjectType({
+            name: registration.name,
+            fields: {
+              [registration.name === "Original" ? "originalOnly" : "projectedOnly"]: {
+                type: GraphQLString,
+                resolve: () => registration.name,
+              },
+            },
+          })
+        )
+      }
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            original: {
+              type: toGraphQLTypeWithRegistry(original, ctx),
+              resolve: () => ({ id: "1" }),
+            },
+            nested: {
+              type: toGraphQLTypeWithRegistry(
+                S.Struct({ original: S.optionalKey(original), projected }),
+                ctx
+              ),
+              resolve: () => ({ original: { id: "2" }, projected: { id: "3" } }),
+            },
+          },
+        }),
+      })
+      const result = await graphql({
+        schema,
+        source:
+          "{ original { originalOnly } nested { original { originalOnly } projected { projectedOnly } } }",
+      })
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        original: { originalOnly: "Original" },
+        nested: {
+          original: { originalOnly: "Original" },
+          projected: { projectedOnly: "Projected" },
+        },
+      })
+    }
+  )
 })

@@ -232,6 +232,14 @@ Express request handler with a `dispose(): Promise<void>` method. Retain the
 handler and call `await middleware.dispose()` during server shutdown to release
 its scoped Effect services.
 
+Request bodies do not require an Express body parser: unparsed uploads stream
+directly to the Effect handler. If you mount a parser first, `toMiddleware`
+re-encodes parsed JSON values, including strings from
+`express.json({ strict: false })` for `application/json` and `application/*+json`
+requests, so `"123"` remains a string rather than becoming a number. Text-parser
+strings with non-JSON content types and raw-parser `Buffer` bodies are forwarded
+unchanged. Keep the request's content type consistent with the parser you use.
+
 Response bodies stream with backpressure rather than being buffered in memory.
 If a body fails before the first bytes are sent, `toMiddleware` forwards the
 error to Express without destroying the response, so an error handler can still

@@ -125,6 +125,8 @@ export const toMiddleware = <E, R, RE>(
       const url = new URL(req.originalUrl || "/", baseUrl).href
       const headers = toWebHeaders(req.headers)
 
+      // JSON parsers also produce strings: retain their JSON quotes, while
+      // forwarding text-parser strings and raw buffers as already-decoded bytes.
       const hasBody = !["GET", "HEAD"].includes(req.method)
       const webRequest = new Request(url, {
         method: req.method,
@@ -133,7 +135,9 @@ export const toMiddleware = <E, R, RE>(
           ? undefined
           : req.body === undefined
             ? (Readable.toWeb(req) as ReadableStream<Uint8Array>)
-            : Buffer.isBuffer(req.body) || typeof req.body === "string"
+            : Buffer.isBuffer(req.body) ||
+                (typeof req.body === "string" &&
+                  !req.is(["application/json", "application/*+json"]))
               ? req.body
               : JSON.stringify(req.body),
         signal: abort.signal,

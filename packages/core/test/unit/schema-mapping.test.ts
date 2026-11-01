@@ -882,3 +882,33 @@ describe("low-level schema composition", () => {
     })
   })
 })
+
+describe("tuple list element precedence", () => {
+  it("accepts fractional fixed elements before an integer rest through public helpers", async () => {
+    const tuple = S.TupleWithRest(S.Tuple([S.Number]), [S.Int])
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          echo: {
+            type: toGraphQLType(tuple),
+            args: toGraphQLArgs(S.Struct({ values: tuple })),
+            resolve: (_parent, args: { values: readonly number[] }) => args.values,
+          },
+          input: {
+            type: toGraphQLType(tuple),
+            args: { values: { type: toGraphQLInputType(tuple) } },
+            resolve: (_parent, args: { values: readonly number[] }) => args.values,
+          },
+        },
+      }),
+    })
+    const result = await graphql({
+      schema,
+      source: "query($values: [Float]!) { echo(values: $values) input(values: $values) }",
+      variableValues: { values: [1.5, 2] },
+    })
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({ echo: [1.5, 2], input: [1.5, 2] })
+  })
+})

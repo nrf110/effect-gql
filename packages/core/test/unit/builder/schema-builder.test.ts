@@ -1188,3 +1188,159 @@ describe("optional interface identity", () => {
     })
   })
 })
+
+describe("exact transformation registrations", () => {
+  const schemas = () => {
+    const encoded = S.Struct({ id: S.String })
+    const decoded = S.Struct({ id: S.String })
+    const one = encoded.pipe(S.decodeTo(decoded))
+    const two = encoded.pipe(S.decodeTo(decoded))
+    return { one, two }
+  }
+
+  it.each([false, true])(
+    "keeps root and nested object selections distinct (reverse registration: %s)",
+    async (reverse) => {
+      const { one, two } = schemas()
+      const pair = S.Struct({ one: S.optionalKey(one), two: S.Array(two) })
+      const registrations = [
+        { name: "One", schema: one },
+        { name: "Two", schema: two },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reverse ? registrations.reverse() : registrations)
+        builder = builder.objectType(registration)
+      const schema = builder
+        .field("One", "onlyOne", { type: S.String, resolve: () => Effect.succeed("first") })
+        .field("Two", "onlyTwo", { type: S.String, resolve: () => Effect.succeed("second") })
+        .objectType({
+          name: "Pair",
+          schema: pair,
+        })
+        .query("one", { type: one, resolve: () => Effect.succeed({ id: "1" }) })
+        .query("two", { type: two, resolve: () => Effect.succeed({ id: "2" }) })
+        .query("pair", {
+          type: pair,
+          resolve: () => Effect.succeed({ one: { id: "3" }, two: [{ id: "4" }] }),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(
+          schema,
+          Layer.empty
+        )("{ one { onlyOne } two { onlyTwo } pair { one { onlyOne } two { onlyTwo } } }")
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        one: { onlyOne: "first" },
+        two: { onlyTwo: "second" },
+        pair: { one: { onlyOne: "first" }, two: [{ onlyTwo: "second" }] },
+      })
+    }
+  )
+
+  it.each([false, true])(
+    "keeps exact interfaces and their possible types distinct (reverse registration: %s)",
+    async (reverse) => {
+      const { one, two } = schemas()
+      const registrations = [
+        { name: "First", schema: one, resolveType: () => "FirstValue" },
+        { name: "Second", schema: two, resolveType: () => "SecondValue" },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reverse ? registrations.reverse() : registrations)
+        builder = builder.interfaceType(registration)
+      const schema = builder
+        .objectType({
+          name: "FirstValue",
+          schema: S.Struct({ id: S.String, first: S.String }),
+          implements: ["First"],
+        })
+        .objectType({
+          name: "SecondValue",
+          schema: S.Struct({ id: S.String, second: S.String }),
+          implements: ["Second"],
+        })
+        .query("one", {
+          type: one,
+          resolve: () => Effect.succeed({ id: "1", first: "first" }),
+        })
+        .query("pair", {
+          type: S.Struct({ one: S.optionalKey(one), two }),
+          resolve: () =>
+            Effect.succeed({
+              one: { id: "1", first: "first" },
+              two: { id: "2", second: "second" },
+            }),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(
+          schema,
+          Layer.empty
+        )(
+          "{ one { ... on FirstValue { first } } pair { one { ... on FirstValue { first } } two { ... on SecondValue { second } } } }"
+        )
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        one: { first: "first" },
+        pair: { one: { first: "first" }, two: { second: "second" } },
+      })
+    }
+  )
+
+  it.each([false, true])(
+    "accepts distinct named encoded variables and nested inputs (reverse registration: %s)",
+    async (reverse) => {
+      const { one, two } = schemas()
+      const pair = S.Struct({ one: S.optionalKey(one), two: S.Array(two) })
+      const registrations = [
+        { name: "OneInput", schema: one },
+        { name: "TwoInput", schema: two },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reverse ? registrations.reverse() : registrations)
+        builder = builder.inputType(registration)
+      const schema = builder
+        .inputType({ name: "PairInput", schema: pair })
+        .query("identify", {
+          type: S.String,
+          args: S.Struct({ one, two, pair }),
+          resolve: ({ one, two, pair }) =>
+            Effect.succeed(`${one.id}:${two.id}:${pair.one?.id}:${pair.two[0].id}`),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)(
+          "query($one: OneInput!, $two: TwoInput!, $pair: PairInput!) { identify(one: $one, two: $two, pair: $pair) }",
+          {
+            one: { id: "1" },
+            two: { id: "2" },
+            pair: { one: { id: "3" }, two: [{ id: "4" }] },
+          }
+        )
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ identify: "1:2:3:4" })
+    }
+  )
+
+  it("uses the fixed tuple element for builder output and input lists", async () => {
+    const tuple = S.TupleWithRest(S.Tuple([S.Number]), [S.Int])
+    const schema = GraphQLSchemaBuilder.empty
+      .query("echo", {
+        type: tuple,
+        args: S.Struct({ values: tuple }),
+        resolve: ({ values }) => Effect.succeed(values),
+      })
+      .buildSchema()
+    const result = await Effect.runPromise(
+      execute(schema, Layer.empty)("query($values: [Float]!) { echo(values: $values) }", {
+        values: [1.5, 2],
+      })
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({ echo: [1.5, 2] })
+  })
+})

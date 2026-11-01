@@ -372,6 +372,13 @@ Limits are optional; omitted limits remain disabled, and the default field compl
 Both `GraphQLRouterConfigFromEnv` and `ComplexityConfigFromEnv` reject `NaN` for all five
 settings above with a configuration error instead of silently disabling query limits.
 
+The cache-control setting `GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE` also rejects `NaN`
+in both `GraphQLRouterConfigFromEnv` and `CacheControlConfigFromEnv`, preventing
+`max-age=NaN` headers. Its default remains `0` (`no-store`); zero, negative,
+fractional, and infinite numeric values retain their existing behavior. This does
+not change enable defaults: standalone cache control defaults to enabled, while
+the router defaults to disabled.
+
 Load with `GraphQLRouterConfigFromEnv`:
 
 ```typescript

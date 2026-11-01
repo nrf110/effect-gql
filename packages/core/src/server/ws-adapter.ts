@@ -375,7 +375,9 @@ export const makeGraphQLWSHandler = <R, LE = never>(
       })
 
       const ambient = yield* Effect.context<never>()
-      const services = Context.merge(ambient, yield* Layer.build(layer))
+      const memoMap = yield* Layer.makeMemoMap
+      const scope = yield* Effect.scope
+      const services = Context.merge(ambient, yield* Layer.buildWithMemoMap(layer, memoMap, scope))
 
       const extra: WSExtra<R> = {
         socket,
@@ -385,7 +387,9 @@ export const makeGraphQLWSHandler = <R, LE = never>(
 
       yield* runConnectionLifecycle(socket, wsServer, extra)
     }).pipe(
-      Effect.catchCause(() => Effect.void),
+      Effect.catchCause(() =>
+        socket.close(1011, "Internal server error").pipe(Effect.catchCause(() => Effect.void))
+      ),
       Effect.scoped
     )
 }

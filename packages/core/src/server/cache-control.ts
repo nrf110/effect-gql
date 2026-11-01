@@ -1,4 +1,4 @@
-import { Effect, Config } from "effect"
+import { Effect, Config, Schema } from "effect"
 import {
   DocumentNode,
   OperationDefinitionNode,
@@ -568,6 +568,12 @@ function analyzeField(
 // Environment Configuration
 // ============================================================================
 
+const cacheControlNumber = Schema.Number.check(
+  Schema.makeFilter((value: number) => !Number.isNaN(value), {
+    expected: "a number other than NaN",
+  })
+)
+
 /**
  * Effect Config for loading cache control configuration from environment variables.
  *
@@ -579,7 +585,9 @@ function analyzeField(
  */
 export const CacheControlConfigFromEnv: Config.Config<CacheControlConfig> = Config.all({
   enabled: Config.Boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(Config.withDefault(true)),
-  defaultMaxAge: Config.Number("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(Config.withDefault(0)),
+  defaultMaxAge: Config.schema(cacheControlNumber, "GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(
+    Config.withDefault(0)
+  ),
   defaultScope: Config.String("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
     Config.withDefault("PUBLIC"),
     Config.map((s) => (s === "PRIVATE" ? "PRIVATE" : "PUBLIC") as CacheControlScope)

@@ -13,6 +13,18 @@ in lifecycle hooks, resolvers, and Effects run with
 `Effect.runPromiseWith(ctx.services)`. Services supplied by the explicit
 connection/subscription layer take precedence over ambient services.
 
+The explicit service layer is built independently for every WebSocket connection
+and every SSE subscription, even when the same layer already provides services
+to the surrounding Effect. Dependencies shared inside that layer are still
+acquired only once per build. Connection/subscription resources are released
+when that connection closes or that subscription completes or is cancelled;
+ambient services retain their surrounding scope.
+
+If a WebSocket connection's service layer fails to initialize, the upgraded
+socket closes with code `1011` and the generic reason `Internal server error`.
+Partially acquired resources are released, and acquisition error details are
+not sent to clients.
+
 ## Overview
 
 GraphQL subscriptions enable clients to receive live updates when data changes:

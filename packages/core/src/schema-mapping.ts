@@ -68,7 +68,12 @@ export function getASTIdentity(ast: AST.AST): AST.AST {
   }
   const existing = identities.find((candidate) => {
     if (candidate === ast) return true
-    if (candidate.annotations !== ast.annotations || candidate.checks !== ast.checks) return false
+    if (
+      candidate.annotations !== ast.annotations ||
+      candidate.checks !== ast.checks ||
+      candidate.encoding !== ast.encoding
+    )
+      return false
     switch (ast._tag) {
       case "Objects":
         return (
@@ -166,7 +171,7 @@ function makeConverter(
         if (typeof ast.literal === "boolean") return GraphQLBoolean
         return GraphQLString
       case "Arrays": {
-        const element = ast.rest[0] ?? ast.elements[0]
+        const element = ast.elements[0] ?? ast.rest[0]
         return element ? new GraphQLList(convert(element) as GraphQLOutputType) : GraphQLString
       }
       case "Objects": {

@@ -45,9 +45,13 @@ The `args` object is fully typed based on the **decoded** schema. GraphQL inputs
 
 The GraphQL query `{ double(amount: "21") }` returns `42`, not `"2121"`.
 
-This decoding applies to query, mutation, and object-field resolvers, as well as subscription `subscribe` and custom `resolve` callbacks. Middleware receives the same decoded arguments as the callback it wraps. Decoders run with the request's services, so effectful schema transformations can use request-scoped dependencies. Invalid inputs produce GraphQL errors without invoking the callback. Fields without an `args` schema skip decoding.
+This decoding applies to query, mutation, and object-field resolvers, as well as subscription `subscribe` and custom `resolve` callbacks. A subscription decodes its arguments **once when the operation starts**: every event's custom resolver and middleware receives that operation's same decoded argument object. Decoding defaults and transformations do not run again for each event, and concurrent subscriptions remain isolated even when they share a connection context and document.
 
-Tagged schemas keep their literal `_tag` discriminators even though GraphQL does not expose those fields as inputs. The framework restores those encoded discriminator literals before decoding, including nested objects, lists, and recursive inputs. Other omitted fields are left to the schema's normal optional/default behavior.
+Middleware receives the same decoded arguments as the callback it wraps. Decoders run with the request's services, so effectful schema transformations can use request-scoped dependencies. Invalid inputs produce GraphQL errors without invoking the callback. Fields without an `args` schema skip decoding.
+
+`S.Option(inner)` inputs use GraphQL's nullable representation, not an Effect `Option` object. A supplied value is decoded through `inner` and delivered as `Option.some(value)`; `null` or an omitted required Option argument becomes `Option.none()`. This also works inside nested objects, lists, classes, and recursive inputs. Codecs such as `S.OptionFromNullOr(inner)` retain their existing null encoding rather than being wrapped twice. Genuinely optional keys remain absent when omitted, so schema decoding defaults and optional-key codecs keep their normal behavior.
+
+Tagged schemas keep their literal `_tag` discriminators even though GraphQL does not expose those fields as inputs. The framework restores those encoded discriminator literals before decoding, including inside Option values. All normalized inputs still pass through the entire argument schema's validation and transformations before any typed callback runs.
 
 ### Field Resolvers
 

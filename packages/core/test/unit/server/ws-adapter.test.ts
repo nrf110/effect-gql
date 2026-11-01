@@ -790,6 +790,73 @@ describe("ws-adapter.ts", () => {
     })
   })
   describe("ambient connection context", () => {
+    it("isolates and releases each connection when its layer is already ambient", async () => {
+      const Resource = Context.Service<{ readonly id: number }>("ws/ConnectionResource")
+      const Mirror = Context.Service<number>("ws/ConnectionMirror")
+      let acquired = 0
+      const released: number[] = []
+      const observed: Array<{ id: number; mirror: number }> = []
+      const resource = Layer.effect(
+        Resource,
+        Effect.acquireRelease(
+          Effect.sync(() => ({ id: ++acquired })),
+          ({ id }) => Effect.sync(() => released.push(id))
+        )
+      )
+      const layer = Layer.merge(
+        resource,
+        Layer.effect(
+          Mirror,
+          Effect.map(Resource, ({ id }) => id)
+        ).pipe(Layer.provide(resource))
+      )
+      const handler = makeGraphQLWSHandler(createTestSchema(), layer, {
+        onConnect: () =>
+          Effect.gen(function* () {
+            observed.push({ id: (yield* Resource).id, mirror: yield* Mirror })
+            return true
+          }),
+      })
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          expect((yield* Resource).id).toBe(1)
+          for (let connection = 0; connection < 2; connection++) {
+            const mock = createMockSocket()
+            const acknowledged = yield* Deferred.make<void>()
+            const socket: EffectWebSocket = {
+              ...mock.socket,
+              send: (message) =>
+                mock.socket
+                  .send(message)
+                  .pipe(
+                    Effect.andThen(
+                      JSON.parse(message).type === "connection_ack"
+                        ? Deferred.succeed(acknowledged, undefined)
+                        : Effect.void
+                    ),
+                    Effect.asVoid
+                  ),
+            }
+            const fiber = yield* Effect.forkChild(handler(socket))
+            yield* Queue.offer(mock.messageQueue, JSON.stringify({ type: "connection_init" }))
+            yield* Deferred.await(acknowledged)
+            yield* Deferred.succeed(mock.closedDeferred, { code: 1000, reason: "Done" })
+            yield* Fiber.join(fiber)
+            expect(released).toEqual(connection === 0 ? [2] : [2, 3])
+          }
+          expect((yield* Resource).id).toBe(1)
+        }).pipe(Effect.provide(layer), Effect.scoped)
+      )
+
+      expect(observed).toEqual([
+        { id: 2, mirror: 2 },
+        { id: 3, mirror: 3 },
+      ])
+      expect(acquired).toBe(3)
+      expect(released).toEqual([2, 3, 1])
+    })
+
     it("preserves annotations, spans, and explicit services through the graphql-ws protocol", async () => {
       const Setting = Context.Service<string>("ws/AnnotationSetting")
       const observations: Array<{
@@ -883,6 +950,39 @@ describe("ws-adapter.ts", () => {
         this.emit("close", code, Buffer.from(reason))
       }
     }
+
+    it("closes failed initialization without exposing errors or leaking partial resources", async () => {
+      const Resource = Context.Service<string>("ws/PartialConnectionResource")
+      const Failed = Context.Service<string>("ws/FailedConnectionResource")
+      let released = 0
+      const resource = Layer.effect(
+        Resource,
+        Effect.acquireRelease(Effect.succeed("open"), () =>
+          Effect.sync(() => {
+            released++
+          })
+        )
+      )
+      const layer = Layer.effect(
+        Failed,
+        Effect.andThen(Resource, Effect.fail(new Error("sensitive acquisition details")))
+      ).pipe(Layer.provide(resource))
+      const ws = new TestSocket()
+      const closed: Array<{ code: number; reason: string }> = []
+      ws.on("close", (code: number, reason: Buffer) =>
+        closed.push({ code, reason: reason.toString() })
+      )
+
+      await Effect.runPromise(
+        makeGraphQLWSHandler(createTestSchema(), layer)(toEffectWebSocketFromWs(ws))
+      )
+
+      expect(ws.readyState).toBe(3)
+      expect(closed).toEqual([{ code: 1011, reason: "Internal server error" }])
+      expect(released).toBe(1)
+      expect(ws.listenerCount("message")).toBe(0)
+      expect(ws.listenerCount("error")).toBe(0)
+    })
 
     it("drains queued messages and succeeds on normal code 1000 closure", async () => {
       const ws = new TestSocket()
