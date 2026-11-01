@@ -225,7 +225,7 @@ unionType({
 
 ## Input Types
 
-For input types (arguments), the mapping uses the "from" side of transformations:
+For input types (arguments), the mapping uses the encoded representation of transformations. Automatically inferred input object names append `Input` to the schema's output name: a tagged `User` schema produces `User` for output and `UserInput` for input. An explicit `inputType({ name, schema })` registration takes precedence.
 
 ```typescript
 // Output: Returns Date object
@@ -268,13 +268,31 @@ mutation("createUser", {
 })
 ```
 
+### Composing Low-Level Helpers
+
+The low-level helpers also distinguish input and output names:
+
+```typescript
+import { toGraphQLType, toGraphQLInputType, toGraphQLObjectType } from "@effect-gql/core"
+
+const User = S.TaggedStruct("User", { id: S.String })
+const output = toGraphQLType(User)       // User
+const input = toGraphQLInputType(User)   // UserInput
+
+const A = toGraphQLObjectType("A", S.Struct({ user: User }))
+const B = toGraphQLObjectType("B", S.Struct({ user: User }))
+// Nested types are scoped to their explicit root: A_User and B_User.
+```
+
+Each `toGraphQLObjectType` call owns its conversion state and additional fields; configuration is not cached globally. Root-scoped nested names let independently configured helpers coexist in one GraphQL schema. Use the schema builder when nested types should share registered names and computed fields throughout the schema.
+
 ## Transformations
 
 Effect Schema transformations are handled differently for input vs output:
 
 ### Output Types (Query/Field Results)
 
-Uses the "to" type (the transformed result):
+Uses the decoded type (the transformed result):
 
 ```typescript
 const DateSchema = S.DateFromString
@@ -289,7 +307,7 @@ query("now", {
 
 ### Input Types (Arguments)
 
-Uses the "from" type (what client sends):
+Uses the encoded type (what the client sends):
 
 ```typescript
 // Client sends: { after: "2024-01-15T00:00:00.000Z" }
@@ -332,6 +350,10 @@ objectType({
 // UserSchema now uses the registered type
 // instead of automatic conversion
 ```
+
+Registrations match schema identity, not structural similarity. `S.optionalKey(UserSchema)` changes field nullability without losing the registered object's computed fields, interface identity, or input type. A separate `S.Struct` with the same properties remains a separate type.
+
+Output registrations apply only to the decoded representation. Registering an object decoded from a string does not turn unrelated string fields into that object. Input registrations apply to the encoded representation. Recursive input references reuse the registered input object, and inferred output types share one conversion context across registered fields and root operations.
 
 ## Limitations
 

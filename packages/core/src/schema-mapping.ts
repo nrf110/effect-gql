@@ -39,12 +39,67 @@ export const isNullableAST = (ast: AST.AST): boolean => {
   return false
 }
 
+/** Select this node's representation without cloning its recursive child graph. */
+export const getASTView = (ast: AST.AST, direction: "output" | "input"): AST.AST => {
+  if (direction === "input") {
+    while (ast.encoding) ast = ast.encoding[ast.encoding.length - 1].to
+  }
+  return ast
+}
+
+// Key-context copies retain their body references. Intern only those identities,
+// never GraphQL types or helper configuration, so separate conversions stay isolated.
+const astIdentities = new WeakMap<object, AST.AST[]>()
+
+export function getASTIdentity(ast: AST.AST): AST.AST {
+  const body =
+    ast._tag === "Objects"
+      ? ast.propertySignatures
+      : ast._tag === "Declaration"
+        ? ast.typeParameters
+        : ast._tag === "Suspend"
+          ? ast.thunk
+          : undefined
+  if (!body) return ast
+  const identities = astIdentities.get(body)
+  if (!identities) {
+    astIdentities.set(body, [ast])
+    return ast
+  }
+  const existing = identities.find((candidate) => {
+    if (candidate === ast) return true
+    if (candidate.annotations !== ast.annotations || candidate.checks !== ast.checks) return false
+    switch (ast._tag) {
+      case "Objects":
+        return (
+          candidate._tag === "Objects" &&
+          candidate.indexSignatures === ast.indexSignatures &&
+          candidate.encodingChecks === ast.encodingChecks
+        )
+      case "Declaration":
+        return (
+          candidate._tag === "Declaration" &&
+          candidate.run === ast.run &&
+          candidate.encodingRun === ast.encodingRun &&
+          candidate.encodingChecks === ast.encodingChecks
+        )
+      case "Suspend":
+        return candidate._tag === "Suspend"
+      default:
+        return false
+    }
+  })
+  if (existing) return existing
+  identities.push(ast)
+  return ast
+}
+
 /** Resolve a class or suspended schema to its structural object representation. */
 export function getObjectAST(ast: AST.AST, direction: "output" | "input"): AST.Objects | undefined {
   const seen = new Set<AST.AST>()
   while (!seen.has(ast)) {
     seen.add(ast)
-    ast = direction === "input" ? AST.toEncoded(ast) : AST.toType(ast)
+    ast = getASTView(ast, direction)
     if (ast._tag === "Objects") return ast
     if (ast._tag === "Suspend") ast = ast.thunk()
     else if (ast._tag === "Declaration" && ast.typeParameters[0]) ast = ast.typeParameters[0]
@@ -67,22 +122,30 @@ function isIntegerCheck(check: AST.Check<unknown>): boolean {
   return check._tag === "FilterGroup" && check.checks.some(isIntegerCheck)
 }
 
-/** Conversion state is per projected AST graph, so recursive references share one GraphQL type. */
+/** Per-conversion state shares recursive types without leaking configuration across helpers. */
 type ConversionCache = WeakMap<AST.AST, GraphQLOutputType | GraphQLInputType>
 function makeConverter(
   direction: "output",
-  cache?: ConversionCache
+  cache?: ConversionCache,
+  namePrefix?: string
 ): (ast: AST.AST) => GraphQLOutputType
 function makeConverter(
   direction: "input",
-  cache?: ConversionCache
+  cache?: ConversionCache,
+  namePrefix?: string
 ): (ast: AST.AST) => GraphQLInputType
-function makeConverter(direction: "output" | "input", cache: ConversionCache = new WeakMap()) {
-  const convert = (ast: AST.AST): GraphQLOutputType | GraphQLInputType => {
-    const cached = cache.get(ast)
+function makeConverter(
+  direction: "output" | "input",
+  cache: ConversionCache = new WeakMap(),
+  namePrefix = ""
+) {
+  const convert = (original: AST.AST): GraphQLOutputType | GraphQLInputType => {
+    const ast = getASTView(original, direction)
+    const identity = getASTIdentity(ast)
+    const cached = cache.get(identity)
     if (cached) return cached
 
-    // Project only at entry points: re-encoding projected child nodes can clone recursive graphs.
+    // Follow encoding links at each boundary, retaining original recursive graph identities.
     // Plain Option has an Option-shaped encoding, but GraphQL deliberately exposes its value.
     if (isOptionDeclaration(ast) && ast._tag === "Declaration") {
       const inner = ast.typeParameters[0]
@@ -105,10 +168,11 @@ function makeConverter(direction: "output" | "input", cache: ConversionCache = n
         return element ? new GraphQLList(convert(element) as GraphQLOutputType) : GraphQLString
       }
       case "Objects": {
-        const name =
-          getASTName(ast) ??
-          `${direction === "input" ? "Input" : "Object"}_${Math.random().toString(36).slice(2, 11)}`
-        const fields = () => buildFields(ast, convert)
+        const schemaName = getASTName(ast)
+        const name = schemaName
+          ? `${namePrefix}${schemaName}${direction === "input" ? "Input" : ""}`
+          : `${namePrefix}${direction === "input" ? "Input" : "Object"}_${Math.random().toString(36).slice(2, 11)}`
+        const fields = () => buildFields(ast, convert, direction)
         const type =
           direction === "input"
             ? new GraphQLInputObjectType({
@@ -119,7 +183,7 @@ function makeConverter(direction: "output" | "input", cache: ConversionCache = n
                 name,
                 fields: fields as () => GraphQLFieldConfigMap<any, any>,
               })
-        cache.set(ast, type)
+        cache.set(identity, type)
         return type
       }
       case "Declaration": {
@@ -144,14 +208,18 @@ function makeConverter(direction: "output" | "input", cache: ConversionCache = n
 
 function buildFields(
   ast: AST.Objects,
-  convert: (ast: AST.AST) => GraphQLOutputType | GraphQLInputType
+  convert: (ast: AST.AST) => GraphQLOutputType | GraphQLInputType,
+  direction: "output" | "input" = "output"
 ): Record<string, { type: GraphQLType }> {
   const fields: Record<string, { type: GraphQLType }> = {}
   for (const field of ast.propertySignatures) {
     if (field.name === "_tag") continue
     const type = convert(field.type)
     fields[String(field.name)] = {
-      type: isNullableAST(field.type) || isNonNullType(type) ? type : new GraphQLNonNull(type),
+      type:
+        isNullableAST(getASTView(field.type, direction)) || isNonNullType(type)
+          ? type
+          : new GraphQLNonNull(type),
     }
   }
   return fields
@@ -159,11 +227,11 @@ function buildFields(
 
 /** Convert the decoded schema representation to a GraphQL output type. */
 export const toGraphQLType = (schema: S.Top): GraphQLOutputType =>
-  makeConverter("output")(AST.toType(schema.ast))
+  makeConverter("output")(schema.ast)
 
 /** Convert the encoded schema representation to a GraphQL input type. */
 export const toGraphQLInputType = (schema: S.Top): GraphQLInputType =>
-  makeConverter("input")(AST.toEncoded(schema.ast))
+  makeConverter("input")(schema.ast)
 
 /** Additional configuration for computed/relational fields. */
 export interface AdditionalField<Parent, Args, R, E, A> {
@@ -181,7 +249,7 @@ export const toGraphQLObjectType = <T>(
   const ast = getObjectAST(schema.ast, "output")
   if (!ast) throw new Error("Schema must be an object type to convert to GraphQLObjectType")
   const cache: ConversionCache = new WeakMap()
-  const convert = makeConverter("output", cache)
+  const convert = makeConverter("output", cache, `${name}_`)
   const type = new GraphQLObjectType({
     name,
     fields: () => {
@@ -197,14 +265,13 @@ export const toGraphQLObjectType = <T>(
       return fields
     },
   })
-  cache.set(schema.ast, type)
-  cache.set(AST.toType(schema.ast), type)
-  cache.set(ast, type)
+  cache.set(getASTIdentity(schema.ast), type)
+  cache.set(getASTIdentity(ast), type)
   return type
 }
 
 export const toGraphQLArgs = (schema: S.Top): GraphQLFieldConfigArgumentMap => {
   const ast = getObjectAST(schema.ast, "input")
   if (!ast) throw new Error("Schema must be an object type to convert to GraphQL arguments")
-  return buildFields(ast, makeConverter("input")) as GraphQLFieldConfigArgumentMap
+  return buildFields(ast, makeConverter("input"), "input") as GraphQLFieldConfigArgumentMap
 }

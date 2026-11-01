@@ -8,6 +8,10 @@ import {
   GraphQLList,
   GraphQLObjectType,
   GraphQLInputObjectType,
+  GraphQLSchema,
+  getNamedType,
+  graphql,
+  validateSchema,
   isNonNullType,
   isListType,
   isNamedType,
@@ -756,5 +760,64 @@ describe("schema-mapping.ts", () => {
       expect(unwrapNonNull(output.value.type)).toBe(GraphQLFloat)
       expect(unwrapNonNull(args.value.type)).toBe(GraphQLString)
     })
+  })
+})
+
+describe("low-level schema composition", () => {
+  it("gives a tagged schema distinct input and output names in an executable schema", async () => {
+    const User = S.TaggedStruct("User", { id: S.String })
+    const output = toGraphQLType(User)
+    const input = toGraphQLInputType(User)
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          user: {
+            type: output,
+            args: { user: { type: input } },
+            resolve: (_parent, args) => args.user,
+          },
+        },
+      }),
+    })
+
+    expect(validateSchema(schema)).toEqual([])
+    expect(getNamedType(output).name).toBe("User")
+    expect(getNamedType(input).name).toBe("UserInput")
+    const result = await graphql({ schema, source: '{ user(user: {id: "u"}) { id } }' })
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({ user: { id: "u" } })
+  })
+
+  it("composes independently configured object helpers with the same nested schema", async () => {
+    const User = S.TaggedStruct("User", { id: S.String })
+    const A = toGraphQLObjectType("A", S.Struct({ user: User }))
+    const B = toGraphQLObjectType("B", S.Struct({ user: User }))
+    const configuredUser = toGraphQLObjectType("ConfiguredUser", User, {
+      label: { type: GraphQLString, resolve: () => Effect.succeed("custom") },
+    })
+    const schema = new GraphQLSchema({
+      types: [configuredUser],
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: { a: { type: A }, b: { type: B } },
+      }),
+    })
+
+    expect(validateSchema(schema)).toEqual([])
+    const nestedA = getNamedType(A.getFields().user.type)
+    const nestedB = getNamedType(B.getFields().user.type)
+    if (!(nestedA instanceof GraphQLObjectType) || !(nestedB instanceof GraphQLObjectType)) {
+      throw new Error("Expected nested user objects")
+    }
+    expect(nestedA.getFields().label).toBeUndefined()
+    expect(nestedB.getFields().label).toBeUndefined()
+    const result = await graphql({
+      schema,
+      source: "{ a { user { id } } b { user { id } } }",
+      rootValue: { a: { user: { id: "a" } }, b: { user: { id: "b" } } },
+    })
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({ a: { user: { id: "a" } }, b: { user: { id: "b" } } })
   })
 })

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Stream } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import * as S from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 import {
   GraphQLSchema,
   GraphQLObjectType,
@@ -11,9 +12,13 @@ import {
   GraphQLInt,
   DirectiveLocation,
   isNonNullType,
+  getNamedType,
+  GraphQLString,
+  validateSchema,
   printSchema,
 } from "graphql"
 import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
+import { execute } from "../../../src/builder/execute"
 
 describe("schema-builder.ts", () => {
   // ==========================================================================
@@ -907,6 +912,187 @@ describe("schema-builder.ts", () => {
       expect(sdl).toContain("parent: Category")
       // Note: Array elements are nullable by default (matches Effect Schema behavior)
       expect(sdl).toContain("children: [Category]!")
+    })
+  })
+})
+
+describe("schema conversion identity", () => {
+  it("does not register an object's encoded scalar as an output object", async () => {
+    const User = S.String.pipe(
+      S.decodeTo(S.Struct({ id: S.String }), {
+        decode: SchemaGetter.transform((id) => ({ id })),
+        encode: SchemaGetter.transform((user) => user.id),
+      })
+    )
+    const schema = GraphQLSchemaBuilder.empty
+      .objectType({ name: "User", schema: User })
+      .query("user", { type: User, resolve: () => Effect.succeed({ id: "u" }) })
+      .query("text", { type: S.String, resolve: () => Effect.succeed("scalar") })
+      .buildSchema()
+
+    expect(validateSchema(schema)).toEqual([])
+    const userType = schema.getType("User")
+    expect(userType).toBeInstanceOf(GraphQLObjectType)
+    if (!(userType instanceof GraphQLObjectType)) throw new Error("Expected User object")
+    expect(getNamedType(userType.getFields().id.type)).toBe(GraphQLString)
+    const result = await Effect.runPromise(execute(schema, Layer.empty)("{ user { id } text }"))
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({ user: { id: "u" }, text: "scalar" })
+  })
+
+  it("reuses the registered input through recursive fields and query arguments", async () => {
+    interface Person {
+      readonly name: string
+      readonly friends: readonly Person[]
+    }
+    const Person: S.Schema<Person> = S.Struct({
+      name: S.String,
+      friends: S.Array(S.suspend(() => Person)),
+    })
+    const schema = GraphQLSchemaBuilder.empty
+      .inputType({ name: "PersonInput", schema: Person })
+      .query("greet", {
+        type: S.String,
+        args: S.Struct({ person: Person }),
+        resolve: ({ person }) =>
+          Effect.succeed(`${person.name}:${person.friends.map((friend) => friend.name).join(",")}`),
+      })
+      .buildSchema()
+
+    expect(validateSchema(schema)).toEqual([])
+    const input = schema.getType("PersonInput")
+    if (!(input instanceof GraphQLInputObjectType)) throw new Error("Expected PersonInput")
+    expect(getNamedType(input.getFields().friends.type)).toBe(input)
+    expect(getNamedType(schema.getQueryType()!.getFields().greet.args[0].type)).toBe(input)
+    const result = await Effect.runPromise(
+      execute(
+        schema,
+        Layer.empty
+      )('{ greet(person: {name: "Ada", friends: [{name: "Grace", friends: []}]}) }')
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({ greet: "Ada:Grace" })
+  })
+
+  it.each([S.Struct({ id: S.String }), S.TaggedStruct("User", { id: S.String })])(
+    "preserves registered computed fields for optional object keys (%#)",
+    async (User) => {
+      const value = "_tag" in User.fields ? { _tag: "User" as const, id: "u" } : { id: "u" }
+      const schema = GraphQLSchemaBuilder.empty
+        .objectType({ name: "User", schema: User })
+        .field("User", "label", {
+          type: S.String,
+          resolve: () => Effect.succeed("computed"),
+        })
+        .query("wrapper", {
+          type: S.Struct({ user: S.optionalKey(User) }),
+          resolve: () => Effect.succeed({ user: value }),
+        })
+        .buildSchema()
+
+      expect(validateSchema(schema)).toEqual([])
+      const wrapperType = getNamedType(schema.getQueryType()!.getFields().wrapper.type)
+      if (!(wrapperType instanceof GraphQLObjectType)) throw new Error("Expected wrapper")
+      expect(wrapperType.getFields().user.type).toBe(schema.getType("User"))
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)("{ wrapper { user { id label } } }")
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ wrapper: { user: { id: "u", label: "computed" } } })
+    }
+  )
+
+  it("shares an inferred child across registered parents and root fields", async () => {
+    const Child = S.TaggedStruct("Child", { id: S.String })
+    const Parent = S.Struct({ child: Child })
+    const child = { _tag: "Child" as const, id: "c" }
+    const schema = GraphQLSchemaBuilder.empty
+      .objectType({ name: "Parent", schema: Parent })
+      .query("parent", {
+        type: Parent,
+        resolve: () => Effect.succeed({ child }),
+      })
+      .query("child", { type: Child, resolve: () => Effect.succeed(child) })
+      .buildSchema()
+
+    expect(validateSchema(schema)).toEqual([])
+    const parentType = schema.getType("Parent")
+    if (!(parentType instanceof GraphQLObjectType)) throw new Error("Expected Parent")
+    expect(getNamedType(parentType.getFields().child.type)).toBe(
+      schema.getQueryType()!.getFields().child.type
+    )
+    const result = await Effect.runPromise(
+      execute(schema, Layer.empty)("{ parent { child { id } } child { id } }")
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({ parent: { child: { id: "c" } }, child: { id: "c" } })
+  })
+
+  it("preserves optional input registrations without claiming unrelated structural schemas", async () => {
+    const User = S.Struct({ id: S.String })
+    const Other = S.Struct({ id: S.String })
+    const Annotated = User.annotate({ identifier: "Annotated" })
+    const schema = GraphQLSchemaBuilder.empty
+      .inputType({ name: "UserInput", schema: User })
+      .inputType({ name: "OtherInput", schema: Other })
+      .inputType({ name: "AnnotatedInput", schema: Annotated })
+      .query("identify", {
+        type: S.String,
+        args: S.Struct({
+          user: S.optionalKey(User),
+          other: S.optionalKey(Other),
+          annotated: S.optionalKey(Annotated),
+        }),
+        resolve: ({ user, other, annotated }) =>
+          Effect.succeed(`${user?.id}:${other?.id}:${annotated?.id}`),
+      })
+      .buildSchema()
+
+    expect(validateSchema(schema)).toEqual([])
+    const args = schema.getQueryType()!.getFields().identify.args
+    expect(args.find((arg) => arg.name === "user")!.type).toBe(schema.getType("UserInput"))
+    expect(args.find((arg) => arg.name === "other")!.type).toBe(schema.getType("OtherInput"))
+    expect(args.find((arg) => arg.name === "annotated")!.type).toBe(
+      schema.getType("AnnotatedInput")
+    )
+    const result = await Effect.runPromise(
+      execute(
+        schema,
+        Layer.empty
+      )('{ identify(user: {id: "u"}, other: {id: "o"}, annotated: {id: "a"}) }')
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({ identify: "u:o:a" })
+  })
+})
+
+describe("optional interface identity", () => {
+  it("retains the registered interface without conflating a separate structural object", async () => {
+    const Node = S.Struct({ id: S.String })
+    const Other = S.Struct({ id: S.String })
+    const User = S.TaggedStruct("User", { id: S.String })
+    const schema = GraphQLSchemaBuilder.empty
+      .interfaceType({ name: "Node", schema: Node, resolveType: () => "User" })
+      .objectType({ name: "User", schema: User, implements: ["Node"] })
+      .objectType({ name: "Other", schema: Other })
+      .field("User", "label", { type: S.String, resolve: () => Effect.succeed("computed") })
+      .query("wrapper", {
+        type: S.Struct({ node: S.optionalKey(Node), other: S.optionalKey(Other) }),
+        resolve: () => Effect.succeed({ node: { id: "u" }, other: { id: "o" } }),
+      })
+      .buildSchema()
+
+    expect(validateSchema(schema)).toEqual([])
+    const wrapperType = getNamedType(schema.getQueryType()!.getFields().wrapper.type)
+    if (!(wrapperType instanceof GraphQLObjectType)) throw new Error("Expected wrapper")
+    expect(wrapperType.getFields().node.type).toBe(schema.getType("Node"))
+    expect(wrapperType.getFields().other.type).toBe(schema.getType("Other"))
+    const result = await Effect.runPromise(
+      execute(schema, Layer.empty)("{ wrapper { node { id ... on User { label } } other { id } } }")
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({
+      wrapper: { node: { id: "u", label: "computed" }, other: { id: "o" } },
     })
   })
 })

@@ -20,6 +20,8 @@ import {
   toGraphQLType,
   toGraphQLInputType,
   getASTName,
+  getASTView,
+  getASTIdentity,
   getObjectAST,
   isNullableAST,
   isOptionDeclaration,
@@ -59,13 +61,20 @@ export interface TypeConversionContext {
   convertedOutputTypes?: WeakMap<AST.AST, GraphQLOutputType>
 }
 
-/** Index both wire and decoded views: encoding links replace transformation nodes in Effect 4. */
-function indexAST(ast: AST.AST, name: string, index: Map<AST.AST, string>): void {
-  for (const view of [ast, AST.toType(ast), AST.toEncoded(ast)]) {
-    index.set(view, name)
-    if (view._tag === "Declaration" && !isOptionDeclaration(view) && view.typeParameters[0]) {
-      indexAST(view.typeParameters[0], name, index)
-    }
+/** Index only the requested representation; key optionality does not change type identity. */
+function indexAST(
+  original: AST.AST,
+  name: string,
+  index: Map<AST.AST, string>,
+  direction: "output" | "input"
+): void {
+  const ast = getASTView(original, direction)
+  index.set(getASTIdentity(ast), name)
+  // Publicly projected schemas may be supplied as well; project once at registration.
+  const projected = direction === "input" ? AST.toEncoded(original) : AST.toType(original)
+  index.set(getASTIdentity(projected), name)
+  if (ast._tag === "Declaration" && !isOptionDeclaration(ast) && ast.typeParameters[0]) {
+    indexAST(ast.typeParameters[0], name, index, direction)
   }
 }
 
@@ -75,7 +84,7 @@ export function buildReverseLookups(ctx: TypeConversionContext): void {
     ctx.astToTypeName = new Map()
     for (const [name, registration] of ctx.types) {
       ctx.schemaToTypeName.set(registration.schema, name)
-      indexAST(registration.schema.ast, name, ctx.astToTypeName)
+      indexAST(registration.schema.ast, name, ctx.astToTypeName, "output")
     }
   }
   if (!ctx.schemaToInterfaceName) {
@@ -83,7 +92,7 @@ export function buildReverseLookups(ctx: TypeConversionContext): void {
     ctx.astToInterfaceName = new Map()
     for (const [name, registration] of ctx.interfaces) {
       ctx.schemaToInterfaceName.set(registration.schema, name)
-      indexAST(registration.schema.ast, name, ctx.astToInterfaceName)
+      indexAST(registration.schema.ast, name, ctx.astToInterfaceName, "output")
     }
   }
   if (!ctx.schemaToInputName) {
@@ -152,16 +161,17 @@ export function toGraphQLTypeWithRegistry(
   buildReverseLookups(ctx)
   const converted = (ctx.convertedOutputTypes ??= new WeakMap())
   const convert = (original: AST.AST): GraphQLOutputType => {
-    const ast = AST.toType(original)
-    const name = ctx.astToTypeName?.get(original) ?? ctx.astToTypeName?.get(ast)
+    const ast = getASTView(original, "output")
+    const identity = getASTIdentity(ast)
+    const name = ctx.astToTypeName?.get(identity)
     const registered = name ? ctx.typeRegistry.get(name) : undefined
     if (registered) return registered
-    const interfaceName = ctx.astToInterfaceName?.get(original) ?? ctx.astToInterfaceName?.get(ast)
+    const interfaceName = ctx.astToInterfaceName?.get(identity)
     const registeredInterface = interfaceName ? ctx.interfaceRegistry.get(interfaceName) : undefined
     if (registeredInterface) return registeredInterface
     const enumType = findEnum(ast, ctx.enumRegistry, ctx)
     if (enumType) return enumType
-    const cached = converted.get(ast)
+    const cached = converted.get(identity)
     if (cached) return cached
     switch (ast._tag) {
       case "Objects": {
@@ -169,7 +179,7 @@ export function toGraphQLTypeWithRegistry(
           name: getASTName(original) ?? `Object_${Math.random().toString(36).slice(2, 11)}`,
           fields: () => schemaToFields(S.make<S.Top>(ast), ctx),
         })
-        converted.set(ast, type)
+        converted.set(identity, type)
         return type
       }
       case "Declaration":
@@ -185,10 +195,7 @@ export function toGraphQLTypeWithRegistry(
       case "Union": {
         const members = nonNullMembers(ast)
         const names = members.map(
-          (member) =>
-            ctx.astToTypeName?.get(member) ??
-            ctx.astToTypeName?.get(AST.toType(member)) ??
-            getASTName(member)
+          (member) => ctx.astToTypeName?.get(getASTIdentity(member)) ?? getASTName(member)
         )
         if (names.every((name): name is string => name !== undefined)) {
           const sorted = names.sort()
@@ -246,7 +253,7 @@ export function buildInputTypeLookupCache(
   }
   for (const [name, registration] of inputs) {
     cache.schemaToInputName!.set(registration.schema, name)
-    indexAST(registration.schema.ast, name, cache.astToInputName!)
+    indexAST(registration.schema.ast, name, cache.astToInputName!, "input")
   }
   for (const [name, registration] of enums) {
     cache.enumSortedValues!.set(name, [...registration.values].sort())
@@ -265,9 +272,6 @@ export function toGraphQLInputTypeWithRegistry(
 ): GraphQLInputType {
   const converted = (cache.convertedInputTypes ??= new WeakMap())
   const convert = (original: AST.AST): GraphQLInputType => {
-    const name = cache.astToInputName?.get(original)
-    const registered = name ? inputRegistry.get(name) : undefined
-    if (registered) return registered
     if (
       isOptionDeclaration(original) &&
       original._tag === "Declaration" &&
@@ -276,13 +280,14 @@ export function toGraphQLInputTypeWithRegistry(
     ) {
       return convert(original.typeParameters[0])
     }
-    const ast = AST.toEncoded(original)
-    const encodedName = cache.astToInputName?.get(ast)
+    const ast = getASTView(original, "input")
+    const identity = getASTIdentity(ast)
+    const encodedName = cache.astToInputName?.get(identity)
     const registeredEncoded = encodedName ? inputRegistry.get(encodedName) : undefined
     if (registeredEncoded) return registeredEncoded
     const enumType = findEnum(ast, enumRegistry, cache)
     if (enumType) return enumType
-    const cached = converted.get(ast)
+    const cached = converted.get(identity)
     if (cached) return cached
     switch (ast._tag) {
       case "Objects": {
@@ -301,7 +306,7 @@ export function toGraphQLInputTypeWithRegistry(
               cache
             ),
         })
-        converted.set(ast, type)
+        converted.set(identity, type)
         return type
       }
       case "Suspend":
@@ -345,7 +350,10 @@ export function schemaToInputFields(
       cache
     )
     fields[String(field.name)] = {
-      type: isNullableAST(field.type) || isNonNullType(type) ? type : getNonNull(type),
+      type:
+        isNullableAST(getASTView(field.type, "input")) || isNonNullType(type)
+          ? type
+          : getNonNull(type),
     }
   }
   return fields

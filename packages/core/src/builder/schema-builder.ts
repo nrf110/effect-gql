@@ -43,6 +43,7 @@ import {
   buildReverseLookups,
   buildInputTypeLookupCache,
   type TypeConversionContext,
+  type InputTypeLookupCache,
 } from "./type-registry"
 import {
   buildField,
@@ -661,39 +662,35 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    * all registered input types are already available in the inputRegistry.
    */
   buildSchema(): GraphQLSchema {
-    // Phase 1: Build foundational registries first
     const enumRegistry = this.buildEnumRegistry()
-    const inputRegistry = this.buildInputRegistry(enumRegistry)
-
-    // Build cache once for all operations that need input type lookups
     const inputTypeLookupCache = buildInputTypeLookupCache(this.state.inputs, this.state.enums)
+    const inputRegistry = this.buildInputRegistry(enumRegistry, inputTypeLookupCache)
+    const ctx: TypeConversionContext = {
+      types: this.state.types,
+      interfaces: this.state.interfaces,
+      enums: this.state.enums,
+      unions: this.state.unions,
+      inputs: this.state.inputs,
+      typeRegistry: new Map(),
+      interfaceRegistry: new Map(),
+      enumRegistry,
+      unionRegistry: new Map(),
+      inputRegistry,
+      convertedOutputTypes: new WeakMap(),
+    }
+    buildReverseLookups(ctx)
 
-    // Phase 2: Build types that may reference inputs
     const directiveRegistry = this.buildDirectiveRegistry(
       enumRegistry,
       inputRegistry,
       inputTypeLookupCache
     )
-    const interfaceRegistry = this.buildInterfaceRegistry(
-      enumRegistry,
-      inputRegistry,
-      inputTypeLookupCache
-    )
+    const interfaceRegistry = this.buildInterfaceRegistry(ctx)
     const { typeRegistry, unionRegistry } = this.buildTypeAndUnionRegistries(
-      enumRegistry,
-      interfaceRegistry,
-      inputRegistry,
+      ctx,
       inputTypeLookupCache
     )
-
-    // Build field builder context for root operations
-    const fieldCtx = this.createFieldBuilderContext(
-      typeRegistry,
-      interfaceRegistry,
-      enumRegistry,
-      unionRegistry,
-      inputRegistry
-    )
+    const fieldCtx = this.createFieldBuilderContext(ctx, inputTypeLookupCache)
 
     // Build root type fields
     const queryFields = this.buildQueryFields(fieldCtx)
@@ -717,7 +714,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   private buildDirectiveRegistry(
     enumRegistry: Map<string, GraphQLEnumType>,
     inputRegistry: Map<string, GraphQLInputObjectType>,
-    cache: ReturnType<typeof buildInputTypeLookupCache>
+    cache: InputTypeLookupCache
   ): Map<string, GraphQLDirective> {
     const registry = new Map<string, GraphQLDirective>()
 
@@ -766,12 +763,10 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   }
 
   private buildInputRegistry(
-    enumRegistry: Map<string, GraphQLEnumType>
+    enumRegistry: Map<string, GraphQLEnumType>,
+    cache: InputTypeLookupCache
   ): Map<string, GraphQLInputObjectType> {
     const registry = new Map<string, GraphQLInputObjectType>()
-
-    // Build cache once for O(1) lookups across all input types
-    const cache = buildInputTypeLookupCache(this.state.inputs, this.state.enums)
 
     for (const [name, reg] of this.state.inputs) {
       const inputType = new GraphQLInputObjectType({
@@ -795,31 +790,9 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   }
 
   private buildInterfaceRegistry(
-    enumRegistry: Map<string, GraphQLEnumType>,
-    inputRegistry: Map<string, GraphQLInputObjectType>,
-    _cache: ReturnType<typeof buildInputTypeLookupCache>
+    sharedCtx: TypeConversionContext
   ): Map<string, GraphQLInterfaceType> {
-    const registry = new Map<string, GraphQLInterfaceType>()
-    // We need type and union registries for interface fields, but they're built later
-    // Use empty maps for now - interfaces shouldn't reference object types directly
-    const typeRegistry = new Map<string, GraphQLObjectType>()
-    const unionRegistry = new Map<string, GraphQLUnionType>()
-
-    // Create shared TypeConversionContext once for all interface field builders
-    const sharedCtx: TypeConversionContext = {
-      types: this.state.types,
-      interfaces: this.state.interfaces,
-      enums: this.state.enums,
-      unions: this.state.unions,
-      inputs: this.state.inputs,
-      typeRegistry,
-      interfaceRegistry: registry,
-      enumRegistry,
-      unionRegistry,
-      inputRegistry,
-    }
-    // Pre-build reverse lookup maps once
-    buildReverseLookups(sharedCtx)
+    const registry = sharedCtx.interfaceRegistry
 
     for (const [name, reg] of this.state.interfaces) {
       const interfaceType = new GraphQLInterfaceType({
@@ -835,32 +808,13 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   }
 
   private buildTypeAndUnionRegistries(
-    enumRegistry: Map<string, GraphQLEnumType>,
-    interfaceRegistry: Map<string, GraphQLInterfaceType>,
-    inputRegistry: Map<string, GraphQLInputObjectType>,
-    inputTypeLookupCache: ReturnType<typeof buildInputTypeLookupCache>
+    sharedCtx: TypeConversionContext,
+    inputTypeLookupCache: InputTypeLookupCache
   ): {
     typeRegistry: Map<string, GraphQLObjectType>
     unionRegistry: Map<string, GraphQLUnionType>
   } {
-    const typeRegistry = new Map<string, GraphQLObjectType>()
-    const unionRegistry = new Map<string, GraphQLUnionType>()
-
-    // Create shared TypeConversionContext once and reuse for all lazy field builders
-    const sharedCtx: TypeConversionContext = {
-      types: this.state.types,
-      interfaces: this.state.interfaces,
-      enums: this.state.enums,
-      unions: this.state.unions,
-      inputs: this.state.inputs,
-      typeRegistry,
-      interfaceRegistry,
-      enumRegistry,
-      unionRegistry,
-      inputRegistry,
-    }
-    // Pre-build reverse lookup maps once
-    buildReverseLookups(sharedCtx)
+    const { typeRegistry, unionRegistry, interfaceRegistry } = sharedCtx
 
     // Create shared FieldBuilderContext for additional fields
     // IMPORTANT: Use the real inputRegistry so that args with registered input types
@@ -913,26 +867,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   }
 
   private createFieldBuilderContext(
-    typeRegistry: Map<string, GraphQLObjectType>,
-    interfaceRegistry: Map<string, GraphQLInterfaceType>,
-    enumRegistry: Map<string, GraphQLEnumType>,
-    unionRegistry: Map<string, GraphQLUnionType>,
-    inputRegistry: Map<string, GraphQLInputObjectType>
+    ctx: TypeConversionContext,
+    inputTypeLookupCache: InputTypeLookupCache
   ): FieldBuilderContext {
-    // Build cache once for O(1) input type lookups across all fields
-    const inputTypeLookupCache = buildInputTypeLookupCache(this.state.inputs, this.state.enums)
-
     return {
-      types: this.state.types,
-      interfaces: this.state.interfaces,
-      enums: this.state.enums,
-      unions: this.state.unions,
-      inputs: this.state.inputs,
-      typeRegistry,
-      interfaceRegistry,
-      enumRegistry,
-      unionRegistry,
-      inputRegistry,
+      ...ctx,
       directiveRegistrations: this.state.directives,
       middlewares: this.state.middlewares,
       inputTypeLookupCache,
