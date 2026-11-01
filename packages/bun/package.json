@@ -29,6 +29,9 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest"
   },
+  "engines": {
+    "bun": ">=1.4.2"
+  },
   "peerDependencies": {
     "@effect-gql/core": "^2.0.0",
     "@effect/platform-bun": "^4.1.1",

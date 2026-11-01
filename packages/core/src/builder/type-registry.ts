@@ -68,13 +68,12 @@ function indexAST(
   index: Map<AST.AST, string>,
   direction: "output" | "input"
 ): void {
-  const ast = getASTView(original, direction)
-  index.set(getASTIdentity(ast), name)
-  // Publicly projected schemas may be supplied as well; project once at registration.
   const projected = direction === "input" ? AST.toEncoded(original) : AST.toType(original)
-  index.set(getASTIdentity(projected), name)
-  if (ast._tag === "Declaration" && !isOptionDeclaration(ast) && ast.typeParameters[0]) {
-    indexAST(ast.typeParameters[0], name, index, direction)
+  let ast = getASTView(projected, direction)
+  index.set(getASTIdentity(ast), name)
+  while (ast._tag === "Declaration" && !isOptionDeclaration(ast) && ast.typeParameters[0]) {
+    ast = ast.typeParameters[0]
+    index.set(getASTIdentity(ast), name)
   }
 }
 
@@ -159,6 +158,10 @@ export function toGraphQLTypeWithRegistry(
   ctx: TypeConversionContext
 ): GraphQLOutputType {
   buildReverseLookups(ctx)
+  return makeOutputConverter(ctx)(AST.toType(schema.ast))
+}
+
+function makeOutputConverter(ctx: TypeConversionContext): (ast: AST.AST) => GraphQLOutputType {
   const converted = (ctx.convertedOutputTypes ??= new WeakMap())
   const convert = (original: AST.AST): GraphQLOutputType => {
     const ast = getASTView(original, "output")
@@ -177,7 +180,7 @@ export function toGraphQLTypeWithRegistry(
       case "Objects": {
         const type = new GraphQLObjectType({
           name: getASTName(original) ?? `Object_${Math.random().toString(36).slice(2, 11)}`,
-          fields: () => schemaToFields(S.make<S.Top>(ast), ctx),
+          fields: () => outputFields(ast, convert),
         })
         converted.set(identity, type)
         return type
@@ -214,18 +217,26 @@ export function toGraphQLTypeWithRegistry(
     }
     return toGraphQLType(S.make<S.Top>(ast))
   }
-  return convert(schema.ast)
+  return convert
 }
 
 export function schemaToFields(
   schema: S.Top,
   ctx: TypeConversionContext
 ): GraphQLFieldConfigMap<unknown, unknown> {
-  const ast = getObjectAST(schema.ast, "output")
+  buildReverseLookups(ctx)
+  const ast = getObjectAST(AST.toType(schema.ast), "output")
+  return ast ? outputFields(ast, makeOutputConverter(ctx)) : {}
+}
+
+function outputFields(
+  ast: AST.Objects,
+  convert: (ast: AST.AST) => GraphQLOutputType
+): GraphQLFieldConfigMap<unknown, unknown> {
   const fields: GraphQLFieldConfigMap<unknown, unknown> = {}
-  for (const field of ast?.propertySignatures ?? []) {
+  for (const field of ast.propertySignatures) {
     if (field.name === "_tag") continue
-    const type = toGraphQLTypeWithRegistry(S.make<S.Top>(field.type), ctx)
+    const type = convert(field.type)
     fields[String(field.name)] = {
       type: isNullableAST(field.type) || isNonNullType(type) ? type : getNonNull(type),
     }
@@ -270,6 +281,14 @@ export function toGraphQLInputTypeWithRegistry(
   enums: Map<string, EnumRegistration>,
   cache: InputTypeLookupCache = buildInputTypeLookupCache(inputs, enums)
 ): GraphQLInputType {
+  return makeInputConverter(enumRegistry, inputRegistry, cache)(AST.toEncoded(schema.ast))
+}
+
+function makeInputConverter(
+  enumRegistry: Map<string, GraphQLEnumType>,
+  inputRegistry: Map<string, GraphQLInputObjectType>,
+  cache: InputTypeLookupCache
+): (ast: AST.AST) => GraphQLInputType {
   const converted = (cache.convertedInputTypes ??= new WeakMap())
   const convert = (original: AST.AST): GraphQLInputType => {
     if (
@@ -296,15 +315,7 @@ export function toGraphQLInputTypeWithRegistry(
           name: schemaName
             ? `${schemaName}Input`
             : `Input_${Math.random().toString(36).slice(2, 11)}`,
-          fields: () =>
-            schemaToInputFields(
-              S.make<S.Top>(ast),
-              enumRegistry,
-              inputRegistry,
-              inputs,
-              enums,
-              cache
-            ),
+          fields: () => inputFields(ast, convert),
         })
         converted.set(identity, type)
         return type
@@ -326,7 +337,7 @@ export function toGraphQLInputTypeWithRegistry(
     }
     return toGraphQLInputType(S.make<S.Top>(ast))
   }
-  return convert(schema.ast)
+  return convert
 }
 
 export function schemaToInputFields(
@@ -337,18 +348,18 @@ export function schemaToInputFields(
   enums: Map<string, EnumRegistration>,
   cache: InputTypeLookupCache = buildInputTypeLookupCache(inputs, enums)
 ): GraphQLInputFieldConfigMap {
-  const ast = getObjectAST(schema.ast, "input")
+  const ast = getObjectAST(AST.toEncoded(schema.ast), "input")
+  return ast ? inputFields(ast, makeInputConverter(enumRegistry, inputRegistry, cache)) : {}
+}
+
+function inputFields(
+  ast: AST.Objects,
+  convert: (ast: AST.AST) => GraphQLInputType
+): GraphQLInputFieldConfigMap {
   const fields: GraphQLInputFieldConfigMap = {}
-  for (const field of ast?.propertySignatures ?? []) {
+  for (const field of ast.propertySignatures) {
     if (field.name === "_tag") continue
-    const type = toGraphQLInputTypeWithRegistry(
-      S.make<S.Top>(field.type),
-      enumRegistry,
-      inputRegistry,
-      inputs,
-      enums,
-      cache
-    )
+    const type = convert(field.type)
     fields[String(field.name)] = {
       type:
         isNullableAST(getASTView(field.type, "input")) || isNonNullType(type)

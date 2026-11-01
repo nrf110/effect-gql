@@ -7,6 +7,12 @@ import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
 
 Effect GQL supports real-time subscriptions over two transport protocols: **WebSocket** (graphql-ws) and **Server-Sent Events** (graphql-sse). Both transports use Effect's `Stream` type for subscriptions, providing a natural way to emit values over time.
 
+Both transports retain the ambient Effect context when their connection or
+subscription handler runs. Log annotations and tracing spans remain available
+in lifecycle hooks, resolvers, and Effects run with
+`Effect.runPromiseWith(ctx.services)`. Services supplied by the explicit
+connection/subscription layer take precedence over ambient services.
+
 ## Overview
 
 GraphQL subscriptions enable clients to receive live updates when data changes:
@@ -334,6 +340,13 @@ export default {
 The SSE `onComplete` callback is constructed and its Effect runs only when the
 subscription stream finalizes, including cancellation. Request-scoped services
 remain available to the hook and are released afterward.
+
+Reject a connection by returning `Effect.fail(...)` or throwing from the
+`onConnect` callback. Both send an `error` event with the `CONNECTION_REJECTED`
+code, followed by `complete`. If a subscription result cannot be serialized
+(for example, a custom scalar returns a BigInt or circular object), the stream
+sends `SUBSCRIPTION_ERROR` followed by `complete`, closes its iterator, and runs
+`onComplete` before releasing request-scoped services.
 
 ```typescript
 const sseHandler = createSSEHandler(schema, Layer.empty, {

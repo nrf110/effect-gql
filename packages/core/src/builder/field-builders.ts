@@ -1,5 +1,6 @@
 import { Effect, Option, Stream } from "effect"
 import * as S from "effect/Schema"
+import * as AST from "effect/SchemaAST"
 import { GraphQLFieldConfig, GraphQLResolveInfo } from "graphql"
 import type {
   FieldRegistration,
@@ -36,6 +37,67 @@ function encodeResolverOutput(
     )
   }
   return Effect.succeed(value)
+}
+
+/**
+ * GraphQL hides discriminator fields. Restore only encoded literal `_tag` values
+ * before schema decoding, without inventing omitted inputs or decoding defaults.
+ */
+function restoreHiddenInputTags(ast: AST.AST, value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value
+  switch (ast._tag) {
+    case "Suspend":
+      return restoreHiddenInputTags(ast.thunk(), value)
+    case "Declaration":
+      return ast.typeParameters[0] ? restoreHiddenInputTags(ast.typeParameters[0], value) : value
+    case "Union": {
+      // Input unions expose their first non-null member in GraphQL.
+      const member = ast.types.find(
+        (type) => type._tag !== "Null" && type._tag !== "Undefined" && type._tag !== "Void"
+      )
+      return member ? restoreHiddenInputTags(member, value) : value
+    }
+    case "Arrays": {
+      if (!Array.isArray(value)) return value
+      let restored = value
+      for (let index = 0; index < value.length; index++) {
+        const element = ast.elements[index] ?? ast.rest[0]
+        if (!element) continue
+        const item = restoreHiddenInputTags(element, value[index])
+        if (item !== value[index]) {
+          if (restored === value) restored = value.slice()
+          restored[index] = item
+        }
+      }
+      return restored
+    }
+    case "Objects": {
+      if (Array.isArray(value)) return value
+      const record = value as Record<PropertyKey, unknown>
+      let restored = record
+      for (const field of ast.propertySignatures) {
+        const present = Object.hasOwn(record, field.name)
+        if (!present && (field.name !== "_tag" || field.type._tag !== "Literal")) continue
+        const item =
+          !present && field.type._tag === "Literal"
+            ? field.type.literal
+            : restoreHiddenInputTags(field.type, record[field.name])
+        if (!present || item !== record[field.name]) {
+          if (restored === record) restored = { ...record }
+          restored[field.name] = item
+        }
+      }
+      return restored
+    }
+    default:
+      return value
+  }
+}
+
+function makeArgsDecoder(schema: S.Top) {
+  const encoded = AST.toEncoded(schema.ast)
+  const decode = S.decodeUnknownEffect(schema)
+  return (args: unknown) => decode(restoreHiddenInputTags(encoded, args))
 }
 
 /**
@@ -108,6 +170,7 @@ export function buildField(
   config: FieldRegistration,
   ctx: FieldBuilderContext
 ): GraphQLFieldConfig<any, any> {
+  const decodeArgs = config.args ? makeArgsDecoder(config.args) : undefined
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
     resolve: async (
@@ -116,15 +179,19 @@ export function buildField(
       context: GraphQLEffectContext<any>,
       info: GraphQLResolveInfo
     ) => {
+      const decodedArgs = decodeArgs
+        ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
+        : args
+
       // Apply directives first (per-field, explicit)
       let effect = applyDirectives(
-        config.resolve(args),
+        config.resolve(decodedArgs),
         config.directives,
         ctx.directiveRegistrations
       )
 
       // Apply middleware (global/pattern-matched)
-      const middlewareContext: MiddlewareContext = { parent: _parent, args, info }
+      const middlewareContext: MiddlewareContext = { parent: _parent, args: decodedArgs, info }
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       // Execute the resolver
@@ -161,18 +228,23 @@ export function buildObjectField(
   config: ObjectFieldRegistration,
   ctx: FieldBuilderContext
 ): GraphQLFieldConfig<any, any> {
+  const decodeArgs = config.args ? makeArgsDecoder(config.args) : undefined
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
     resolve: async (parent, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
+      const decodedArgs = decodeArgs
+        ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
+        : args
+
       // Apply directives first (per-field, explicit)
       let effect = applyDirectives(
-        config.resolve(parent, args),
+        config.resolve(parent, decodedArgs),
         config.directives,
         ctx.directiveRegistrations
       )
 
       // Apply middleware (global/pattern-matched)
-      const middlewareContext: MiddlewareContext = { parent, args, info }
+      const middlewareContext: MiddlewareContext = { parent, args: decodedArgs, info }
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       // Execute the resolver
@@ -215,6 +287,7 @@ export function buildSubscriptionField(
   config: SubscriptionFieldRegistration,
   ctx: FieldBuilderContext
 ): GraphQLFieldConfig<any, any> {
+  const decodeArgs = config.args ? makeArgsDecoder(config.args) : undefined
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
 
@@ -225,8 +298,12 @@ export function buildSubscriptionField(
       context: GraphQLEffectContext<any>,
       info: GraphQLResolveInfo
     ) => {
+      const decodedArgs = decodeArgs
+        ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
+        : args
+
       // Get the Stream from the subscribe Effect
-      let subscribeEffect = config.subscribe(args)
+      let subscribeEffect = config.subscribe(decodedArgs)
 
       // Apply directives to the subscribe effect
       subscribeEffect = applyDirectives(
@@ -236,7 +313,7 @@ export function buildSubscriptionField(
       ) as any
 
       // Apply middleware to the subscribe effect
-      const middlewareContext: MiddlewareContext = { parent: _parent, args, info }
+      const middlewareContext: MiddlewareContext = { parent: _parent, args: decodedArgs, info }
       subscribeEffect = applyMiddleware(subscribeEffect, middlewareContext, ctx.middlewares) as any
 
       const stream = await Effect.runPromiseWith(context.services)(subscribeEffect)
@@ -248,10 +325,14 @@ export function buildSubscriptionField(
     // If no custom resolve is provided, encode and return the payload directly
     resolve: config.resolve
       ? async (value, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
-          let effect = config.resolve!(value, args)
+          const decodedArgs = decodeArgs
+            ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
+            : args
+
+          let effect = config.resolve!(value, decodedArgs)
 
           // Apply middleware to the resolve effect
-          const middlewareContext: MiddlewareContext = { parent: value, args, info }
+          const middlewareContext: MiddlewareContext = { parent: value, args: decodedArgs, info }
           effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
           // Execute the resolver

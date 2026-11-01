@@ -143,7 +143,7 @@ export const generatePackageJson = (ctx: TemplateContext): string => {
     version: "0.0.1",
     private: true,
     type: "module",
-    ...(ctx.serverType === "bun" ? {} : { engines: { node: ">=22.19.0" } }),
+    engines: ctx.serverType === "bun" ? { bun: ">=1.4.2" } : { node: ">=22.19.0" },
     scripts: getScripts(ctx.serverType),
     dependencies: deps.dependencies,
     devDependencies: deps.devDependencies,

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Layer, Stream, Queue, Deferred, Fiber, Context } from "effect"
+import { EventEmitter } from "node:events"
+import { Effect, Layer, Stream, Queue, Deferred, Fiber, Context, References } from "effect"
 import {
   GraphQLSchema,
   GraphQLObjectType,
@@ -8,6 +9,7 @@ import {
   GraphQLNonNull,
 } from "graphql"
 import { makeGraphQLWSHandler } from "../../../src/server/ws-adapter"
+import { toEffectWebSocketFromWs, type WsWebSocket } from "../../../src/server/ws-utils"
 import type { EffectWebSocket, WebSocketError, CloseEvent } from "../../../src/server/ws-types"
 
 /**
@@ -785,6 +787,140 @@ describe("ws-adapter.ts", () => {
 
       closeConnection(1000, "Done")
       await Effect.runPromise(Fiber.join(fiber))
+    })
+  })
+  describe("ambient connection context", () => {
+    it("preserves annotations, spans, and explicit services through the graphql-ws protocol", async () => {
+      const Setting = Context.Service<string>("ws/AnnotationSetting")
+      const observations: Array<{
+        phase: string
+        connectionId: unknown
+        span: string
+        setting: string
+      }> = []
+      const observe = (phase: string) =>
+        Effect.gen(function* () {
+          observations.push({
+            phase,
+            connectionId: (yield* References.CurrentLogAnnotations).connectionId,
+            span: (yield* Effect.currentSpan.pipe(Effect.orDie)).name,
+            setting: yield* Setting,
+          })
+        })
+      const layer = Layer.effect(
+        Setting,
+        observe("layer").pipe(Effect.as("explicit"), Effect.provideService(Setting, "building"))
+      )
+      const schema = createTestSchema()
+      const mock = createMockSocket()
+      const completed = Effect.runSync(Deferred.make<void>())
+      const acknowledged = Effect.runSync(Deferred.make<void>())
+      const handler = makeGraphQLWSHandler(schema, layer, {
+        onConnect: () => observe("connect").pipe(Effect.as(true)),
+        onDisconnect: (ctx) =>
+          observe("disconnect").pipe(
+            Effect.andThen(
+              Effect.promise(() => Effect.runPromiseWith(ctx.services)(observe("detached")))
+            ),
+            Effect.andThen(Deferred.succeed(completed, undefined)),
+            Effect.asVoid
+          ),
+      })
+      const socket: EffectWebSocket = {
+        ...mock.socket,
+        send: (message) =>
+          mock.socket
+            .send(message)
+            .pipe(
+              Effect.andThen(
+                JSON.parse(message).type === "connection_ack"
+                  ? Deferred.succeed(acknowledged, undefined)
+                  : Effect.void
+              ),
+              Effect.asVoid
+            ),
+      }
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkChild(
+            handler(socket).pipe(
+              Effect.provideService(Setting, "ambient"),
+              Effect.annotateLogs("connectionId", "ws-connection"),
+              Effect.withSpan("ws-connection")
+            )
+          )
+          yield* Queue.offer(mock.messageQueue, JSON.stringify({ type: "connection_init" }))
+          yield* Deferred.await(acknowledged)
+          yield* Deferred.succeed(mock.closedDeferred, { code: 1000, reason: "Done" })
+          yield* Deferred.await(completed)
+          yield* Fiber.join(fiber)
+        }).pipe(Effect.scoped)
+      )
+
+      expect(mock.sentMessages.map((message) => JSON.parse(message))).toEqual([
+        { type: "connection_ack" },
+      ])
+      expect(observations).toEqual(
+        ["layer", "connect", "disconnect", "detached"].map((phase) => ({
+          phase,
+          connectionId: "ws-connection",
+          span: "ws-connection",
+          setting: phase === "layer" ? "building" : "explicit",
+        }))
+      )
+    })
+  })
+
+  describe("ws message stream completion", () => {
+    class TestSocket extends EventEmitter implements WsWebSocket {
+      protocol = "graphql-transport-ws"
+      readyState = 1
+      send(_data: string, callback?: (error?: Error) => void): void {
+        callback?.()
+      }
+      close(code = 1000, reason = ""): void {
+        this.readyState = 3
+        this.emit("close", code, Buffer.from(reason))
+      }
+    }
+
+    it("drains queued messages and succeeds on normal code 1000 closure", async () => {
+      const ws = new TestSocket()
+      const ready = new Promise<void>((resolve) => {
+        ws.on("newListener", (event) => {
+          if (event === "close") resolve()
+        })
+      })
+      const result = Effect.runPromise(Stream.runCollect(toEffectWebSocketFromWs(ws).messages))
+      await ready
+      ws.emit("message", Buffer.from("first"))
+      ws.emit("message", "second")
+      ws.close(1000, "Done")
+
+      expect(await result).toEqual(["first", "second"])
+      expect(ws.listenerCount("message")).toBe(0)
+      expect(ws.listenerCount("close")).toBe(0)
+      expect(ws.listenerCount("error")).toBe(0)
+    })
+
+    it("fails with the socket error instead of silently completing", async () => {
+      const ws = new TestSocket()
+      const ready = new Promise<void>((resolve) => {
+        ws.on("newListener", (event) => {
+          if (event === "close") resolve()
+        })
+      })
+      const result = Effect.runPromise(
+        Stream.runCollect(toEffectWebSocketFromWs(ws).messages).pipe(Effect.flip)
+      )
+      await ready
+      const failure = new Error("Connection reset")
+      ws.emit("error", failure)
+
+      expect(await result).toMatchObject({ _tag: "WebSocketError", cause: failure })
+      expect(ws.listenerCount("message")).toBe(0)
+      expect(ws.listenerCount("close")).toBe(0)
+      expect(ws.listenerCount("error")).toBe(0)
     })
   })
 })

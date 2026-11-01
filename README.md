@@ -48,6 +48,8 @@ matching `@effect/platform-node` or `@effect/platform-bun` **4.1.1** release.
 HTTP APIs are included in `effect/http`; do not install `@effect/platform`.
 Node.js deployments require **Node.js 22.19.0 or later**, matching the runtime
 requirement of `@effect/platform-node` 4.1.1.
+Bun deployments require **Bun 1.4.2 or later**. `@effect-gql/bun` rejects older
+runtimes because rejected WebSocket connections can prevent server shutdown.
 
 
 ### Migrating from Effect 3

@@ -1,11 +1,16 @@
 import { describe, it, expect } from "vitest"
 import { Context, Effect, Stream, Option } from "effect"
 import * as S from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 import {
   GraphQLObjectType,
   GraphQLEnumType,
   GraphQLInputObjectType,
   GraphQLString,
+  GraphQLSchema,
+  graphql,
+  parse,
+  subscribe,
   isNonNullType,
   type GraphQLResolveInfo,
 } from "graphql"
@@ -42,6 +47,314 @@ const createSimpleContext = (): GraphQLEffectContext<never> => ({
 })
 
 describe("field-builders.ts", () => {
+  describe("decoded GraphQL arguments", () => {
+    const DecodeOffset = Context.Service<number>("field-builders/DecodeOffset")
+    const argsSchema = S.Struct({
+      amount: S.NumberFromString.pipe(
+        S.check(S.isFinite()),
+        S.decodeTo(S.Number, {
+          decode: SchemaGetter.transformEffect((amount) =>
+            Effect.map(DecodeOffset, (offset) => amount + offset)
+          ),
+          encode: SchemaGetter.transform((amount) => amount),
+        }),
+        S.withDecodingDefault(Effect.succeed("20"))
+      ),
+      label: S.optional(S.String),
+    })
+    const contextValue = { services: Context.make(DecodeOffset, 1) }
+
+    it.each(["query", "mutation", "object"] as const)(
+      "decodes explicit and omitted %s arguments before callbacks and middleware",
+      async (kind) => {
+        const ctx = createFieldBuilderContext()
+        const observed: unknown[] = []
+        const order: string[] = []
+        ctx.directiveRegistrations.set("trace", {
+          name: "trace",
+          locations: ["FIELD_DEFINITION"],
+          apply: () => (effect) =>
+            Effect.suspend(() => {
+              order.push("directive")
+              return effect
+            }),
+        })
+        ctx.middlewares = [
+          {
+            name: "trace",
+            apply: (effect, context) => {
+              observed.push(context.args)
+              return Effect.suspend(() => {
+                order.push("middleware")
+                return effect
+              })
+            },
+          },
+        ]
+        let calls = 0
+        const resolve = (args: S.Schema.Type<typeof argsSchema>) => {
+          calls++
+          return Effect.sync(() => {
+            order.push("resolver")
+            return args.amount + args.amount
+          })
+        }
+        const registration = {
+          type: S.Number,
+          args: argsSchema,
+          directives: [{ name: "trace" }],
+          resolve,
+        }
+        const field =
+          kind === "object"
+            ? buildObjectField(
+                {
+                  ...registration,
+                  resolve: (_parent: unknown, args: S.Schema.Type<typeof argsSchema>) =>
+                    resolve(args),
+                },
+                ctx
+              )
+            : buildField(registration, ctx)
+        const fields = { doubled: field }
+        const query = new GraphQLObjectType({
+          name: "Query",
+          fields:
+            kind === "object"
+              ? {
+                  item: {
+                    type: new GraphQLObjectType({ name: "Item", fields }),
+                    resolve: () => ({}),
+                  },
+                }
+              : kind === "mutation"
+                ? { ready: { type: GraphQLString, resolve: () => "ready" } }
+                : fields,
+        })
+        const schema = new GraphQLSchema({
+          query,
+          mutation:
+            kind === "mutation" ? new GraphQLObjectType({ name: "Mutation", fields }) : undefined,
+        })
+        const operation = (argumentsText: string) =>
+          kind === "object"
+            ? `{ item { doubled${argumentsText} } }`
+            : `${kind} { doubled${argumentsText} }`
+
+        for (const argumentsText of ['(amount: "20")', ""]) {
+          const result = await graphql({ schema, source: operation(argumentsText), contextValue })
+          expect(result.errors).toBeUndefined()
+          expect(result.data).toEqual(
+            kind === "object" ? { item: { doubled: 42 } } : { doubled: 42 }
+          )
+        }
+        expect(calls).toBe(2)
+        expect(observed).toEqual([{ amount: 21 }, { amount: 21 }])
+        expect(order).toEqual([
+          "middleware",
+          "directive",
+          "resolver",
+          "middleware",
+          "directive",
+          "resolver",
+        ])
+
+        const invalid = await graphql({
+          schema,
+          source: operation('(amount: "not-a-number")'),
+          contextValue,
+        })
+        expect(invalid.errors?.[0].path).toEqual(
+          kind === "object" ? ["item", "doubled"] : ["doubled"]
+        )
+        expect(calls).toBe(2)
+        expect(observed).toEqual([{ amount: 21 }, { amount: 21 }])
+      }
+    )
+
+    it("decodes transformations on the entire argument object", async () => {
+      const wholeArgs = S.Struct({ amount: S.NumberFromString }).pipe(
+        S.decodeTo(S.Struct({ total: S.Number }), {
+          decode: SchemaGetter.transform(({ amount }) => ({ total: amount + amount })),
+          encode: SchemaGetter.transform(({ total }) => ({ amount: total / 2 })),
+        })
+      )
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            doubled: buildField(
+              {
+                type: S.Number,
+                args: wholeArgs,
+                resolve: ({ total }: S.Schema.Type<typeof wholeArgs>) => Effect.succeed(total),
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+
+      const result = await graphql({
+        schema,
+        source: '{ doubled(amount: "21") }',
+        contextValue: createSimpleContext(),
+      })
+
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ doubled: 42 })
+    })
+
+    it("restores only hidden literal tags in root, nested, array, class, and recursive inputs", async () => {
+      const Child = S.TaggedStruct("Child", { amount: S.NumberFromString })
+      class Entry extends S.TaggedClass<Entry>()("Entry", { amount: S.NumberFromString }) {}
+      interface Node {
+        readonly _tag: "Node"
+        readonly amount: number
+        readonly children: readonly Node[]
+      }
+      interface EncodedNode {
+        readonly _tag: "Node"
+        readonly amount: string
+        readonly children: readonly EncodedNode[]
+      }
+      const Node: S.Codec<Node, EncodedNode> = S.TaggedStruct("Node", {
+        amount: S.NumberFromString,
+        children: S.Array(S.suspend(() => Node)),
+      })
+      const taggedArgs = S.TaggedStruct("Arguments", {
+        amount: S.NumberFromString,
+        child: Child,
+        projected: S.toEncoded(Child),
+        items: S.Array(Child),
+        entry: Entry,
+        node: Node,
+        label: S.optional(S.String),
+      })
+      let receivedClass = false
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args: taggedArgs,
+                resolve: (args: S.Schema.Type<typeof taggedArgs>) => {
+                  receivedClass = args.entry instanceof Entry
+                  return Effect.succeed(JSON.stringify(args))
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      const result = await graphql({
+        schema,
+        source: `{
+          inspect(
+            amount: "1"
+            child: { amount: "2" }
+            projected: { amount: "3" }
+            items: [{ amount: "4" }]
+            entry: { amount: "5" }
+            node: { amount: "6", children: [{ amount: "7", children: [] }] }
+          )
+        }`,
+        contextValue: createSimpleContext(),
+      })
+
+      expect(result.errors).toBeUndefined()
+      expect(receivedClass).toBe(true)
+      expect(JSON.parse(String(result.data?.inspect))).toEqual({
+        _tag: "Arguments",
+        amount: 1,
+        child: { _tag: "Child", amount: 2 },
+        projected: { _tag: "Child", amount: "3" },
+        items: [{ _tag: "Child", amount: 4 }],
+        entry: { _tag: "Entry", amount: 5 },
+        node: {
+          _tag: "Node",
+          amount: 6,
+          children: [{ _tag: "Node", amount: 7, children: [] }],
+        },
+      })
+    })
+
+    it("decodes subscription subscribe and event resolve arguments with request services", async () => {
+      const ctx = createFieldBuilderContext()
+      const observed: unknown[] = []
+      ctx.middlewares = [
+        {
+          name: "capture",
+          apply: (effect, context) => {
+            observed.push(context.args)
+            return effect
+          },
+        },
+      ]
+      let subscribeCalls = 0
+      let resolveCalls = 0
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: { ready: { type: GraphQLString, resolve: () => "ready" } },
+        }),
+        subscription: new GraphQLObjectType({
+          name: "Subscription",
+          fields: {
+            doubled: buildSubscriptionField(
+              {
+                type: S.Number,
+                args: argsSchema,
+                subscribe: (args: S.Schema.Type<typeof argsSchema>) => {
+                  subscribeCalls++
+                  return Effect.succeed(Stream.make(args.amount + args.amount))
+                },
+                resolve: (value: number, args: S.Schema.Type<typeof argsSchema>) => {
+                  resolveCalls++
+                  return Effect.succeed(value + args.amount + args.amount)
+                },
+              },
+              ctx
+            ),
+          },
+        }),
+      })
+
+      for (const argumentsText of ['(amount: "20")', ""]) {
+        const result = await subscribe({
+          schema,
+          document: parse(`subscription { doubled${argumentsText} }`),
+          contextValue,
+        })
+        if (!(Symbol.asyncIterator in result)) {
+          throw new Error(`Subscription failed: ${JSON.stringify(result)}`)
+        }
+        const iterator = result[Symbol.asyncIterator]()
+        const event = await iterator.next()
+        expect(event.value).toEqual({ data: { doubled: 84 } })
+        expect(await iterator.next()).toEqual({ value: undefined, done: true })
+      }
+      expect(subscribeCalls).toBe(2)
+      expect(resolveCalls).toBe(2)
+      expect(observed).toEqual(Array.from({ length: 4 }, () => ({ amount: 21 })))
+
+      const invalid = await subscribe({
+        schema,
+        document: parse('subscription { doubled(amount: "not-a-number") }'),
+        contextValue,
+      })
+      if (Symbol.asyncIterator in invalid) {
+        throw new Error("Invalid arguments unexpectedly started a subscription")
+      }
+      expect(invalid.errors?.[0].path).toEqual(["doubled"])
+      expect(subscribeCalls).toBe(2)
+      expect(resolveCalls).toBe(2)
+    })
+  })
+
   // ==========================================================================
   // buildField - Basic
   // ==========================================================================

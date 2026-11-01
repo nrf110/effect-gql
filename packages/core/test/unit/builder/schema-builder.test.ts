@@ -917,6 +917,89 @@ describe("schema-builder.ts", () => {
 })
 
 describe("schema conversion identity", () => {
+  it.each([false, true])(
+    "shares decoded projection identities regardless of registration order (projected first: %s)",
+    async (projectedFirst) => {
+      const Child = S.TaggedStruct("Child", { n: S.NumberFromString })
+      const Projected = S.toType(Child)
+      const first = projectedFirst ? Projected : Child
+      const second = projectedFirst ? Child : Projected
+      const schema = GraphQLSchemaBuilder.empty
+        .query("first", {
+          type: first,
+          resolve: () => Effect.succeed({ _tag: "Child" as const, n: 2 }),
+        })
+        .query("second", {
+          type: second,
+          resolve: () => Effect.succeed({ _tag: "Child" as const, n: 3 }),
+        })
+        .query("wrapper", {
+          type: S.Struct({ child: S.optionalKey(Child) }),
+          resolve: () => Effect.succeed({ child: { _tag: "Child" as const, n: 4 } }),
+        })
+        .buildSchema()
+
+      expect(validateSchema(schema)).toEqual([])
+      const fields = schema.getQueryType()!.getFields()
+      expect(fields.first.type).toBe(fields.second.type)
+      const wrapper = getNamedType(fields.wrapper.type)
+      if (!(wrapper instanceof GraphQLObjectType)) throw new Error("Expected wrapper")
+      expect(wrapper.getFields().child.type).toBe(fields.first.type)
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)("{ first { n } second { n } wrapper { child { n } } }")
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        first: { n: 2 },
+        second: { n: 3 },
+        wrapper: { child: { n: 4 } },
+      })
+    }
+  )
+
+  it.each([false, true])(
+    "shares encoded projection identities without losing optional argument decoding (projected first: %s)",
+    async (projectedFirst) => {
+      const Child = S.TaggedStruct("Child", { n: S.NumberFromString })
+      const Projected = S.toEncoded(Child)
+      const args = projectedFirst
+        ? S.Struct({
+            projected: Projected,
+            original: Child,
+            extra: S.optionalKey(S.NumberFromString),
+          })
+        : S.Struct({
+            original: Child,
+            projected: Projected,
+            extra: S.optionalKey(S.NumberFromString),
+          })
+      const schema = GraphQLSchemaBuilder.empty
+        .query("sum", {
+          type: S.Number,
+          args,
+          resolve: ({ original, projected, extra }) =>
+            Effect.succeed(original.n + Number(projected.n) + (extra ?? 0)),
+        })
+        .buildSchema()
+
+      expect(validateSchema(schema)).toEqual([])
+      const fields = schema.getQueryType()!.getFields()
+      expect(getNamedType(fields.sum.args.find((arg) => arg.name === "original")!.type)).toBe(
+        getNamedType(fields.sum.args.find((arg) => arg.name === "projected")!.type)
+      )
+      const result = await Effect.runPromise(
+        execute(
+          schema,
+          Layer.empty
+        )(
+          '{ omitted: sum(original: {n: "2"}, projected: {n: "3"}) present: sum(original: {n: "2"}, projected: {n: "3"}, extra: "4") }'
+        )
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ omitted: 5, present: 9 })
+    }
+  )
+
   it("does not register an object's encoded scalar as an output object", async () => {
     const User = S.String.pipe(
       S.decodeTo(S.Struct({ id: S.String }), {
@@ -943,10 +1026,12 @@ describe("schema conversion identity", () => {
   it("reuses the registered input through recursive fields and query arguments", async () => {
     interface Person {
       readonly name: string
+      readonly score?: number
       readonly friends: readonly Person[]
     }
     const Person: S.Schema<Person> = S.Struct({
       name: S.String,
+      score: S.optionalKey(S.NumberFromString),
       friends: S.Array(S.suspend(() => Person)),
     })
     const schema = GraphQLSchemaBuilder.empty
@@ -955,7 +1040,11 @@ describe("schema conversion identity", () => {
         type: S.String,
         args: S.Struct({ person: Person }),
         resolve: ({ person }) =>
-          Effect.succeed(`${person.name}:${person.friends.map((friend) => friend.name).join(",")}`),
+          Effect.succeed(
+            `${person.name}:${person.score}:${person.friends
+              .map((friend) => `${friend.name}:${friend.score}`)
+              .join(",")}`
+          ),
       })
       .buildSchema()
 
@@ -963,15 +1052,18 @@ describe("schema conversion identity", () => {
     const input = schema.getType("PersonInput")
     if (!(input instanceof GraphQLInputObjectType)) throw new Error("Expected PersonInput")
     expect(getNamedType(input.getFields().friends.type)).toBe(input)
+    expect(input.getFields().score.type).toBe(GraphQLString)
     expect(getNamedType(schema.getQueryType()!.getFields().greet.args[0].type)).toBe(input)
     const result = await Effect.runPromise(
       execute(
         schema,
         Layer.empty
-      )('{ greet(person: {name: "Ada", friends: [{name: "Grace", friends: []}]}) }')
+      )(
+        '{ greet(person: {name: "Ada", score: "1", friends: [{name: "Grace", score: "2", friends: []}]}) }'
+      )
     )
     expect(result.errors).toBeUndefined()
-    expect(result.data).toEqual({ greet: "Ada:Grace" })
+    expect(result.data).toEqual({ greet: "Ada:1:Grace:2" })
   })
 
   it.each([S.Struct({ id: S.String }), S.TaggedStruct("User", { id: S.String })])(

@@ -241,6 +241,11 @@ The `@effect-gql/node` package provides Node.js-specific server utilities.
 
 Start a Node.js HTTP server.
 
+On shutdown, the subscriptions-enabled server finalizes active Effect requests,
+closes WebSocket connections, and then closes the HTTP server. Incomplete HTTP
+connections, including clients that have not finished sending request headers,
+are closed without waiting for the client or Node's header timeout.
+
 ```typescript
 import { serve } from "@effect-gql/node"
 

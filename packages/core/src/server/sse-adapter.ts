@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream } from "effect"
+import { Context, Effect, Layer, Stream } from "effect"
 import {
   GraphQLSchema,
   parse,
@@ -69,12 +69,17 @@ export const makeSSESubscriptionStream = <R>(
   return Stream.unwrap(
     Effect.gen(function* () {
       // Keep the service layer alive until the subscription stream is finalized.
-      const services = yield* Layer.build(layer)
+      const ambient = yield* Effect.context<never>()
+      const services = Context.merge(ambient, yield* Layer.build(layer))
 
       // Run onConnect hook if provided
       let connectionContext: Record<string, unknown> = {}
       if (options?.onConnect) {
-        const connected = yield* options.onConnect(request, headers).pipe(
+        const connected = yield* Effect.try({
+          try: () => options.onConnect!(request, headers),
+          catch: (error) => error,
+        }).pipe(
+          Effect.flatMap((effect) => effect),
           Effect.provide(services),
           Effect.match({
             onFailure: (error) =>
@@ -212,7 +217,9 @@ export const makeSSESubscriptionStream = <R>(
       }
 
       return Stream.fromAsyncIterable(subscriptionResult, (error) => error).pipe(
-        Stream.map(formatNextEvent),
+        Stream.mapEffect((result) =>
+          Effect.try({ try: () => formatNextEvent(result), catch: (error) => error })
+        ),
         Stream.catch((error) =>
           Stream.make(
             formatErrorEvent([

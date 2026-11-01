@@ -1,4 +1,4 @@
-import { Effect, Stream, Queue, Deferred } from "effect"
+import { type Cause, Effect, Stream, Queue } from "effect"
 import type { EffectWebSocket, CloseEvent } from "./ws-types"
 import { WebSocketError } from "./ws-types"
 
@@ -45,44 +45,40 @@ export const WS_CLOSED = 3
  */
 export const toEffectWebSocketFromWs = (ws: WsWebSocket): EffectWebSocket => {
   // Create the message stream using a queue
-  const messagesEffect = Effect.gen(function* () {
-    const queue = yield* Queue.unbounded<string>()
-    const closed = yield* Deferred.make<CloseEvent, WebSocketError>()
-
-    // Set up message listener
-    ws.on("message", (data) => {
-      const message = data.toString()
-      Effect.runPromise(Queue.offer(queue, message)).catch(() => {
-        // Queue might be shutdown
-      })
-    })
-
-    // Set up error listener
-    ws.on("error", (error) => {
-      Effect.runPromise(Deferred.fail(closed, new WebSocketError({ cause: error }))).catch(() => {
-        // Already completed
-      })
-    })
-
-    // Set up close listener
-    ws.on("close", (code, reason) => {
-      Effect.runPromise(
-        Queue.shutdown(queue).pipe(
-          Effect.andThen(Deferred.succeed(closed, { code, reason: reason.toString() }))
-        )
-      ).catch(() => {
-        // Already completed
-      })
-    })
-
-    return { queue, closed }
-  })
-
-  // Create the message stream
   const messages: Stream.Stream<string, WebSocketError> = Stream.unwrap(
-    messagesEffect.pipe(
-      Effect.map(({ queue }) => Stream.fromQueue(queue).pipe(Stream.catch(() => Stream.empty)))
-    )
+    Effect.gen(function* () {
+      const queue = yield* Queue.make<string, WebSocketError | Cause.Done>()
+
+      const onMessage = (data: Buffer | string) => {
+        Effect.runPromise(Queue.offer(queue, data.toString())).catch(() => {
+          // The stream may already have finalized.
+        })
+      }
+      const onError = (error: Error) => {
+        Effect.runPromise(Queue.fail(queue, new WebSocketError({ cause: error }))).catch(() => {
+          // The stream may already have finalized.
+        })
+      }
+      const onClose = () => {
+        Effect.runPromise(Queue.end(queue)).catch(() => {
+          // The stream may already have finalized.
+        })
+      }
+
+      ws.on("message", onMessage)
+      ws.on("error", onError)
+      ws.on("close", onClose)
+
+      return Stream.fromQueue(queue).pipe(
+        Stream.ensuring(
+          Effect.sync(() => {
+            ws.removeListener("message", onMessage)
+            ws.removeListener("error", onError)
+            ws.removeListener("close", onClose)
+          })
+        )
+      )
+    })
   )
 
   return {

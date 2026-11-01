@@ -6,8 +6,11 @@ description: How to install Effect GraphQL and its dependencies
 ## Prerequisites
 
 Effect GraphQL requires:
-- Node.js 22.19.0 or later (required by `@effect/platform-node` 4.1.1)
+- Node.js 22.19.0 or later for Node.js integrations (required by `@effect/platform-node` 4.1.1), or Bun 1.4.2 or later for `@effect-gql/bun`
 - TypeScript 5.0 or later (for full type inference)
+
+The Bun server checks its runtime version before starting. Earlier Bun releases
+can leave rejected WebSocket connections counted as active, preventing shutdown.
 
 ## Install Dependencies
 

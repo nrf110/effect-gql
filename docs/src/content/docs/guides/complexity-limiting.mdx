@@ -368,6 +368,10 @@ GRAPHQL_MAX_FIELDS=100
 GRAPHQL_DEFAULT_FIELD_COMPLEXITY=1
 ```
 
+Limits are optional; omitted limits remain disabled, and the default field complexity is `1`.
+Both `GraphQLRouterConfigFromEnv` and `ComplexityConfigFromEnv` reject `NaN` for all five
+settings above with a configuration error instead of silently disabling query limits.
+
 Load with `GraphQLRouterConfigFromEnv`:
 
 ```typescript

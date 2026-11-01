@@ -232,6 +232,14 @@ Express request handler with a `dispose(): Promise<void>` method. Retain the
 handler and call `await middleware.dispose()` during server shutdown to release
 its scoped Effect services.
 
+Response bodies stream with backpressure rather than being buffered in memory.
+If a body fails before the first bytes are sent, `toMiddleware` forwards the
+error to Express without destroying the response, so an error handler can still
+send an appropriate status and body. After headers have been sent, an error
+handler must delegate with `next(error)` (or close the response) instead of
+attempting a second response. Client disconnects cancel the source stream and
+release its reader.
+
 ### Web Standards (Cloudflare Workers, Deno)
 
 The `@effect-gql/web` package provides a handler for Web standard environments:

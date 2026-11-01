@@ -118,7 +118,9 @@ export const serve = <E, R, RE>(
           () =>
             new Promise<void>((resolve, reject) => {
               server.close((error) => (error ? reject(error) : resolve()))
-              server.closeIdleConnections()
+              // Scoped request fibers have already been interrupted and finalized.
+              // Incomplete headers have no request fiber, so close their sockets too.
+              server.closeAllConnections()
             })
         )
     )

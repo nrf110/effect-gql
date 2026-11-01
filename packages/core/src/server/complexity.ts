@@ -1,4 +1,4 @@
-import { Effect, Option, Config, Data } from "effect"
+import { Effect, Option, Config, Data, Schema } from "effect"
 import {
   DocumentNode,
   OperationDefinitionNode,
@@ -623,6 +623,11 @@ export const validateComplexity = (
 // ============================================================================
 // Environment Configuration
 // ============================================================================
+const complexityNumber = Schema.Number.check(
+  Schema.makeFilter((value: number) => !Number.isNaN(value), {
+    expected: "a number other than NaN",
+  })
+)
 
 /**
  * Effect Config for loading complexity configuration from environment variables.
@@ -635,11 +640,11 @@ export const validateComplexity = (
  * - GRAPHQL_DEFAULT_FIELD_COMPLEXITY: Default field complexity (default: 1)
  */
 export const ComplexityConfigFromEnv: Config.Config<ComplexityConfig> = Config.all({
-  maxDepth: Config.Number("GRAPHQL_MAX_DEPTH").pipe(Config.option),
-  maxComplexity: Config.Number("GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
-  maxAliases: Config.Number("GRAPHQL_MAX_ALIASES").pipe(Config.option),
-  maxFields: Config.Number("GRAPHQL_MAX_FIELDS").pipe(Config.option),
-  defaultFieldComplexity: Config.Number("GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
+  maxDepth: Config.schema(complexityNumber, "GRAPHQL_MAX_DEPTH").pipe(Config.option),
+  maxComplexity: Config.schema(complexityNumber, "GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
+  maxAliases: Config.schema(complexityNumber, "GRAPHQL_MAX_ALIASES").pipe(Config.option),
+  maxFields: Config.schema(complexityNumber, "GRAPHQL_MAX_FIELDS").pipe(Config.option),
+  defaultFieldComplexity: Config.schema(complexityNumber, "GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
     Config.withDefault(1)
   ),
 }).pipe(

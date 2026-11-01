@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest"
-import { Context, Effect, Stream, Layer } from "effect"
+import { Context, Effect, References, Stream, Layer } from "effect"
 import * as S from "effect/Schema"
 import {
   GraphQLSchema,
   GraphQLObjectType,
   GraphQLString,
   GraphQLNonNull,
+  GraphQLScalarType,
   GraphQLInt,
 } from "graphql"
 import { makeGraphQLSSEHandler, makeSSESubscriptionStream } from "../../../src/server/sse-adapter"
@@ -221,6 +222,165 @@ describe("sse-adapter.ts", () => {
       expect(JSON.parse(events[2].data)).toEqual({ data: { tick: { count: 3 } } })
       expect(events[3].event).toBe("complete")
     })
+    it.each(["failure", "throw"])("frames onConnect %s as a rejected connection", async (mode) => {
+      const events = await Effect.runPromise(
+        makeSSESubscriptionStream(
+          createTestSchema(),
+          Layer.empty,
+          { query: "subscription { tick { count } }" },
+          new Headers(),
+          {
+            onConnect: () => {
+              if (mode === "throw") throw new Error("Unauthorized")
+              return Effect.fail(new Error("Unauthorized"))
+            },
+          }
+        ).pipe(Stream.runCollect)
+      )
+
+      expect(events.map((event) => event.event)).toEqual(["error", "complete"])
+      expect(JSON.parse(events[0].data)).toEqual({
+        errors: [{ message: "Unauthorized", extensions: { code: "CONNECTION_REJECTED" } }],
+      })
+    })
+
+    it("preserves ambient annotations and spans across hooks and detached subscription effects", async () => {
+      const Setting = Context.Service<string>("sse/AnnotationSetting")
+      const observations: Array<{
+        phase: string
+        connectionId: unknown
+        span: string
+        setting: string
+      }> = []
+      const observe = (phase: string) =>
+        Effect.gen(function* () {
+          observations.push({
+            phase,
+            connectionId: (yield* References.CurrentLogAnnotations).connectionId,
+            span: (yield* Effect.currentSpan.pipe(Effect.orDie)).name,
+            setting: yield* Setting,
+          })
+        })
+      const layer = Layer.effect(
+        Setting,
+        observe("layer").pipe(Effect.as("explicit"), Effect.provideService(Setting, "building"))
+      )
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+        .subscription("setting", {
+          type: S.String,
+          subscribe: () =>
+            observe("subscribe").pipe(
+              Effect.andThen(Setting),
+              Effect.map((setting) => Stream.succeed(setting))
+            ),
+        })
+        .buildSchema()
+      const events = await Effect.runPromise(
+        makeSSESubscriptionStream(
+          schema,
+          layer,
+          { query: "subscription { setting }" },
+          new Headers(),
+          {
+            onConnect: () => observe("connect").pipe(Effect.as({})),
+            onSubscribe: (ctx) =>
+              observe("hook").pipe(
+                Effect.andThen(
+                  Effect.promise(() => Effect.runPromiseWith(ctx.services)(observe("detached")))
+                )
+              ),
+            onComplete: () => observe("complete"),
+          }
+        ).pipe(
+          Stream.runCollect,
+          Effect.provideService(Setting, "ambient"),
+          Effect.annotateLogs("connectionId", "sse-connection"),
+          Effect.withSpan("sse-connection")
+        )
+      )
+
+      expect(events).toEqual([
+        formatNextEvent({ data: { setting: "explicit" } }),
+        formatCompleteEvent(),
+      ])
+      expect(observations).toEqual(
+        ["layer", "connect", "hook", "detached", "subscribe", "complete"].map((phase) => ({
+          phase,
+          connectionId: "sse-connection",
+          span: "sse-connection",
+          setting: phase === "layer" ? "building" : "explicit",
+        }))
+      )
+    })
+
+    it.each(["bigint", "circular"])(
+      "frames %s serialization errors and finalizes resources",
+      async (mode) => {
+        const lifecycle: string[] = []
+        const Resource = Context.Service<string>("sse/SerializationResource")
+        const layer = Layer.effect(
+          Resource,
+          Effect.acquireRelease(Effect.succeed("open"), () =>
+            Effect.sync(() => lifecycle.push("release"))
+          )
+        )
+        const circular: { self?: unknown } = {}
+        circular.self = circular
+        const value = mode === "bigint" ? 1n : circular
+        const scalar = new GraphQLScalarType({
+          name: "Unserializable",
+          serialize: (input) => input,
+        })
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: { hello: { type: GraphQLString } },
+          }),
+          subscription: new GraphQLObjectType({
+            name: "Subscription",
+            fields: {
+              value: {
+                type: scalar,
+                subscribe: async function* () {
+                  try {
+                    yield { value }
+                    yield { value: "must not be emitted" }
+                  } finally {
+                    lifecycle.push("iterator")
+                  }
+                },
+              },
+            },
+          }),
+        })
+        const events = await Effect.runPromise(
+          makeSSESubscriptionStream(
+            schema,
+            layer,
+            { query: "subscription { value }" },
+            new Headers(),
+            {
+              onComplete: () =>
+                Effect.map(Resource, (resource) => {
+                  lifecycle.push(`complete:${resource}`)
+                }),
+            }
+          ).pipe(Stream.runCollect)
+        )
+
+        expect(events.map((event) => event.event)).toEqual(["error", "complete"])
+        expect(JSON.parse(events[0].data)).toEqual({
+          errors: [
+            {
+              message: expect.any(String),
+              extensions: { code: "SUBSCRIPTION_ERROR" },
+            },
+          ],
+        })
+        expect(lifecycle).toEqual(["iterator", "complete:open", "release"])
+      }
+    )
   })
 
   describe("makeGraphQLSSEHandler", () => {

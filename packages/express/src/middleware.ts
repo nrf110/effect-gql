@@ -3,8 +3,64 @@ import { HttpRouter } from "effect/http"
 import type { Request, Response, NextFunction, RequestHandler } from "express"
 import { toWebHeaders } from "./http-utils"
 import { Readable } from "node:stream"
-import { pipeline } from "node:stream/promises"
-import type { ReadableStream as NodeReadableStream } from "node:stream/web"
+import { finished } from "node:stream/promises"
+
+// Pump directly instead of piping into ServerResponse: a source error must not
+// destroy the socket before Express can send its error response.
+const writeBody = async (body: ReadableStream<Uint8Array>, res: Response): Promise<void> => {
+  const reader = body.getReader()
+  let done = false
+  let destinationError: Error | undefined
+  let resume: (() => void) | undefined
+  let cancellation: Promise<void> | undefined
+  const cancel = () => {
+    cancellation ??= reader.cancel()
+    // The pump awaits this promise during cleanup; observe rejection immediately
+    // as cancellation can happen while a read or drain is still pending.
+    void cancellation.catch(() => {})
+    resume?.()
+  }
+  const onError = (error: Error) => {
+    destinationError = error
+    cancel()
+  }
+  res.once("close", cancel)
+  res.once("error", onError)
+  try {
+    while (!res.destroyed) {
+      const chunk = await reader.read()
+      if (destinationError) throw destinationError
+      if (res.destroyed) return
+      if (chunk.done) {
+        done = true
+        res.end()
+        await finished(res, { cleanup: true })
+        return
+      }
+      if (!res.write(chunk.value)) {
+        await new Promise<void>((resolve) => {
+          resume = resolve
+          res.once("drain", resolve)
+        })
+        if (resume) res.off("drain", resume)
+        resume = undefined
+        if (destinationError) throw destinationError
+      }
+    }
+  } finally {
+    res.off("close", cancel)
+    res.off("error", onError)
+    if (resume) res.off("drain", resume)
+    try {
+      if (!done) {
+        cancel()
+        await cancellation
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  }
+}
 
 /**
  * Convert an HttpRouter to Express middleware.
@@ -57,6 +113,11 @@ export const toMiddleware = <E, R, RE>(
   >(Layer.merge(router, layer))
 
   const middleware: RequestHandler = async (req: Request, res: Response, next: NextFunction) => {
+    const abort = new AbortController()
+    const onClose = () => {
+      if (!res.writableFinished) abort.abort()
+    }
+    res.once("close", onClose)
     try {
       // Convert Express request to web standard Request
       // Use URL constructor for safe URL parsing (avoids Host header injection)
@@ -65,11 +126,6 @@ export const toMiddleware = <E, R, RE>(
       const headers = toWebHeaders(req.headers)
 
       const hasBody = !["GET", "HEAD"].includes(req.method)
-      const abort = new AbortController()
-      const onClose = () => {
-        if (!res.writableFinished) abort.abort()
-      }
-      res.once("close", onClose)
       const webRequest = new Request(url, {
         method: req.method,
         headers,
@@ -92,17 +148,15 @@ export const toMiddleware = <E, R, RE>(
       webResponse.headers.forEach((value, key) => {
         res.setHeader(key, value)
       })
-      try {
-        if (webResponse.body) {
-          await pipeline(Readable.fromWeb(webResponse.body as NodeReadableStream), res)
-        } else {
-          res.end()
-        }
-      } finally {
-        res.off("close", onClose)
+      if (webResponse.body) {
+        await writeBody(webResponse.body, res)
+      } else {
+        res.end()
       }
     } catch (error) {
-      next(error)
+      if (!res.destroyed) next(error)
+    } finally {
+      res.off("close", onClose)
     }
   }
   return Object.assign(middleware, { dispose })

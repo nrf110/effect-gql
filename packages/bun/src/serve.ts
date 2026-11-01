@@ -43,6 +43,7 @@ export interface ServeOptions<R = never> {
  *
  * This is the main entry point for running a GraphQL server on Bun.
  * It handles all the Effect runtime setup and server lifecycle.
+ * Requires Bun 1.4.2 or later; older runtimes are rejected before startup.
  *
  * @param router - The HttpRouter to serve (typically from makeGraphQLRouter or toRouter)
  * @param layer - Layer providing the router's service dependencies
@@ -86,6 +87,12 @@ export const serve = <E, R, RE>(
   layer: Layer.Layer<R, RE>,
   options: ServeOptions<R> = {}
 ): void => {
+  if (!Bun.semver.satisfies(Bun.version, ">=1.4.2")) {
+    throw new Error(
+      `@effect-gql/bun requires Bun >=1.4.2; found ${Bun.version}. Upgrade Bun to ensure WebSocket shutdown completes.`
+    )
+  }
+
   const { port = 4000, host = "0.0.0.0", onStart, subscriptions } = options
   const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`
 

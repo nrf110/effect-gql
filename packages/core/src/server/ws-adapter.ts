@@ -374,7 +374,8 @@ export const makeGraphQLWSHandler = <R, LE = never>(
         catch: (error) => error as Error,
       })
 
-      const services = yield* Layer.build(layer)
+      const ambient = yield* Effect.context<never>()
+      const services = Context.merge(ambient, yield* Layer.build(layer))
 
       const extra: WSExtra<R> = {
         socket,

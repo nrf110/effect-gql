@@ -23,7 +23,7 @@ import * as S from "effect/Schema"
 
 ### With Arguments
 
-Arguments are passed to the resolver function and are automatically validated:
+Arguments are decoded and validated with the entire Effect Schema before the resolver runs:
 
 ```typescript
 .query("greet", {
@@ -33,7 +33,21 @@ Arguments are passed to the resolver function and are automatically validated:
 })
 ```
 
-The `args` object is fully typed based on your schema.
+The `args` object is fully typed based on the **decoded** schema. GraphQL inputs use the schema's encoded representation, while resolvers receive its decoded values, including transformations and decoding defaults:
+
+```typescript
+.query("double", {
+  type: S.Number,
+  args: S.Struct({ amount: S.NumberFromString }),
+  resolve: ({ amount }) => Effect.succeed(amount + amount),
+})
+```
+
+The GraphQL query `{ double(amount: "21") }` returns `42`, not `"2121"`.
+
+This decoding applies to query, mutation, and object-field resolvers, as well as subscription `subscribe` and custom `resolve` callbacks. Middleware receives the same decoded arguments as the callback it wraps. Decoders run with the request's services, so effectful schema transformations can use request-scoped dependencies. Invalid inputs produce GraphQL errors without invoking the callback. Fields without an `args` schema skip decoding.
+
+Tagged schemas keep their literal `_tag` discriminators even though GraphQL does not expose those fields as inputs. The framework restores those encoded discriminator literals before decoding, including nested objects, lists, and recursive inputs. Other omitted fields are left to the schema's normal optional/default behavior.
 
 ### Field Resolvers
 

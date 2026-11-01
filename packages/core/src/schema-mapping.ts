@@ -47,8 +47,8 @@ export const getASTView = (ast: AST.AST, direction: "output" | "input"): AST.AST
   return ast
 }
 
-// Key-context copies retain their body references. Intern only those identities,
-// never GraphQL types or helper configuration, so separate conversions stay isolated.
+// Key-context copies retain their body references. Intern those identities without
+// conflating unrelated bodies or attaching GraphQL configuration to AST nodes.
 const astIdentities = new WeakMap<object, AST.AST[]>()
 
 export function getASTIdentity(ast: AST.AST): AST.AST {
@@ -122,8 +122,10 @@ function isIntegerCheck(check: AST.Check<unknown>): boolean {
   return check._tag === "FilterGroup" && check.checks.some(isIntegerCheck)
 }
 
-/** Per-conversion state shares recursive types without leaking configuration across helpers. */
+/** Configuration-free helpers share directional types; configured object helpers stay local. */
 type ConversionCache = WeakMap<AST.AST, GraphQLOutputType | GraphQLInputType>
+const outputConversionCache: ConversionCache = new WeakMap()
+const inputConversionCache: ConversionCache = new WeakMap()
 function makeConverter(
   direction: "output",
   cache?: ConversionCache,
@@ -225,13 +227,15 @@ function buildFields(
   return fields
 }
 
+// Project only helper roots. Effect memoizes these projections, so original and
+// explicitly projected schemas share identities without re-projecting child graphs.
 /** Convert the decoded schema representation to a GraphQL output type. */
 export const toGraphQLType = (schema: S.Top): GraphQLOutputType =>
-  makeConverter("output")(schema.ast)
+  makeConverter("output", outputConversionCache)(AST.toType(schema.ast))
 
 /** Convert the encoded schema representation to a GraphQL input type. */
 export const toGraphQLInputType = (schema: S.Top): GraphQLInputType =>
-  makeConverter("input")(schema.ast)
+  makeConverter("input", inputConversionCache)(AST.toEncoded(schema.ast))
 
 /** Additional configuration for computed/relational fields. */
 export interface AdditionalField<Parent, Args, R, E, A> {
@@ -246,7 +250,8 @@ export const toGraphQLObjectType = <T>(
   schema: S.Top,
   additionalFields?: Record<string, AdditionalField<T, any, any, any, any>>
 ): GraphQLObjectType => {
-  const ast = getObjectAST(schema.ast, "output")
+  const projected = AST.toType(schema.ast)
+  const ast = getObjectAST(projected, "output")
   if (!ast) throw new Error("Schema must be an object type to convert to GraphQLObjectType")
   const cache: ConversionCache = new WeakMap()
   const convert = makeConverter("output", cache, `${name}_`)
@@ -265,13 +270,17 @@ export const toGraphQLObjectType = <T>(
       return fields
     },
   })
-  cache.set(getASTIdentity(schema.ast), type)
+  cache.set(getASTIdentity(projected), type)
   cache.set(getASTIdentity(ast), type)
   return type
 }
 
 export const toGraphQLArgs = (schema: S.Top): GraphQLFieldConfigArgumentMap => {
-  const ast = getObjectAST(schema.ast, "input")
+  const ast = getObjectAST(AST.toEncoded(schema.ast), "input")
   if (!ast) throw new Error("Schema must be an object type to convert to GraphQL arguments")
-  return buildFields(ast, makeConverter("input"), "input") as GraphQLFieldConfigArgumentMap
+  return buildFields(
+    ast,
+    makeConverter("input", inputConversionCache),
+    "input"
+  ) as GraphQLFieldConfigArgumentMap
 }

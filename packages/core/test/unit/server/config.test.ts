@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest"
-import { defaultConfig, normalizeConfig } from "../../../src/server/config"
+import { Config, ConfigProvider, Effect } from "effect"
+import { buildSchema } from "graphql"
+import {
+  defaultConfig,
+  GraphQLRouterConfigFromEnv,
+  normalizeConfig,
+} from "../../../src/server/config"
+import { ComplexityConfigFromEnv, validateComplexity } from "../../../src/server/complexity"
 
 describe("config.ts", () => {
   // ==========================================================================
@@ -128,5 +135,117 @@ describe("config.ts", () => {
         })
       })
     })
+  })
+})
+
+const numericSettings = [
+  ["GRAPHQL_MAX_DEPTH", "maxDepth"],
+  ["GRAPHQL_MAX_COMPLEXITY", "maxComplexity"],
+  ["GRAPHQL_MAX_ALIASES", "maxAliases"],
+  ["GRAPHQL_MAX_FIELDS", "maxFields"],
+  ["GRAPHQL_DEFAULT_FIELD_COMPLEXITY", "defaultFieldComplexity"],
+] as const
+
+const configSchema = buildSchema(`
+  type Query { hello: String, user: User }
+  type User { id: ID }
+`)
+
+describe.each([
+  ["standalone", ComplexityConfigFromEnv],
+  ["router", GraphQLRouterConfigFromEnv.pipe(Config.map((config) => config.complexity))],
+] as const)("%s complexity environment configuration", (entrypoint, config) => {
+  const load = (env: Record<string, string>) => config.parse(ConfigProvider.fromEnv({ env }))
+
+  it.each(numericSettings)("rejects NaN for %s", async (variable) => {
+    const result = await Effect.runPromise(Effect.result(load({ [variable]: "NaN" })))
+
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") {
+      expect(result.failure._tag).toBe("ConfigError")
+      expect(result.failure.message).toContain(variable)
+    }
+  })
+
+  it.each([0, -1, 1.5, Infinity, -Infinity])("preserves numeric value %s", async (value) => {
+    const env = Object.fromEntries(numericSettings.map(([variable]) => [variable, String(value)]))
+    const loaded = await Effect.runPromise(load(env))
+
+    expect(loaded).toEqual(
+      Object.fromEntries(numericSettings.map(([, property]) => [property, value]))
+    )
+  })
+
+  it("preserves absent limits and the default field cost", async () => {
+    const loaded = await Effect.runPromise(load({}))
+
+    expect(loaded).toEqual(
+      entrypoint === "router"
+        ? undefined
+        : {
+            maxDepth: undefined,
+            maxComplexity: undefined,
+            maxAliases: undefined,
+            maxFields: undefined,
+            defaultFieldComplexity: 1,
+          }
+    )
+    expect(await Effect.runPromise(load({ GRAPHQL_MAX_DEPTH: "2" }))).toMatchObject({
+      maxDepth: 2,
+      defaultFieldComplexity: 1,
+    })
+  })
+
+  it.each([
+    ["GRAPHQL_MAX_DEPTH", "{ hello }", "{ user { id } }", "depth"],
+    ["GRAPHQL_MAX_COMPLEXITY", "{ hello }", "{ a: hello b: hello }", "complexity"],
+    ["GRAPHQL_MAX_ALIASES", "{ a: hello }", "{ a: hello b: hello }", "aliases"],
+    ["GRAPHQL_MAX_FIELDS", "{ hello }", "{ hello user { id } }", "fields"],
+  ] as const)("enforces the loaded %s limit", async (variable, allowed, rejected, limitType) => {
+    const loaded = await Effect.runPromise(load({ [variable]: "1" }))
+    if (!loaded) throw new Error("Expected configured complexity limits")
+
+    const accepted = await Effect.runPromise(
+      Effect.result(
+        validateComplexity(allowed, undefined, undefined, configSchema, new Map(), loaded)
+      )
+    )
+    expect(accepted._tag).toBe("Success")
+
+    const result = await Effect.runPromise(
+      Effect.result(
+        validateComplexity(rejected, undefined, undefined, configSchema, new Map(), loaded)
+      )
+    )
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") {
+      expect(result.failure).toMatchObject({
+        _tag: "ComplexityLimitExceededError",
+        limitType,
+        limit: 1,
+      })
+    }
+  })
+
+  it("uses the configured field cost when enforcing complexity", async () => {
+    const loaded = await Effect.runPromise(
+      load({ GRAPHQL_MAX_COMPLEXITY: "2", GRAPHQL_DEFAULT_FIELD_COMPLEXITY: "3" })
+    )
+    if (!loaded) throw new Error("Expected configured complexity limits")
+
+    const result = await Effect.runPromise(
+      Effect.result(
+        validateComplexity("{ hello }", undefined, undefined, configSchema, new Map(), loaded)
+      )
+    )
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") {
+      expect(result.failure).toMatchObject({
+        _tag: "ComplexityLimitExceededError",
+        limitType: "complexity",
+        limit: 2,
+        actual: 3,
+      })
+    }
   })
 })

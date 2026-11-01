@@ -270,21 +270,24 @@ mutation("createUser", {
 
 ### Composing Low-Level Helpers
 
-The low-level helpers also distinguish input and output names:
+The configuration-free helpers `toGraphQLType`, `toGraphQLInputType`, and `toGraphQLArgs` reuse GraphQL types by directional schema identity, so repeated conversions compose without changing inferred names:
 
 ```typescript
-import { toGraphQLType, toGraphQLInputType, toGraphQLObjectType } from "@effect-gql/core"
+import { toGraphQLType, toGraphQLInputType, toGraphQLObjectType, toGraphQLArgs } from "@effect-gql/core"
 
 const User = S.TaggedStruct("User", { id: S.String })
 const output = toGraphQLType(User)       // User
 const input = toGraphQLInputType(User)   // UserInput
+const firstArgs = toGraphQLArgs(S.Struct({ user: User }))
+const secondArgs = toGraphQLArgs(S.Struct({ user: User }))
+// Both argument maps reuse UserInput and can be composed in one GraphQL schema.
 
 const A = toGraphQLObjectType("A", S.Struct({ user: User }))
 const B = toGraphQLObjectType("B", S.Struct({ user: User }))
 // Nested types are scoped to their explicit root: A_User and B_User.
 ```
 
-Each `toGraphQLObjectType` call owns its conversion state and additional fields; configuration is not cached globally. Root-scoped nested names let independently configured helpers coexist in one GraphQL schema. Use the schema builder when nested types should share registered names and computed fields throughout the schema.
+Only configuration-free conversions share their input/output caches. Each `toGraphQLObjectType` call owns its conversion state and additional fields; its configured GraphQL type is never shared globally. Explicit root names remain unchanged and scope their nested names, so independently configured helpers can coexist without leaking computed fields. Recursive references reuse one type within their conversion graph. Use the schema builder when registered names and computed fields should apply throughout the schema.
 
 ## Transformations
 
@@ -354,6 +357,8 @@ objectType({
 Registrations match schema identity, not structural similarity. `S.optionalKey(UserSchema)` changes field nullability without losing the registered object's computed fields, interface identity, or input type. A separate `S.Struct` with the same properties remains a separate type.
 
 Output registrations apply only to the decoded representation. Registering an object decoded from a string does not turn unrelated string fields into that object. Input registrations apply to the encoded representation. Recursive input references reuse the registered input object, and inferred output types share one conversion context across registered fields and root operations.
+
+Within a builder, inferred types also share their directional projection identity: using a schema alongside `S.toType(schema)` for outputs, or alongside `S.toEncoded(schema)` for inputs, reuses the corresponding GraphQL type. Projection does not merge unrelated schemas with the same shape or schemas with different annotations, and optional keys retain their field nullability.
 
 ## Limitations
 

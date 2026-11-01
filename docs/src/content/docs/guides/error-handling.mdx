@@ -317,7 +317,7 @@ const customErrorHandler: ErrorHandler = (cause) =>
     yield* Effect.logError("GraphQL request failed", cause)
 
     // Check for specific error types
-    const failure = Cause.failureOption(cause)
+    const failure = Cause.findErrorOption(cause)
 
     if (failure._tag === "Some" && failure.value instanceof RateLimitError) {
       return yield* HttpServerResponse.json(

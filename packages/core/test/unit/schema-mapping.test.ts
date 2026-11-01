@@ -820,4 +820,65 @@ describe("low-level schema composition", () => {
     expect(result.errors).toBeUndefined()
     expect(result.data).toEqual({ a: { user: { id: "a" } }, b: { user: { id: "b" } } })
   })
+
+  it("composes repeated argument, input and output helpers without leaking configured fields", async () => {
+    const User = S.TaggedStruct("User", { amount: S.NumberFromString })
+    const Args = S.Struct({ user: User })
+    const configured = toGraphQLObjectType("Configured", User, {
+      privateField: { type: GraphQLString, resolve: () => Effect.succeed("private") },
+    })
+    const schema = new GraphQLSchema({
+      types: [configured],
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          first: {
+            type: toGraphQLType(User),
+            args: toGraphQLArgs(Args),
+            resolve: (_parent, args) => ({ amount: Number(args.user.amount) }),
+          },
+          second: {
+            type: toGraphQLType(S.toType(User)),
+            args: toGraphQLArgs(Args),
+            resolve: (_parent, args) => ({ amount: Number(args.user.amount) }),
+          },
+          third: {
+            type: GraphQLString,
+            args: { user: { type: toGraphQLInputType(User) } },
+            resolve: (_parent, args) => args.user.amount,
+          },
+          fourth: {
+            type: GraphQLString,
+            args: { user: { type: toGraphQLInputType(S.toEncoded(User)) } },
+            resolve: (_parent, args) => args.user.amount,
+          },
+        },
+      }),
+    })
+
+    expect(validateSchema(schema)).toEqual([])
+    const first = getNamedType(schema.getQueryType()!.getFields().first.type)
+    const second = getNamedType(schema.getQueryType()!.getFields().second.type)
+    if (!(first instanceof GraphQLObjectType) || !(second instanceof GraphQLObjectType)) {
+      throw new Error("Expected independently converted output objects")
+    }
+    expect(first.getFields().privateField).toBeUndefined()
+    expect(second.getFields().privateField).toBeUndefined()
+    const result = await graphql({
+      schema,
+      source: `{
+        first(user: {amount: "2"}) { amount }
+        second(user: {amount: "3"}) { amount }
+        third(user: {amount: "4"})
+        fourth(user: {amount: "5"})
+      }`,
+    })
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({
+      first: { amount: 2 },
+      second: { amount: 3 },
+      third: "4",
+      fourth: "5",
+    })
+  })
 })
