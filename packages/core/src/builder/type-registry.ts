@@ -228,15 +228,23 @@ function makeOutputConverter(ctx: TypeConversionContext): OutputConverter {
         converted.set(identity, type)
         return type
       }
-      case "Declaration":
+      case "Declaration": {
+        let originalInner = source._tag === "Declaration" ? source.typeParameters[0] : undefined
+        if (isOptionDeclaration(source) && source.encoding) {
+          // Encoded Option constructors project their value parameter with toType.
+          // Their encoding still retains the original codec (possibly nullish).
+          let encoded = source.encoding[source.encoding.length - 1].to
+          while (encoded._tag === "Union") {
+            const members = nonNullMembers(encoded)
+            if (members.length !== 1) break
+            encoded = members[0]
+          }
+          originalInner = encoded
+        }
         if (ast.typeParameters[0])
-          return convert(
-            source._tag === "Declaration"
-              ? (source.typeParameters[0] ?? ast.typeParameters[0])
-              : ast.typeParameters[0],
-            ast.typeParameters[0]
-          )
+          return convert(originalInner ?? ast.typeParameters[0], ast.typeParameters[0])
         break
+      }
       case "Suspend":
         return convert(source._tag === "Suspend" ? source.thunk() : ast.thunk(), ast.thunk())
       case "Arrays": {

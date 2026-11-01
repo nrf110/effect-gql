@@ -109,12 +109,79 @@ function makeArgsDecoder(schema: S.Top) {
   return (args: unknown) => decode(restoreGraphQLInput(schema.ast, args))
 }
 
-/** Each emitted root value owns its subscription operation's decoded arguments. */
-class SubscriptionEvent {
-  constructor(
-    readonly value: unknown,
-    readonly args: unknown
-  ) {}
+interface SubscriptionEmission {
+  readonly value: unknown
+  readonly args: unknown
+  readonly context: GraphQLEffectContext<any>
+  readonly info: GraphQLResolveInfo
+}
+
+const pendingSubscriptionEmissions: SubscriptionEmission[] = []
+const subscriptionArgs = new WeakMap<object, unknown>()
+const subscriptionResolvers = new WeakSet<NonNullable<GraphQLFieldConfig<any, any>["resolve"]>>()
+
+/**
+ * graphql-js 16 reads IteratorResult.value immediately before execute enters the
+ * root resolver. Capture operation-local args there, before async resolver
+ * wrappers can yield, without replacing the public root payload.
+ */
+function withSubscriptionArgs(
+  source: AsyncIterable<unknown>,
+  args: unknown,
+  context: GraphQLEffectContext<any>,
+  info: GraphQLResolveInfo
+): AsyncIterable<unknown> {
+  const field = info.parentType.getFields()[info.fieldName]
+  const resolve = field.resolve!
+  if (!subscriptionResolvers.has(resolve)) {
+    const capture: typeof resolve = (value, fieldArgs, eventContext, eventInfo) => {
+      for (let index = pendingSubscriptionEmissions.length - 1; index >= 0; index--) {
+        const emission = pendingSubscriptionEmissions[index]
+        if (
+          emission.context === eventContext &&
+          emission.info.schema === eventInfo.schema &&
+          emission.info.operation === eventInfo.operation &&
+          emission.info.fieldName === eventInfo.fieldName &&
+          Object.is(emission.value, value)
+        ) {
+          pendingSubscriptionEmissions.splice(index, 1)
+          subscriptionArgs.set(eventInfo.variableValues, emission.args)
+          break
+        }
+      }
+      return resolve(value, fieldArgs, eventContext, eventInfo)
+    }
+    subscriptionResolvers.add(capture)
+    field.resolve = capture
+  }
+
+  return {
+    [Symbol.asyncIterator]() {
+      const iterator = source[Symbol.asyncIterator]()
+      return {
+        async next(): Promise<IteratorResult<unknown>> {
+          const result = await iterator.next()
+          if (result.done) return result
+          return {
+            done: false,
+            get value() {
+              const emission = { value: result.value, args, context, info }
+              pendingSubscriptionEmissions.push(emission)
+              // Raw source consumers or executions rejected before field entry
+              // must not leave metadata available to a later operation.
+              queueMicrotask(() => {
+                const index = pendingSubscriptionEmissions.indexOf(emission)
+                if (index !== -1) pendingSubscriptionEmissions.splice(index, 1)
+              })
+              return emission.value
+            },
+          }
+        },
+        return: iterator.return?.bind(iterator),
+        throw: iterator.throw?.bind(iterator),
+      }
+    },
+  }
 }
 
 /**
@@ -335,22 +402,15 @@ export function buildSubscriptionField(
 
       const stream = await Effect.runPromiseWith(context.services)(subscribeEffect)
 
-      const events = config.resolve
-        ? Stream.map(stream, (value) => new SubscriptionEvent(value, decodedArgs))
-        : stream
-      return Stream.toAsyncIterableWith(events, context.services)
+      const events = Stream.toAsyncIterableWith(stream, context.services)
+      return config.resolve ? withSubscriptionArgs(events, decodedArgs, context, info) : events
     },
 
     // The resolve function transforms each yielded value
     // If no custom resolve is provided, encode and return the payload directly
     resolve: config.resolve
-      ? async (
-          event: SubscriptionEvent,
-          _args,
-          context: GraphQLEffectContext<any>,
-          info: GraphQLResolveInfo
-        ) => {
-          const { value, args: decodedArgs } = event
+      ? async (value, _args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
+          const decodedArgs = subscriptionArgs.get(info.variableValues)
           let effect = config.resolve!(value, decodedArgs)
 
           // Apply middleware to the resolve effect

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Layer, Context } from "effect"
 import * as S from "effect/Schema"
-import { HttpRouter, HttpServerResponse } from "effect/http"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
 import { makeGraphQLRouter, type ErrorHandler } from "../../../src/server/router"
 import { GraphQLRequestContext } from "../../../src/context"
@@ -127,6 +127,107 @@ const getGraphiQL = async <R>(
 }
 
 describe("router.ts", () => {
+  it("rebuilds an ambient resolver layer for each authenticated request and closes request scopes", async () => {
+    const Resource = Context.Service<{
+      readonly id: number
+      readonly cache: Map<string, string>
+      readonly isOpen: () => boolean
+    }>("router/IsolatedResource")
+    const acquired: number[] = []
+    const released: number[] = []
+    const resources: Array<Context.Service.Shape<typeof Resource>> = []
+    const layer = Layer.effect(
+      Resource,
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const id = acquired.length + 1
+          acquired.push(id)
+          let open = true
+          const resource = {
+            id,
+            cache: new Map<string, string>(),
+            isOpen: () => open,
+            close: () => {
+              open = false
+            },
+          }
+          resources.push(resource)
+          return resource
+        }),
+        (resource) =>
+          Effect.sync(() => {
+            resource.close()
+            released.push(resource.id)
+          })
+      )
+    )
+    const hookViewers: string[] = []
+    const schema = GraphQLSchemaBuilder.empty
+      .query("viewer", {
+        type: S.String,
+        resolve: () =>
+          Effect.gen(function* () {
+            const resource = yield* Resource
+            const context = yield* GraphQLRequestContext
+            const request = yield* HttpServerRequest.HttpServerRequest
+            const name = context.request.headers.authorization
+            if (!resource.cache.has("viewer")) resource.cache.set("viewer", name)
+            return `${resource.id}:${resource.cache.get("viewer")}:${request.headers.authorization}:${resource.isOpen()}`
+          }),
+      })
+      .query("fail", { type: S.String, resolve: () => Effect.fail(new Error("denied")) })
+      .buildSchema()
+    const router = makeGraphQLRouter(schema, layer, {
+      extensions: [
+        {
+          name: "request-layer",
+          onExecuteEnd: () =>
+            Effect.gen(function* () {
+              const resource = yield* Resource
+              const request = yield* HttpServerRequest.HttpServerRequest
+              hookViewers.push(
+                `${resource.id}:${request.headers.authorization}:${resource.isOpen()}`
+              )
+            }),
+        },
+      ],
+    }).pipe(Layer.provideMerge(layer))
+    const { handler, dispose } = HttpRouter.toWebHandler(router)
+    const request = (name: string, query = "{ viewer }") =>
+      handler(
+        new Request("http://localhost/graphql", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: name },
+          body: JSON.stringify({ query }),
+        })
+      )
+    try {
+      for (const [name, id] of [
+        ["Alice", 2],
+        ["Bob", 3],
+      ] as const) {
+        const response = await request(name)
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ data: { viewer: `${id}:${name}:${name}:true` } })
+        expect(released).toEqual(id === 2 ? [2] : [2, 3])
+        expect(resources[0].isOpen()).toBe(true)
+      }
+      expect(hookViewers).toEqual(["2:Alice:true", "3:Bob:true"])
+      const failed = await request("Bob", "{ fail }")
+      expect((await failed.json()).errors[0].message).toContain("denied")
+      const invalid = await request("Bob", "{ missing }")
+      expect(invalid.status).toBe(400)
+      expect((await invalid.json()).errors[0].message).toContain("Cannot query field")
+      expect(acquired).toEqual([1, 2, 3, 4, 5])
+      expect(released).toEqual([2, 3, 4, 5])
+      expect(resources[0].isOpen()).toBe(true)
+      expect(resources[0].cache.size).toBe(0)
+    } finally {
+      await dispose()
+    }
+    expect(released).toEqual([2, 3, 4, 5, 1])
+  })
+
   // ==========================================================================
   // makeGraphQLRouter - GraphQL execution
   // ==========================================================================

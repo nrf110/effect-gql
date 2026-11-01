@@ -16,6 +16,14 @@ accept router layers with both route-local and global middleware requirements
 and errors. Supply middleware services through the adapter's service layer,
 including middleware registered with `HttpRouter.middleware(..., { global: true })`.
 
+The resolver `layer` is built afresh for every request, even when the same layer
+has already been supplied to the surrounding HTTP application. Dependencies are
+still memoized within that request. Resolvers and lifecycle hooks retain ambient
+request and middleware services, while the resolver layer takes precedence for
+services it provides. Request resources remain alive through execution and hooks,
+then finalize on success or failure without closing application-owned resources.
+Standalone `execute(schema, layer)(source)` uses the same fresh-per-call lifecycle.
+
 ```typescript
 import { makeGraphQLRouter } from "@effect-gql/core"
 

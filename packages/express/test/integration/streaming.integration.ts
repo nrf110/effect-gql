@@ -4,7 +4,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import express, { type ErrorRequestHandler, type RequestHandler } from "express"
 import { createServer, request as httpRequest, type IncomingMessage } from "node:http"
 import { once } from "node:events"
-import { toMiddleware } from "../../src/middleware"
+import { toMiddleware, type ToMiddlewareOptions } from "../../src"
 
 const startStreamServer = async (
   body: ReadableStream<Uint8Array>,
@@ -137,7 +137,7 @@ describe("Express streaming responses", () => {
   })
 })
 
-const startBodyServer = async (parser?: RequestHandler) => {
+const startBodyServer = async (parser?: RequestHandler, options?: ToMiddlewareOptions) => {
   const app = express()
   if (parser) app.use(parser)
   const routes = Layer.mergeAll(
@@ -167,7 +167,7 @@ const startBodyServer = async (parser?: RequestHandler) => {
       })
     )
   )
-  const middleware = toMiddleware(routes, Layer.empty)
+  const middleware = toMiddleware(routes, Layer.empty, options)
   app.use(middleware)
   const server = createServer(app)
   server.listen(0, "127.0.0.1")
@@ -209,6 +209,42 @@ describe("Express request bodies", () => {
   })
 
   it.each([
+    {
+      name: "a custom media type",
+      parser: express.json({ strict: false, type: "application/csp-report" }),
+      contentType: "application/csp-report",
+    },
+    {
+      name: "a text media type",
+      parser: express.json({ strict: false, type: "text/plain" }),
+      contentType: "text/plain",
+    },
+    {
+      name: "a parser predicate",
+      parser: express.json({ strict: false, type: () => true }),
+      contentType: "text/plain",
+    },
+  ])(
+    "preserves JSON strings parsed using $name with explicit JSON encoding",
+    async ({ parser, contentType }) => {
+      const server = await startBodyServer(parser, { bodyEncoding: "json" })
+      try {
+        for (const value of ["hello", "123"]) {
+          const response = await fetch(`${server.url}/json`, {
+            method: "POST",
+            headers: { "content-type": contentType },
+            body: JSON.stringify(value),
+          })
+          expect(response.status).toBe(200)
+          expect(await response.json()).toEqual({ type: "string", value })
+        }
+      } finally {
+        await server.stop()
+      }
+    }
+  )
+
+  it.each([
     { value: 123 },
     { value: true },
     { value: null },
@@ -244,44 +280,70 @@ describe("Express request bodies", () => {
     }
   })
 
-  it("forwards a raw parser buffer without JSON serialization", async () => {
-    const server = await startBodyServer(express.raw({ type: "*/*" }))
-    const bytes = Buffer.from([0, 255, 34, 49, 50, 51, 34])
-    try {
-      const response = await fetch(`${server.url}/stream`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: bytes,
+  it.each(["hello", '"hello"', "123", ""])(
+    "forwards parsed text %j with a JSON content type using explicit raw encoding",
+    async (value) => {
+      const server = await startBodyServer(express.text({ type: "application/json" }), {
+        bodyEncoding: "raw",
       })
-      expect(response.status).toBe(200)
-      expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes)
-    } finally {
-      await server.stop()
-    }
-  })
-
-  it("streams an unparsed upload before the request ends", async () => {
-    const server = await startBodyServer()
-    const upload = httpRequest(`${server.url}/stream`, { method: "POST" })
-    try {
-      const response = new Promise<IncomingMessage>((resolve, reject) => {
-        upload.once("response", resolve)
-        upload.once("error", reject)
-      })
-      upload.write("first")
-      const incoming = await response
-      expect(incoming.statusCode).toBe(200)
-      const chunks = incoming[Symbol.asyncIterator]()
-      expect((await chunks.next()).value.toString()).toBe("first")
-      upload.end("second")
-      let remainder = ""
-      for await (const chunk of { [Symbol.asyncIterator]: () => chunks }) {
-        remainder += chunk.toString()
+      try {
+        const response = await fetch(`${server.url}/text`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: value,
+        })
+        expect(response.status).toBe(200)
+        expect(await response.text()).toBe(value)
+      } finally {
+        await server.stop()
       }
-      expect(remainder).toBe("second")
-    } finally {
-      upload.destroy()
-      await server.stop()
     }
-  })
+  )
+
+  it.each([undefined, "json", "raw"] as const)(
+    "forwards raw parser buffers unchanged with bodyEncoding %j",
+    async (bodyEncoding) => {
+      const server = await startBodyServer(express.raw({ type: "*/*" }), { bodyEncoding })
+      const bytes = Buffer.from([0, 255, 34, 49, 50, 51, 34])
+      try {
+        const response = await fetch(`${server.url}/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: bytes,
+        })
+        expect(response.status).toBe(200)
+        expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes)
+      } finally {
+        await server.stop()
+      }
+    }
+  )
+
+  it.each([undefined, "json", "raw"] as const)(
+    "streams unparsed uploads before the request ends with bodyEncoding %j",
+    async (bodyEncoding) => {
+      const server = await startBodyServer(undefined, { bodyEncoding })
+      const upload = httpRequest(`${server.url}/stream`, { method: "POST" })
+      try {
+        const response = new Promise<IncomingMessage>((resolve, reject) => {
+          upload.once("response", resolve)
+          upload.once("error", reject)
+        })
+        upload.write("first")
+        const incoming = await response
+        expect(incoming.statusCode).toBe(200)
+        const chunks = incoming[Symbol.asyncIterator]()
+        expect((await chunks.next()).value.toString()).toBe("first")
+        upload.end("second")
+        let remainder = ""
+        for await (const chunk of { [Symbol.asyncIterator]: () => chunks }) {
+          remainder += chunk.toString()
+        }
+        expect(remainder).toBe("second")
+      } finally {
+        upload.destroy()
+        await server.stop()
+      }
+    }
+  )
 })

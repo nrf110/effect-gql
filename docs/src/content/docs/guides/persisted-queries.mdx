@@ -60,6 +60,13 @@ middleware-provided services alongside the router's service layer. These service
 remain available for both full-query registration and hash-only requests; the
 router's layer takes precedence if it provides the same service.
 
+Each executing request builds a fresh instance of the resolver layer, including
+hash-only requests. Reusing the same layer in the surrounding HTTP application
+does not share resolver caches or authentication state between requests.
+Dependencies remain memoized within a request, and scoped resources are released
+after execution and lifecycle hooks, including error responses. Application-owned
+instances remain alive until the application itself is disposed.
+
 ## How It Works
 
 ### APQ Protocol

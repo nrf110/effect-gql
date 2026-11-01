@@ -233,12 +233,39 @@ handler and call `await middleware.dispose()` during server shutdown to release
 its scoped Effect services.
 
 Request bodies do not require an Express body parser: unparsed uploads stream
-directly to the Effect handler. If you mount a parser first, `toMiddleware`
-re-encodes parsed JSON values, including strings from
-`express.json({ strict: false })` for `application/json` and `application/*+json`
-requests, so `"123"` remains a string rather than becoming a number. Text-parser
-strings with non-JSON content types and raw-parser `Buffer` bodies are forwarded
-unchanged. Keep the request's content type consistent with the parser you use.
+directly to the Effect handler. When a parser is mounted first, the default
+serialization depends on the parsed value:
+
+- Strings are JSON-encoded for `application/json` and `application/*+json`
+  requests, so a parsed `"123"` remains a string rather than becoming a number.
+  Strings with other content types are forwarded unchanged.
+- Raw-parser `Buffer` bodies are always forwarded unchanged.
+- Other parsed values are JSON-encoded.
+
+The content type cannot identify which parser produced a string: both
+`express.json` and `express.text` accept custom media types or predicates. Set
+the third argument's `bodyEncoding` option when the default string handling
+does not match your parser:
+
+```typescript
+import { toMiddleware, type ToMiddlewareOptions } from "@effect-gql/express"
+
+// A JSON parser can consume a non-JSON media type (or use a type predicate).
+app.use(express.json({ strict: false, type: "application/csp-report" }))
+const options: ToMiddlewareOptions = { bodyEncoding: "json" }
+const middleware = toMiddleware(routes, serviceLayer, options)
+app.use(middleware)
+// Call await middleware.dispose() during server shutdown.
+```
+
+`bodyEncoding: "json"` JSON-encodes already-parsed strings regardless of the
+request's content type, preserving values such as `"hello"` and `"123"`.
+Conversely, use `{ bodyEncoding: "raw" }` when a text parser consumes a JSON
+content type, such as `express.text({ type: "application/json" })`, to forward
+its strings unchanged. Omit the option to retain the content-type-based
+default. This option affects **only already-parsed strings**: Buffers, other
+parsed values, unparsed streaming uploads, and GET/HEAD requests retain their
+existing handling.
 
 Response bodies stream with backpressure rather than being buffered in memory.
 If a body fails before the first bytes are sent, `toMiddleware` forwards the

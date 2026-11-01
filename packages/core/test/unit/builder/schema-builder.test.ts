@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Option, Stream } from "effect"
 import * as S from "effect/Schema"
 import * as SchemaGetter from "effect/SchemaGetter"
 import {
@@ -1198,6 +1198,137 @@ describe("exact transformation registrations", () => {
     return { one, two }
   }
 
+  it.each([
+    ["Option", S.Option],
+    ["OptionFromNullOr", S.OptionFromNullOr],
+    ["OptionFromUndefinedOr", S.OptionFromUndefinedOr],
+    ["OptionFromNullishOr", S.OptionFromNullishOr],
+    ["OptionFromOptionalKey", S.OptionFromOptionalKey],
+    ["OptionFromOptional", S.OptionFromOptional],
+    ["OptionFromOptionalNullOr", S.OptionFromOptionalNullOr],
+  ] as const)(
+    "retains the original registration inside %s after registering its projection",
+    async (_name, option) => {
+      const original = S.Struct({ id: S.String }).pipe(S.decodeTo(S.Struct({ id: S.String })))
+      const projected = S.toType(original)
+      const optional = option(original)
+      const schema = GraphQLSchemaBuilder.empty
+        .objectType({ name: "Projected", schema: projected })
+        .objectType({ name: "Original", schema: original })
+        .field("Original", "onlyOriginal", {
+          type: S.String,
+          resolve: () => Effect.succeed("original"),
+        })
+        .query("direct", { type: original, resolve: () => Effect.succeed({ id: "direct" }) })
+        .query("some", {
+          type: optional,
+          resolve: () => Effect.succeed(Option.some({ id: "some" })),
+        })
+        .query("nested", {
+          type: S.Struct({ value: optional }),
+          resolve: () => Effect.succeed({ value: Option.some({ id: "nested" }) }),
+        })
+        .buildSchema()
+
+      expect(validateSchema(schema)).toEqual([])
+      const fields = schema.getQueryType()!.getFields()
+      expect(getNamedType(fields.direct.type)).toBe(schema.getType("Original"))
+      expect(fields.some.type).toBe(schema.getType("Original"))
+      const nested = getNamedType(fields.nested.type) as GraphQLObjectType
+      expect(nested.getFields().value.type).toBe(schema.getType("Original"))
+      const result = await Effect.runPromise(
+        execute(
+          schema,
+          Layer.empty
+        )(
+          "{ direct { id onlyOriginal } some { id onlyOriginal } nested { value { onlyOriginal } } }"
+        )
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        direct: { id: "direct", onlyOriginal: "original" },
+        some: { id: "some", onlyOriginal: "original" },
+        nested: { value: { onlyOriginal: "original" } },
+      })
+    }
+  )
+
+  it("keeps encoded Option None and null values nullable after original registration", async () => {
+    const original = S.Struct({ id: S.String }).pipe(S.decodeTo(S.Struct({ id: S.String })))
+    const schema = GraphQLSchemaBuilder.empty
+      .objectType({ name: "Projected", schema: S.toType(original) })
+      .objectType({ name: "Original", schema: original })
+      .field("Original", "onlyOriginal", {
+        type: S.String,
+        resolve: () => Effect.succeed("original"),
+      })
+      .query("none", {
+        type: S.OptionFromNullOr(original),
+        resolve: () => Effect.succeed(Option.none()),
+      })
+      .query("null", { type: S.NullOr(original), resolve: () => Effect.succeed(null) })
+      .buildSchema()
+
+    const fields = schema.getQueryType()!.getFields()
+    expect(fields.none.type).toBe(schema.getType("Original"))
+    expect(fields.null.type).toBe(schema.getType("Original"))
+    const result = await Effect.runPromise(
+      execute(schema, Layer.empty)("{ none { onlyOriginal } null { onlyOriginal } }")
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({ none: null, null: null })
+  })
+
+  it("retains the original interface inside an encoded Option after registering its projection", async () => {
+    const original = S.Struct({ id: S.String }).pipe(S.decodeTo(S.Struct({ id: S.String })))
+    const optional = S.OptionFromNullOr(original)
+    const schema = GraphQLSchemaBuilder.empty
+      .interfaceType({
+        name: "Projected",
+        schema: S.toType(original),
+        resolveType: () => "ProjectedValue",
+      })
+      .interfaceType({ name: "Original", schema: original, resolveType: () => "OriginalValue" })
+      .objectType({
+        name: "ProjectedValue",
+        schema: S.Struct({ id: S.String }),
+        implements: ["Projected"],
+      })
+      .objectType({
+        name: "OriginalValue",
+        schema: S.Struct({ id: S.String, onlyOriginal: S.String }),
+        implements: ["Original"],
+      })
+      .query("some", {
+        type: optional,
+        resolve: () => Effect.succeed(Option.some({ id: "some" })),
+      })
+      .query("nested", {
+        type: S.Struct({ value: optional }),
+        resolve: () => Effect.succeed({ value: Option.some({ id: "nested" }) }),
+      })
+      .buildSchema()
+
+    const fields = schema.getQueryType()!.getFields()
+    expect(fields.some.type).toBe(schema.getType("Original"))
+    expect((getNamedType(fields.nested.type) as GraphQLObjectType).getFields().value.type).toBe(
+      schema.getType("Original")
+    )
+    const result = await Effect.runPromise(
+      execute(
+        schema,
+        Layer.empty
+      )(
+        "{ some { id ... on OriginalValue { __typename } } nested { value { ... on OriginalValue { __typename } } } }"
+      )
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({
+      some: { id: "some", __typename: "OriginalValue" },
+      nested: { value: { __typename: "OriginalValue" } },
+    })
+  })
+
   it.each([false, true])(
     "keeps root and nested object selections distinct (reverse registration: %s)",
     async (reverse) => {
@@ -1223,18 +1354,31 @@ describe("exact transformation registrations", () => {
           type: pair,
           resolve: () => Effect.succeed({ one: { id: "3" }, two: [{ id: "4" }] }),
         })
+        .query("optionalOne", {
+          type: S.OptionFromNullOr(one),
+          resolve: () => Effect.succeed(Option.some({ id: "5" })),
+        })
+        .query("optionalPair", {
+          type: S.Struct({ one: S.OptionFromNullOr(one), two: S.OptionFromNullOr(two) }),
+          resolve: () =>
+            Effect.succeed({ one: Option.some({ id: "6" }), two: Option.some({ id: "7" }) }),
+        })
         .buildSchema()
       const result = await Effect.runPromise(
         execute(
           schema,
           Layer.empty
-        )("{ one { onlyOne } two { onlyTwo } pair { one { onlyOne } two { onlyTwo } } }")
+        )(
+          "{ one { onlyOne } two { onlyTwo } pair { one { onlyOne } two { onlyTwo } } optionalOne { onlyOne } optionalPair { one { onlyOne } two { onlyTwo } } }"
+        )
       )
       expect(result.errors).toBeUndefined()
       expect(result.data).toEqual({
         one: { onlyOne: "first" },
         two: { onlyTwo: "second" },
         pair: { one: { onlyOne: "first" }, two: [{ onlyTwo: "second" }] },
+        optionalOne: { onlyOne: "first" },
+        optionalPair: { one: { onlyOne: "first" }, two: { onlyTwo: "second" } },
       })
     }
   )

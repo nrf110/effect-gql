@@ -62,6 +62,15 @@ const writeBody = async (body: ReadableStream<Uint8Array>, res: Response): Promi
   }
 }
 
+export interface ToMiddlewareOptions {
+  /**
+   * Serialization of already-parsed string bodies only. By default, strings
+   * with JSON content types are JSON-encoded; other strings are forwarded raw.
+   * Use "json" or "raw" to override this when a parser uses a custom content type.
+   */
+  readonly bodyEncoding?: "json" | "raw"
+}
+
 /**
  * Convert an HttpRouter to Express middleware.
  *
@@ -71,6 +80,7 @@ const writeBody = async (body: ReadableStream<Uint8Array>, res: Response): Promi
  *
  * @param router - The HttpRouter to convert (typically from makeGraphQLRouter or toRouter)
  * @param layer - Layer providing any services required by the router
+ * @param options - Serialization options for already-parsed string request bodies
  * @returns Express middleware with dispose() for releasing resources on server shutdown
  *
  * @example
@@ -97,7 +107,8 @@ export const toMiddleware = <E, R, RE>(
     | HttpRouter.Request<"GlobalRequires", R>
     | HttpRouter.Request<"GlobalError", unknown>
   >,
-  layer: Layer.Layer<R, RE>
+  layer: Layer.Layer<R, RE>,
+  options: ToMiddlewareOptions = {}
 ): RequestHandler & { readonly dispose: () => Promise<void> } => {
   // The merged layer supplies all R services; no per-request context remains.
   const { handler, dispose } = HttpRouter.toWebHandler<
@@ -125,8 +136,8 @@ export const toMiddleware = <E, R, RE>(
       const url = new URL(req.originalUrl || "/", baseUrl).href
       const headers = toWebHeaders(req.headers)
 
-      // JSON parsers also produce strings: retain their JSON quotes, while
-      // forwarding text-parser strings and raw buffers as already-decoded bytes.
+      // MIME-based defaults cannot identify which parser produced a string;
+      // explicit encoding handles custom JSON/text parsers without touching streams.
       const hasBody = !["GET", "HEAD"].includes(req.method)
       const webRequest = new Request(url, {
         method: req.method,
@@ -137,7 +148,9 @@ export const toMiddleware = <E, R, RE>(
             ? (Readable.toWeb(req) as ReadableStream<Uint8Array>)
             : Buffer.isBuffer(req.body) ||
                 (typeof req.body === "string" &&
-                  !req.is(["application/json", "application/*+json"]))
+                  (options.bodyEncoding === "raw" ||
+                    (options.bodyEncoding !== "json" &&
+                      !req.is(["application/json", "application/*+json"]))))
               ? req.body
               : JSON.stringify(req.body),
         signal: abort.signal,

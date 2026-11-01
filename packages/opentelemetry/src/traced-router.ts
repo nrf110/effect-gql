@@ -114,6 +114,9 @@ export const makeTracedGraphQLRouter = <R>(
  * This is useful when you already have a router and want to add
  * request-level tracing without recreating it.
  *
+ * Tracing wraps dispatch for the shared HttpRouter, including unmatched requests
+ * and routes merged alongside this layer. Install it once per router.
+ *
  * @example
  * ```typescript
  * import { toRouter } from "@effect-gql/core/server"
@@ -132,19 +135,21 @@ export const withTracedRouter = <A, E, R>(
     rootSpanAttributes?: Record<string, string | number | boolean>
     propagateContext?: boolean
   } = {}
-): Layer.Layer<A, E, R> => {
-  const tracing = HttpRouter.middleware((httpEffect) =>
-    Effect.gen(function* () {
-      const request = yield* HttpServerRequest.HttpServerRequest
-      const traceContext = options.propagateContext !== false ? yield* extractTraceContext : null
-      const spanOptions = createSpanOptions(traceContext, request, options)
+): Layer.Layer<A, E, R | HttpRouter.HttpRouter> => {
+  const tracing = HttpRouter.middleware(
+    (httpEffect) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const traceContext = options.propagateContext !== false ? yield* extractTraceContext : null
+        const spanOptions = createSpanOptions(traceContext, request, options)
 
-      return yield* httpEffect.pipe(
-        Effect.tap((response) => Effect.annotateCurrentSpan("http.status_code", response.status)),
-        Effect.withSpan(options.rootSpanName ?? "graphql.http", spanOptions)
-      )
-    })
+        return yield* httpEffect.pipe(
+          Effect.tap((response) => Effect.annotateCurrentSpan("http.status_code", response.status)),
+          Effect.withSpan(options.rootSpanName ?? "graphql.http", spanOptions)
+        )
+      }),
+    { global: true }
   )
 
-  return router.pipe(Layer.provide(tracing.layer))
+  return Layer.merge(router, tracing)
 }

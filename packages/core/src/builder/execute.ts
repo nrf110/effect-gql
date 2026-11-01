@@ -142,7 +142,7 @@ export const execute =
       }
 
       return resolvedResult
-    }).pipe(Effect.provide(layer)) as Effect.Effect<ExecutionResult, Error>
+    }).pipe(Effect.provide(Layer.fresh(layer))) as Effect.Effect<ExecutionResult, Error>
 
 /**
  * Execute a GraphQL query with a service layer (simple version without extensions)

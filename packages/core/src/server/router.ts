@@ -390,8 +390,10 @@ export const makeGraphQLRouter = <R>(
       },
     }
 
-    // Capture services inside the request layer's scope, which stays open through execution.
-    const baseServices = yield* Layer.build(layer)
+    // Build a fresh request root even when this layer is already present in the application.
+    const memoMap = yield* Layer.makeMemoMap
+    const scope = yield* Effect.scope
+    const baseServices = yield* Layer.buildWithMemoMap(layer, memoMap, scope)
     const services = Context.add(
       Context.merge(yield* Effect.context<never>(), baseServices),
       GraphQLRequestContext,

@@ -240,8 +240,10 @@ export const makePersistedQueriesRouter = <R>(
       // Create the ExtensionsService for this request
       const extensionsService = yield* makeExtensionsService()
 
-      // Capture the request's services while the resolver layer remains in scope.
-      const baseServices = yield* Layer.build(layer)
+      // Build a fresh request root even when this layer is already present in the application.
+      const memoMap = yield* Layer.makeMemoMap
+      const scope = yield* Effect.scope
+      const baseServices = yield* Layer.buildWithMemoMap(layer, memoMap, scope)
       const services = Context.merge(yield* Effect.context<never>(), baseServices)
       const hookServices = Context.add(services, ExtensionsService, extensionsService)
 

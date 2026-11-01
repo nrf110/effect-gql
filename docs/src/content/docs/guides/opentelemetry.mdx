@@ -229,6 +229,18 @@ const router = makeTracedGraphQLRouter(schema, serviceLayer, {
 })
 ```
 
+`makeTracedGraphQLRouter` and `withTracedRouter` wrap dispatch for the shared
+Effect `HttpRouter`, not just matched GraphQL routes. The configured root span
+name, attributes, and trace-context propagation therefore also apply to
+unmatched requests (404), failing handlers, and sibling routes merged into the
+same router. Register tracing once per shared router to avoid nested request
+spans. Route-scoped middleware and request services keep their original scope.
+
+With `propagateContext: true` (the default), the configured span uses the
+incoming W3C parent directly. Setting it to `false` disables this package's
+header extraction; the span instead inherits the enclosing Effect server span.
+It does not disable propagation performed by the HTTP server itself.
+
 ## Viewing Traces
 
 ### Local Development with Jaeger

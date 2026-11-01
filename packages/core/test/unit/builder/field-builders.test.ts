@@ -4,10 +4,12 @@ import * as S from "effect/Schema"
 import * as SchemaGetter from "effect/SchemaGetter"
 import {
   GraphQLObjectType,
+  GraphQLInterfaceType,
   GraphQLEnumType,
   GraphQLInputObjectType,
   GraphQLString,
   GraphQLSchema,
+  defaultFieldResolver,
   graphql,
   parse,
   subscribe,
@@ -20,9 +22,9 @@ import {
   buildSubscriptionField,
   FieldBuilderContext,
 } from "../../../src/builder/field-builders"
-import type { GraphQLEffectContext } from "../../../src/builder/types"
+import type { GraphQLEffectContext, MiddlewareContext } from "../../../src/builder/types"
 
-// These subscription tests do not inspect GraphQL resolver metadata.
+// Minimal metadata for tests that invoke subscription field configs directly.
 const subscriptionInfo = {} as GraphQLResolveInfo
 
 // Helper to create a minimal field builder context
@@ -1093,6 +1095,301 @@ describe("field-builders.ts", () => {
           value: { data: { event: withArgs ? "HELLO!" : "HELLO" } },
         })
         await iterator.return?.()
+      }
+    )
+
+    it.each([
+      { payload: Object.freeze({ id: "event-1" }), id: "event-1", rootId: "event-1" },
+      { payload: "primitive-event", id: "resolved", rootId: "primitive-event" },
+      { payload: null, id: "resolved", rootId: "null" },
+    ])(
+      "exposes the original $payload root to middleware match and apply",
+      async ({ payload, id, rootId }) => {
+        const ctx = createFieldBuilderContext()
+        const matched: GraphQLResolveInfo[] = []
+        const applied: GraphQLResolveInfo[] = []
+        ctx.middlewares = [
+          {
+            name: "rootPayload",
+            match: (info) => {
+              // Subscription setup has no emitted root value yet.
+              if (info.rootValue === undefined) return false
+              matched.push(info)
+              return info.rootValue === payload
+            },
+            apply: <A, E, R>(effect: Effect.Effect<A, E, R>, context: MiddlewareContext) => {
+              applied.push(context.info)
+              return context.info.fieldName === "rootId"
+                ? Effect.map(
+                    effect,
+                    () => String(context.info.rootValue?.id ?? context.info.rootValue) as A
+                  )
+                : effect
+            },
+          },
+        ]
+        const Event = S.Struct({ id: S.String })
+        const eventType = new GraphQLObjectType({
+          name: "Event",
+          fields: () => ({
+            id: { type: GraphQLString },
+            rootId: buildObjectField(
+              { type: S.String, resolve: () => Effect.succeed("unmatched") },
+              ctx
+            ),
+          }),
+        })
+        ctx.types.set("Event", { name: "Event", schema: Event })
+        ctx.typeRegistry.set("Event", eventType)
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: { ready: { type: GraphQLString, resolve: () => "ready" } },
+          }),
+          subscription: new GraphQLObjectType({
+            name: "Subscription",
+            fields: {
+              event: buildSubscriptionField(
+                {
+                  type: Event,
+                  subscribe: () => Effect.succeed(Stream.make(payload)),
+                  resolve: (value: typeof payload) =>
+                    Effect.succeed(
+                      typeof value === "object" && value !== null ? value : { id: "resolved" }
+                    ),
+                },
+                ctx
+              ),
+            },
+          }),
+        })
+        const result = await subscribe({
+          schema,
+          document: parse("subscription { event { id rootId } }"),
+          contextValue: createSimpleContext(),
+        })
+        if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+        const iterator = result[Symbol.asyncIterator]()
+        try {
+          expect(await iterator.next()).toEqual({
+            done: false,
+            value: { data: { event: { id, rootId } } },
+          })
+          expect(matched.map((info) => info.fieldName)).toEqual(["event", "rootId"])
+          expect(applied.map((info) => info.fieldName)).toEqual(["event", "rootId"])
+          for (const info of [...matched, ...applied]) {
+            expect(info.rootValue).toBe(payload)
+          }
+        } finally {
+          await iterator.return?.()
+        }
+      }
+    )
+
+    it.each(["frozen", "primitive", "null", "undefined"] as const)(
+      "preserves native %s roots across concurrent asynchronously wrapped event resolvers",
+      async (kind) => {
+        const roots: string[] = []
+        const recordRoot = (surface: string, info: GraphQLResolveInfo) => {
+          expect(info.rootValue).toBe(payload)
+          roots.push(surface)
+        }
+        const rootDefault = (_args: unknown, _context: unknown, info: GraphQLResolveInfo) => {
+          recordRoot("sourceFunction", info)
+          return rootId
+        }
+        const payload =
+          kind === "frozen"
+            ? Object.freeze({ id: "event-1", rootDefault })
+            : kind === "primitive"
+              ? "primitive-event"
+              : kind === "null"
+                ? null
+                : undefined
+        const rootId = kind === "frozen" ? "event-1" : String(payload)
+        let defaults = 0
+        let transforms = 0
+        let closed = 0
+        const args = S.Struct({
+          token: S.NumberFromString.pipe(
+            S.decodeTo(S.Number, {
+              decode: SchemaGetter.transform((value) => {
+                transforms++
+                return value
+              }),
+              encode: SchemaGetter.transform((value) => value),
+            }),
+            S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+          ),
+        })
+        const subscribed: S.Schema.Type<typeof args>[] = []
+        const resolved: S.Schema.Type<typeof args>[] = []
+        const ctx = createFieldBuilderContext()
+        const Event = S.Struct({ id: S.String })
+        const eventInterface = new GraphQLInterfaceType({
+          name: "EventInterface",
+          fields: {
+            id: { type: GraphQLString },
+            token: { type: GraphQLString },
+            rootNative: { type: GraphQLString },
+            rootDefault: { type: GraphQLString },
+            rootCustom: { type: GraphQLString },
+          },
+          resolveType: (_value, _context, info) => {
+            recordRoot("resolveType", info)
+            return "Event"
+          },
+        })
+        const eventType = new GraphQLObjectType({
+          name: "Event",
+          interfaces: [eventInterface],
+          fields: {
+            id: { type: GraphQLString },
+            token: { type: GraphQLString },
+            rootNative: {
+              type: GraphQLString,
+              resolve: (_parent, _args, _context, info) => {
+                recordRoot("nativeResolve", info)
+                return rootId
+              },
+            },
+            rootDefault: { type: GraphQLString },
+            rootCustom: { type: GraphQLString },
+          },
+          isTypeOf: (_value, _context, info) => {
+            recordRoot("isTypeOf", info)
+            return true
+          },
+        })
+        ctx.types.set("Event", { name: "Event", schema: Event })
+        ctx.typeRegistry.set("Event", eventType)
+        const field = buildSubscriptionField(
+          {
+            type: Event,
+            args,
+            subscribe: (operationArgs: S.Schema.Type<typeof args>) => {
+              subscribed.push(operationArgs)
+              return Effect.succeed(
+                Stream.make(payload, payload).pipe(
+                  Stream.ensuring(
+                    Effect.sync(() => {
+                      closed++
+                    })
+                  )
+                )
+              )
+            },
+            resolve: (_value: typeof payload, operationArgs: S.Schema.Type<typeof args>) => {
+              resolved.push(operationArgs)
+              return Effect.succeed({ id: rootId, token: operationArgs.token, rootDefault })
+            },
+          },
+          ctx
+        )
+        const schema = new GraphQLSchema({
+          types: [eventType],
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: { ready: { type: GraphQLString } },
+          }),
+          subscription: new GraphQLObjectType({
+            name: "Subscription",
+            fields: { event: { ...field, type: eventInterface } },
+          }),
+        })
+        const actualField = schema.getSubscriptionType()!.getFields().event
+        const originalResolve = actualField.resolve!
+        const releases: (() => void)[] = []
+        const gates = [
+          new Promise<void>((resolve) => {
+            releases[0] = resolve
+          }),
+          new Promise<void>((resolve) => {
+            releases[1] = resolve
+          }),
+        ]
+        let allEntered!: () => void
+        const ready = new Promise<void>((resolve) => {
+          allEntered = resolve
+        })
+        let entered = 0
+        actualField.resolve = async (value, fieldArgs, context, info) => {
+          recordRoot("asyncRootWrapper", info)
+          const index = entered++
+          if (entered === 2) allEntered()
+          await gates[index]
+          return originalResolve(value, fieldArgs, context, info)
+        }
+        const request = {
+          schema,
+          document: parse("subscription { event { id token rootNative rootDefault rootCustom } }"),
+          contextValue: createSimpleContext(),
+          variableValues: Object.freeze({}),
+          fieldResolver: (
+            parent: unknown,
+            fieldArgs: Record<string, unknown>,
+            context: unknown,
+            info: GraphQLResolveInfo
+          ) => {
+            recordRoot("fieldResolver", info)
+            return info.fieldName === "rootCustom"
+              ? rootId
+              : defaultFieldResolver(parent, fieldArgs, context, info)
+          },
+        }
+        const sources = await Promise.all([subscribe(request), subscribe(request)])
+        const iterators = sources.map((source) => {
+          if (!(Symbol.asyncIterator in source)) throw new Error("Subscription failed")
+          return source[Symbol.asyncIterator]()
+        })
+        try {
+          const pending = iterators.map((iterator) => iterator.next())
+          await ready
+          releases[1]()
+          const second = await pending[1]
+          releases[0]()
+          const first = await pending[0]
+          for (const [event, token] of [
+            [first, "1"],
+            [second, "2"],
+          ] as const) {
+            expect(event).toEqual({
+              done: false,
+              value: {
+                data: {
+                  event: {
+                    id: rootId,
+                    token,
+                    rootNative: rootId,
+                    rootDefault: rootId,
+                    rootCustom: rootId,
+                  },
+                },
+              },
+            })
+          }
+          expect(defaults).toBe(2)
+          expect(transforms).toBe(2)
+          expect(subscribed[0]).not.toBe(subscribed[1])
+          expect(resolved[0]).toBe(subscribed[1])
+          expect(resolved[1]).toBe(subscribed[0])
+          for (const surface of [
+            "nativeResolve",
+            "sourceFunction",
+            "fieldResolver",
+            "resolveType",
+            "isTypeOf",
+            "asyncRootWrapper",
+          ]) {
+            expect(roots.filter((root) => root === surface)).toHaveLength(
+              surface === "fieldResolver" ? 8 : 2
+            )
+          }
+        } finally {
+          releases.forEach((release) => release())
+          for (const iterator of iterators) await iterator.return?.()
+        }
+        expect(closed).toBe(2)
       }
     )
   })
