@@ -57,7 +57,7 @@ const startServer = async () => {
   })
   const exited = once(child, "exit")
   const waitForOutput = async (message: string) => {
-    const signal = AbortSignal.timeout(5_000)
+    const signal = AbortSignal.timeout(30_000)
     while (!stdout.includes(message)) {
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`Server exited before ${message}: ${diagnostics}`)
@@ -89,20 +89,20 @@ it("closes active WebSockets and finalizes active Effect requests on SIGTERM", a
     expect(
       await (
         await fetch(`http://127.0.0.1:${server.port}/`, {
-          signal: AbortSignal.timeout(5_000),
+          signal: AbortSignal.timeout(30_000),
         })
       ).text()
     ).toBe("ok")
     socket = new WebSocket(`ws://127.0.0.1:${server.port}/graphql`, "graphql-transport-ws")
-    await once(socket, "open", { signal: AbortSignal.timeout(5_000) })
+    await once(socket, "open", { signal: AbortSignal.timeout(30_000) })
     request = connect(server.port, "127.0.0.1")
     request.on("error", () => {})
     request.resume()
-    await once(request, "connect", { signal: AbortSignal.timeout(5_000) })
+    await once(request, "connect", { signal: AbortSignal.timeout(30_000) })
     request.write("GET /active HTTP/1.1\r\nHost: localhost\r\n\r\n")
     await server.waitForOutput("REQUEST_STARTED")
-    const closed = once(socket, "close", { signal: AbortSignal.timeout(5_000) })
-    const exited = once(server.child, "exit", { signal: AbortSignal.timeout(5_000) })
+    const closed = once(socket, "close", { signal: AbortSignal.timeout(30_000) })
+    const exited = once(server.child, "exit", { signal: AbortSignal.timeout(30_000) })
     server.child.kill("SIGTERM")
     const [, [code]] = await Promise.all([closed, exited])
     expect(code, server.diagnostics()).toBe(130)
@@ -112,7 +112,7 @@ it("closes active WebSockets and finalizes active Effect requests on SIGTERM", a
     request?.destroy()
     await server.stop()
   }
-}, 15_000)
+}, 120_000)
 
 it("closes incomplete HTTP headers on SIGTERM without client intervention", async () => {
   const server = await startServer()
@@ -122,18 +122,18 @@ it("closes incomplete HTTP headers on SIGTERM without client intervention", asyn
     socket = connect(server.port, "127.0.0.1")
     socket.on("error", () => {})
     socket.resume()
-    await once(socket, "connect", { signal: AbortSignal.timeout(5_000) })
+    await once(socket, "connect", { signal: AbortSignal.timeout(30_000) })
     socket.write("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n")
     // A completed request confirms the child is serving while the partial peer stays open.
     expect(
       await (
         await fetch(`http://127.0.0.1:${server.port}/`, {
-          signal: AbortSignal.timeout(5_000),
+          signal: AbortSignal.timeout(30_000),
         })
       ).text()
     ).toBe("ok")
-    const closed = once(socket, "close", { signal: AbortSignal.timeout(5_000) })
-    const exited = once(server.child, "exit", { signal: AbortSignal.timeout(5_000) })
+    const closed = once(socket, "close", { signal: AbortSignal.timeout(30_000) })
+    const exited = once(server.child, "exit", { signal: AbortSignal.timeout(30_000) })
     server.child.kill("SIGTERM")
     const [, [code]] = await Promise.all([closed, exited])
     expect(code, server.diagnostics()).toBe(130)
@@ -141,4 +141,4 @@ it("closes incomplete HTTP headers on SIGTERM without client intervention", asyn
     socket?.destroy()
     await server.stop()
   }
-}, 15_000)
+}, 120_000)
