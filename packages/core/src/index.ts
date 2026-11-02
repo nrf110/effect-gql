@@ -8,6 +8,9 @@ export * from "./server"
 export * from "./extensions"
 export * from "./analyzer-extension"
 
+export { makeSubscriptionContext } from "./subscription-context"
+export type { SubscriptionContext } from "./builder/types"
+
 // Re-export commonly used graphql types to ensure single instance
 export {
   GraphQLSchema,

@@ -109,6 +109,8 @@ subscription("messagesInChannel", {
 
 Effect GQL schemas support calling `subscribe()` from `graphql` directly. **Call `makeSubscriptionContext()` for every operation**, including retries and calls made after another subscription completes. The built-in WebSocket and SSE transports already call this factory per operation, not per connection; no client protocol changes are needed.
 
+The factory and opaque `SubscriptionContext` type are exported from `@effect-gql/core`, `@effect-gql/core/builder`, and `@effect-gql/core/server`. Factory contexts are recognized across these entrypoints in both ESM and CommonJS.
+
 With an already-built `schema` and acquired Effect `services`:
 
 ```typescript
