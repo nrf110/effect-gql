@@ -710,6 +710,10 @@ describe("ws-adapter.ts", () => {
             Effect.map(Shared, ({ prefix }) => `${prefix}:${token}:${event}`),
         })
         .buildSchema()
+      const tokenField = schema.getSubscriptionType()!.getFields().token
+      const resolveToken = tokenField.resolve!
+      tokenField.resolve = async (source, args, context, info) =>
+        `${context.user.name}:${await resolveToken(source, args, context, info)}`
       const mock = createMockSocket()
       const outgoing = Effect.runSync(
         Queue.unbounded<{ type: string; id?: string; payload?: unknown }>()
@@ -723,7 +727,11 @@ describe("ws-adapter.ts", () => {
       }
       const nextMessage = () =>
         Effect.runPromise(Queue.take(outgoing).pipe(Effect.timeout("2 seconds")))
-      const fiber = Effect.runFork(makeGraphQLWSHandler(schema, layer)(socket))
+      const fiber = Effect.runFork(
+        makeGraphQLWSHandler(schema, layer, {
+          onConnect: () => Effect.succeed({ user: { name: "alice" }, services: "metadata" }),
+        })(socket)
+      )
 
       try {
         mock.sendMessage(JSON.stringify({ type: "connection_init" }))
@@ -739,12 +747,12 @@ describe("ws-adapter.ts", () => {
         expect(await nextMessage()).toEqual({
           id: "completed",
           type: "next",
-          payload: { data: { token: "shared:11:first" } },
+          payload: { data: { token: "alice:shared:11:first" } },
         })
         expect(await nextMessage()).toEqual({
           id: "completed",
           type: "next",
-          payload: { data: { token: "shared:11:second" } },
+          payload: { data: { token: "alice:shared:11:second" } },
         })
         expect(await nextMessage()).toEqual({ id: "completed", type: "complete" })
 
@@ -758,12 +766,12 @@ describe("ws-adapter.ts", () => {
         expect(await nextMessage()).toEqual({
           id: "cancelled",
           type: "next",
-          payload: { data: { token: "shared:12:first" } },
+          payload: { data: { token: "alice:shared:12:first" } },
         })
         expect(await nextMessage()).toEqual({
           id: "cancelled",
           type: "next",
-          payload: { data: { token: "shared:12:second" } },
+          payload: { data: { token: "alice:shared:12:second" } },
         })
         expect(acquired).toBe(1)
         expect(released).toBe(0)

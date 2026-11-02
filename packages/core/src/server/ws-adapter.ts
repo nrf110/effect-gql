@@ -1,7 +1,7 @@
 import { Context, Effect, Layer, Stream, Queue, Fiber, Deferred } from "effect"
 import { GraphQLSchema, subscribe, GraphQLError } from "graphql"
 import type { ServerOptions } from "graphql-ws"
-import type { GraphQLEffectContext } from "../builder/types"
+import { makeSubscriptionContext } from "../subscription-context"
 import type {
   EffectWebSocket,
   GraphQLWSOptions,
@@ -268,7 +268,10 @@ const runConnectionLifecycle = <R>(
     )
 
     // Finish subscription finalizers before closing the connection service scope.
-    yield* Effect.promise(() => closedHandler(1000, "Connection closed"))
+    yield* Effect.tryPromise({
+      try: () => closedHandler(1000, "Connection closed"),
+      catch: (error) => error,
+    }).pipe(Effect.catchCause(() => Effect.void))
     yield* Fiber.interrupt(messageFiber)
     yield* Fiber.interrupt(closeFiber)
     yield* Fiber.interrupt(processMessagesFiber)
@@ -343,12 +346,12 @@ export const makeGraphQLWSHandler = <R, LE = never>(
         const serverOptions: ServerOptions<Record<string, unknown>, WSExtra<R>> = {
           schema,
 
-          context: async (ctx): Promise<GraphQLEffectContext<R> & Record<string, unknown>> => {
+          context: async (ctx) => {
             const extra = ctx.extra as WSExtra<R>
-            return {
-              services: extra.services,
+            return makeSubscriptionContext({
               ...extra.connectionParams,
-            }
+              services: extra.services,
+            })
           },
 
           subscribe: async (args) => subscribe(args),

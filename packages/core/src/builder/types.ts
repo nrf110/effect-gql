@@ -293,6 +293,16 @@ export interface GraphQLEffectContext<R> {
   services: Context.Context<R>
 }
 
+declare const subscriptionContextBrand: unique symbol
+
+/**
+ * A context created by makeSubscriptionContext for one subscription operation.
+ * The private registration, not a copied property, establishes runtime identity.
+ */
+export type SubscriptionContext<
+  C extends GraphQLEffectContext<never> = GraphQLEffectContext<never>,
+> = C & { readonly [subscriptionContextBrand]: true }
+
 /**
  * Type registries used during schema building
  */

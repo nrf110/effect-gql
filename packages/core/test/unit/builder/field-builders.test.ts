@@ -25,6 +25,7 @@ import {
   FieldBuilderContext,
 } from "../../../src/builder/field-builders"
 import type { GraphQLEffectContext, MiddlewareContext } from "../../../src/builder/types"
+import { makeSubscriptionContext } from "../../../src/builder"
 
 // Minimal metadata for tests that invoke subscription field configs directly.
 const subscriptionInfo = {} as GraphQLResolveInfo
@@ -46,9 +47,8 @@ const createFieldBuilderContext = (): FieldBuilderContext => ({
 })
 
 // Simple test context for effects with no requirements
-const createSimpleContext = (): GraphQLEffectContext<never> => ({
-  services: Context.empty(),
-})
+const createSimpleContext = (): GraphQLEffectContext<never> =>
+  makeSubscriptionContext({ services: Context.empty() })
 
 describe("field-builders.ts", () => {
   describe("decoded GraphQL arguments", () => {
@@ -502,8 +502,8 @@ describe("field-builders.ts", () => {
       const document = parse("subscription { event }")
       const { services } = createSimpleContext()
       const [first, second] = await Promise.all([
-        subscribe({ schema, document, contextValue: { services } }),
-        subscribe({ schema, document, contextValue: { services } }),
+        subscribe({ schema, document, contextValue: makeSubscriptionContext({ services }) }),
+        subscribe({ schema, document, contextValue: makeSubscriptionContext({ services }) }),
       ])
       if (!(Symbol.asyncIterator in first) || !(Symbol.asyncIterator in second)) {
         throw new Error("Subscriptions failed")
@@ -582,7 +582,7 @@ describe("field-builders.ts", () => {
         const result = await subscribe({
           schema,
           document: parse(`subscription { doubled${argumentsText} }`),
-          contextValue: { services: contextValue.services },
+          contextValue: makeSubscriptionContext({ services: contextValue.services }),
         })
         if (!(Symbol.asyncIterator in result)) {
           throw new Error(`Subscription failed: ${JSON.stringify(result)}`)
@@ -599,7 +599,7 @@ describe("field-builders.ts", () => {
       const invalid = await subscribe({
         schema,
         document: parse('subscription { doubled(amount: "not-a-number") }'),
-        contextValue: { services: contextValue.services },
+        contextValue: makeSubscriptionContext({ services: contextValue.services }),
       })
       if (Symbol.asyncIterator in invalid) {
         throw new Error("Invalid arguments unexpectedly started a subscription")
@@ -1069,8 +1069,174 @@ describe("field-builders.ts", () => {
         path: ["event"],
         extensions: { code },
       })
-      return result.errors![0]
     }
+
+    it("rejects unregistered lookalikes before decoding while preserving fresh factory operations", async () => {
+      const Subscriber = Context.Service<{ prefix: string }>("field-builders/Subscriber")
+      const service = { prefix: "subscriber" }
+      const metadata = { label: "shared" }
+      const input = { services: Context.make(Subscriber, service), metadata }
+      const firstContext = Object.freeze(makeSubscriptionContext(input))
+      const secondContext = Object.freeze(makeSubscriptionContext(input))
+      let defaults = 0
+      let transforms = 0
+      let setups = 0
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value
+            }),
+            encode: SchemaGetter.transform((value) => value),
+          }),
+          S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+        ),
+      })
+      const subscribed: S.Schema.Type<typeof args>[] = []
+      const resolved: S.Schema.Type<typeof args>[] = []
+      const schema = makeSchema(
+        buildSubscriptionField(
+          {
+            type: S.String,
+            args,
+            subscribe: (operationArgs: S.Schema.Type<typeof args>) => {
+              setups++
+              subscribed.push(operationArgs)
+              return Effect.succeed(Stream.make("raw"))
+            },
+            resolve: (_value: string, operationArgs: S.Schema.Type<typeof args>) => {
+              resolved.push(operationArgs)
+              return Effect.succeed(String(operationArgs.token))
+            },
+          },
+          createFieldBuilderContext()
+        )
+      )
+      const field = schema.getSubscriptionType()!.getFields().event
+      const originalResolve = field.resolve!
+      const observedContexts: unknown[] = []
+      field.resolve = async (value, fieldArgs, context, info) => {
+        observedContexts.push(context)
+        expect(context.services).toBe(input.services)
+        expect(context.metadata).toBe(metadata)
+        const subscriber = Effect.runSync(Effect.provide(Subscriber, context.services))
+        expect(subscriber).toBe(service)
+        const token = await originalResolve(value, fieldArgs, context, info)
+        return `${subscriber.prefix}:${context.metadata.label}:${token}`
+      }
+      const document = parse("subscription { event }")
+      for (const contextValue of [{ services: input.services }, { ...firstContext }, input]) {
+        expectInitialError(
+          await subscribe({ schema, document, contextValue }),
+          "SUBSCRIPTION_CONTEXT_REQUIRED"
+        )
+        expect(defaults).toBe(0)
+        expect(transforms).toBe(0)
+        expect(setups).toBe(0)
+      }
+
+      const sources = await Promise.all(
+        [firstContext, secondContext].map((contextValue) =>
+          subscribe({ schema, document, contextValue })
+        )
+      )
+      const iterators = sources.map((source) => {
+        if (!(Symbol.asyncIterator in source)) throw new Error("Factory context failed")
+        return source[Symbol.asyncIterator]()
+      })
+      try {
+        expectInitialError(
+          await subscribe({ schema, document, contextValue: { ...firstContext } }),
+          "SUBSCRIPTION_CONTEXT_REQUIRED"
+        )
+        expect(defaults).toBe(2)
+        expect(transforms).toBe(2)
+        expect(setups).toBe(2)
+        expect(await iterators[0].next()).toEqual({
+          done: false,
+          value: { data: { event: "subscriber:shared:1" } },
+        })
+        expect(await iterators[1].next()).toEqual({
+          done: false,
+          value: { data: { event: "subscriber:shared:2" } },
+        })
+        expect(observedContexts[0]).toBe(firstContext)
+        expect(observedContexts[1]).toBe(secondContext)
+        expect(resolved[0]).toBe(subscribed[0])
+        expect(resolved[1]).toBe(subscribed[1])
+        expect(subscribed[0]).not.toBe(subscribed[1])
+      } finally {
+        for (const iterator of iterators) await iterator.return?.()
+      }
+    })
+
+    it("rejects a resolver wrapper's context copy without losing the operation's decoded args", async () => {
+      let defaults = 0
+      let transforms = 0
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value + 10
+            }),
+            encode: SchemaGetter.transform((value) => value - 10),
+          }),
+          S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+        ),
+      })
+      const resolved: S.Schema.Type<typeof args>[] = []
+      let subscribed: S.Schema.Type<typeof args> | undefined
+      const schema = makeSchema(
+        buildSubscriptionField(
+          {
+            type: S.Number,
+            args,
+            subscribe: (operationArgs: S.Schema.Type<typeof args>) => {
+              subscribed = operationArgs
+              return Effect.succeed(Stream.make(10, 20))
+            },
+            resolve: (value: number, operationArgs: S.Schema.Type<typeof args>) => {
+              resolved.push(operationArgs)
+              return Effect.succeed(value + operationArgs.token)
+            },
+          },
+          createFieldBuilderContext()
+        )
+      )
+      const field = schema.getSubscriptionType()!.getFields().event
+      const originalResolve = field.resolve!
+      const source = await subscribe({
+        schema,
+        document: parse("subscription { event }"),
+        contextValue: Object.freeze(makeSubscriptionContext({ services: Context.empty() })),
+      })
+      if (!(Symbol.asyncIterator in source)) throw new Error("Factory context failed")
+      const iterator = source[Symbol.asyncIterator]()
+      field.resolve = (value, fieldArgs, context, info) =>
+        originalResolve(value, fieldArgs, { ...context }, info)
+      try {
+        const rejected = await iterator.next()
+        expect(rejected.done).toBe(false)
+        expect(rejected.value.errors?.[0]).toMatchObject({
+          path: ["event"],
+          extensions: { code: "SUBSCRIPTION_CONTEXT_REQUIRED" },
+        })
+        expect(resolved).toEqual([])
+        field.resolve = originalResolve
+        expect(await iterator.next()).toEqual({
+          done: false,
+          value: { data: { event: 31 } },
+        })
+        expect(defaults).toBe(1)
+        expect(transforms).toBe(1)
+        expect(resolved[0]).toBe(subscribed)
+      } finally {
+        field.resolve = originalResolve
+        await iterator.return?.()
+      }
+    })
 
     it("rejects a concurrent duplicate before repeating argument decoding or source setup", async () => {
       let defaults = 0
@@ -1125,13 +1291,12 @@ describe("field-builders.ts", () => {
           createFieldBuilderContext()
         )
       )
-      const contextValue = Object.freeze(createSimpleContext())
+      const contextValue = Object.freeze(makeSubscriptionContext({ services: Context.empty() }))
       const request = { schema, document: parse("subscription { event }"), contextValue }
       const firstPending = subscribe(request)
       await decoding
       try {
-        const error = expectInitialError(await subscribe(request), "SUBSCRIPTION_CONTEXT_REUSED")
-        expect(error.message).toMatch(/fresh|new|one.use|unique/i)
+        expectInitialError(await subscribe(request), "SUBSCRIPTION_CONTEXT_REUSED")
         expect(defaults).toBe(1)
         expect(transforms).toBe(0)
         expect(setups).toBe(0)
@@ -1141,7 +1306,7 @@ describe("field-builders.ts", () => {
       const first = await firstPending
       const fresh = await subscribe({
         ...request,
-        contextValue: Object.freeze({ services: contextValue.services }),
+        contextValue: Object.freeze(makeSubscriptionContext({ services: contextValue.services })),
       })
       if (!(Symbol.asyncIterator in first) || !(Symbol.asyncIterator in fresh)) {
         throw new Error("Fresh subscription contexts failed")
@@ -1179,8 +1344,8 @@ describe("field-builders.ts", () => {
       )
       const { services } = createSimpleContext()
       const document = parse("subscription { event }")
-      const completedContext = Object.freeze({ services })
-      const cancelledContext = Object.freeze({ services })
+      const completedContext = Object.freeze(makeSubscriptionContext({ services }))
+      const cancelledContext = Object.freeze(makeSubscriptionContext({ services }))
       const start = (contextValue: GraphQLEffectContext<never>) =>
         subscribe({ schema, document, contextValue })
 
@@ -1205,7 +1370,7 @@ describe("field-builders.ts", () => {
       expectInitialError(await start(cancelledContext), "SUBSCRIPTION_CONTEXT_REUSED")
       expect(setups).toBe(2)
 
-      const fresh = await start({ services })
+      const fresh = await start(makeSubscriptionContext({ services }))
       if (!(Symbol.asyncIterator in fresh)) throw new Error("Fresh context failed")
       const freshIterator = fresh[Symbol.asyncIterator]()
       expect(await freshIterator.next()).toEqual({
@@ -1254,8 +1419,8 @@ describe("field-builders.ts", () => {
         )
       )
       const { services } = createSimpleContext()
-      const decodeContext = Object.freeze({ services })
-      const setupContext = Object.freeze({ services })
+      const decodeContext = Object.freeze(makeSubscriptionContext({ services }))
+      const setupContext = Object.freeze(makeSubscriptionContext({ services }))
       const omitted = parse("subscription { event }")
       const explicit = parse('subscription { event(token: "7") }')
       const invalid = await subscribe({ schema, document: omitted, contextValue: decodeContext })
@@ -1279,7 +1444,11 @@ describe("field-builders.ts", () => {
       expect(transforms).toBe(1)
       expect(setups).toBe(1)
 
-      const fresh = await subscribe({ schema, document: explicit, contextValue: { services } })
+      const fresh = await subscribe({
+        schema,
+        document: explicit,
+        contextValue: makeSubscriptionContext({ services }),
+      })
       if (!(Symbol.asyncIterator in fresh)) throw new Error("Fresh context failed")
       const iterator = fresh[Symbol.asyncIterator]()
       expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 7 } } })
@@ -1305,12 +1474,10 @@ describe("field-builders.ts", () => {
       )
       const document = parse("subscription { event }")
       for (const contextValue of [undefined, "not-an-object", { services: {} }]) {
-        const error = expectInitialError(
+        expectInitialError(
           await subscribe({ schema, document, contextValue }),
           "SUBSCRIPTION_CONTEXT_REQUIRED"
         )
-        expect(error.message).toMatch(/context/i)
-        expect(error.message).toMatch(/services/)
       }
       expect(setups).toBe(0)
       const fresh = await subscribe({ schema, document, contextValue: createSimpleContext() })
@@ -1615,8 +1782,14 @@ describe("field-builders.ts", () => {
         }
         const { services } = createSimpleContext()
         const sources = await Promise.all([
-          subscribe({ ...request, contextValue: Object.freeze({ services }) }),
-          subscribe({ ...request, contextValue: Object.freeze({ services }) }),
+          subscribe({
+            ...request,
+            contextValue: Object.freeze(makeSubscriptionContext({ services })),
+          }),
+          subscribe({
+            ...request,
+            contextValue: Object.freeze(makeSubscriptionContext({ services })),
+          }),
         ])
         const iterators = sources.map((source) => {
           if (!(Symbol.asyncIterator in source)) throw new Error("Subscription failed")

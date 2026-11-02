@@ -10,7 +10,7 @@ import {
   type DocumentNode,
   type OperationDefinitionNode,
 } from "graphql"
-import type { GraphQLEffectContext } from "../builder/types"
+import { makeSubscriptionContext } from "../subscription-context"
 import {
   SSEError,
   type GraphQLSSEOptions,
@@ -190,10 +190,10 @@ export const makeSSESubscriptionStream = <R>(
       }
 
       // Execute the subscription
-      const graphqlContext: GraphQLEffectContext<R> & Record<string, unknown> = {
-        services,
+      const graphqlContext = makeSubscriptionContext({
         ...connectionContext,
-      }
+        services,
+      })
 
       const subscriptionResult = yield* Effect.tryPromise({
         try: () =>

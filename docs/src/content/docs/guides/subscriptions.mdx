@@ -107,11 +107,12 @@ subscription("messagesInChannel", {
 
 ### Native GraphQL subscriptions
 
-Effect GQL schemas support calling `subscribe()` from `graphql` directly. **Pass a fresh context object for every call**, including retries and calls made after another subscription completes. The built-in WebSocket and SSE transports already create this object per operation; no client protocol changes are needed.
+Effect GQL schemas support calling `subscribe()` from `graphql` directly. **Call `makeSubscriptionContext()` for every operation**, including retries and calls made after another subscription completes. The built-in WebSocket and SSE transports already call this factory per operation, not per connection; no client protocol changes are needed.
 
 With an already-built `schema` and acquired Effect `services`:
 
 ```typescript
+import { makeSubscriptionContext } from "@effect-gql/core"
 import { parse, subscribe } from "graphql"
 
 // The document and services can be shared.
@@ -121,15 +122,17 @@ function startSubscription() {
   return subscribe({
     schema,
     document,
-    // Allocate inside the function, not once per WebSocket connection.
-    contextValue: { services },
+    // Create inside the function, not once per WebSocket connection.
+    contextValue: makeSubscriptionContext({ services }),
   })
 }
 ```
 
-No special factory is required. A frozen context object also works. Only the wrapper identity must be new: the immutable Effect `Context` and its services are referenced, not copied or rebuilt. Creating the wrapper does not change service-layer lifetimes or replace proper scoping of request-specific services.
+The factory returns a new, registered shallow context wrapper on every call, even when you pass the same input object. The input itself is not registered. Plain `{ services }` objects and spread copies of a factory-created context are rejected; pass the actual returned object. You may freeze that returned object with `Object.freeze(makeSubscriptionContext({ services }))`.
 
-Subscription setup claims the context before decoding arguments or opening the source stream. A reused context returns an initial GraphQL error with `extensions.code: "SUBSCRIPTION_CONTEXT_REUSED"`, even after cancellation, completion, or failed setup. A missing context or invalid `services` value returns `"SUBSCRIPTION_CONTEXT_REQUIRED"`. Check the initial result for `errors` before treating it as an async iterable.
+Additional properties can be supplied with `makeSubscriptionContext({ services, user })`. Services and extra property values are referenced, not copied or rebuilt, so creating a fresh operation wrapper is cheap. It does not change service-layer lifetimes or replace proper scoping of request-specific services. In the built-in transports, `services` is reserved: connection metadata cannot replace the framework's Effect context.
+
+Subscription setup synchronously claims the registered context once, before decoding arguments or opening the source stream. That identity remains used for its entire lifetime: reuse returns an initial GraphQL error with `extensions.code: "SUBSCRIPTION_CONTEXT_REUSED"`, even after cancellation, completion, or failed setup. A missing, invalid, ordinary, or copied context returns `"SUBSCRIPTION_CONTEXT_REQUIRED"` with guidance to call `makeSubscriptionContext({ services, ...extraProperties })`. Check the initial result for `errors` before treating it as an async iterable.
 
 Arguments are decoded once and retained for all of that operation's events. The iterator yields original payloads, so native resolvers receive the real payload in `info.rootValue`. Async resolver wrappers may delay or reorder execution, but must forward the same context object; replacing it loses the operation identity and produces `"SUBSCRIPTION_CONTEXT_REQUIRED"` when the custom event resolver looks up its arguments.
 

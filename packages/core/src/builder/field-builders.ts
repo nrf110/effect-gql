@@ -18,6 +18,7 @@ import {
   type InputTypeLookupCache,
 } from "./type-registry"
 import { getASTView, isOptionDeclaration } from "../schema-mapping"
+import { subscriptionOperations } from "../subscription-context"
 
 /**
  * Encode a resolver's output value using the schema.
@@ -109,29 +110,21 @@ function makeArgsDecoder(schema: S.Top) {
   return (args: unknown) => decode(restoreGraphQLInput(schema.ast, args))
 }
 
-interface SubscriptionOperation {
-  args: unknown
-}
-
-// Context identities are permanently one-use. Weak keys keep operation metadata
-// available to delayed event resolvers without retaining completed operations.
-const subscriptionOperations = new WeakMap<GraphQLEffectContext<any>, SubscriptionOperation>()
-
-function claimSubscriptionContext(context: GraphQLEffectContext<any>): SubscriptionOperation {
-  if (typeof context !== "object" || context === null || !Context.isContext(context.services)) {
+function claimSubscriptionContext(context: GraphQLEffectContext<any>) {
+  const operation = subscriptionOperations.get(context)
+  if (!operation || !Context.isContext(context.services)) {
     throw new GraphQLError(
-      "Pass a fresh context object containing Effect services to each subscribe() call.",
+      "Pass a fresh context from makeSubscriptionContext({ services }) to each subscribe() call. Plain objects and copied contexts are not registered.",
       { extensions: { code: "SUBSCRIPTION_CONTEXT_REQUIRED" } }
     )
   }
-  if (subscriptionOperations.has(context)) {
+  if (operation.claimed) {
     throw new GraphQLError(
-      "This subscription context has already been used. Pass a fresh context object to each subscribe() call, not one context per WebSocket connection. Reuse the services, not the context object.",
+      "This subscription context has already been used. Call makeSubscriptionContext({ services }) for each subscribe() invocation, not once per WebSocket connection. Reuse the services, not the context object.",
       { extensions: { code: "SUBSCRIPTION_CONTEXT_REUSED" } }
     )
   }
-  const operation: SubscriptionOperation = { args: undefined }
-  subscriptionOperations.set(context, operation)
+  operation.claimed = true
   return operation
 }
 
@@ -364,9 +357,9 @@ export function buildSubscriptionField(
     resolve: config.resolve
       ? async (value, _args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
           const operation = subscriptionOperations.get(context)
-          if (!operation) {
+          if (!operation?.claimed) {
             throw new GraphQLError(
-              "Subscription event resolvers must preserve the operation context passed to subscribe().",
+              "Subscription event resolvers must preserve the registered context from makeSubscriptionContext passed to subscribe().",
               { extensions: { code: "SUBSCRIPTION_CONTEXT_REQUIRED" } }
             )
           }

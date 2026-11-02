@@ -68,6 +68,9 @@ export { WebSocketError } from "./ws-types"
 
 export { makeGraphQLWSHandler } from "./ws-adapter"
 
+export { makeSubscriptionContext } from "../subscription-context"
+export type { SubscriptionContext } from "../builder/types"
+
 // WebSocket utilities for 'ws' library integration
 export type { WsWebSocket } from "./ws-utils"
 export { toEffectWebSocketFromWs, WS_CLOSED } from "./ws-utils"

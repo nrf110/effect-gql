@@ -978,7 +978,12 @@ describe("sse-adapter.ts", () => {
             Effect.map(Shared, ({ prefix }) => `${prefix}:${token}:${event}`),
         })
         .buildSchema()
+      const tokenField = schema.getSubscriptionType()!.getFields().token
+      const resolveToken = tokenField.resolve!
+      tokenField.resolve = async (source, args, context, info) =>
+        `${context.user.name}:${await resolveToken(source, args, context, info)}`
       const handler = makeGraphQLSSEHandler(schema, Layer.succeed(Shared, shared), {
+        onConnect: () => Effect.succeed({ user: { name: "alice" }, services: "metadata" }),
         onComplete: () =>
           Effect.map(Shared, ({ prefix }) => {
             completed.push(prefix)
@@ -998,13 +1003,13 @@ describe("sse-adapter.ts", () => {
       )
 
       expect(first).toEqual([
-        formatNextEvent({ data: { token: "shared:11:first" } }),
-        formatNextEvent({ data: { token: "shared:11:second" } }),
+        formatNextEvent({ data: { token: "alice:shared:11:first" } }),
+        formatNextEvent({ data: { token: "alice:shared:11:second" } }),
         formatCompleteEvent(),
       ])
       expect(second).toEqual([
-        formatNextEvent({ data: { token: "shared:12:first" } }),
-        formatNextEvent({ data: { token: "shared:12:second" } }),
+        formatNextEvent({ data: { token: "alice:shared:12:first" } }),
+        formatNextEvent({ data: { token: "alice:shared:12:second" } }),
       ])
       expect(defaults).toBe(2)
       expect(transforms).toBe(2)

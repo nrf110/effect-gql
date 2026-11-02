@@ -13,6 +13,7 @@ export type {
   SubscriptionFieldRegistration,
   ObjectFieldRegistration,
   GraphQLEffectContext,
+  SubscriptionContext,
   TypeRegistries,
   CacheHint,
   CacheControlScope,
@@ -43,6 +44,8 @@ export {
 
 // Re-export execute helper
 export { execute } from "./execute"
+
+export { makeSubscriptionContext } from "../subscription-context"
 
 // Re-export utilities that may be useful externally
 export { getSchemaName } from "./type-registry"
