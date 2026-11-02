@@ -232,7 +232,7 @@ const runConnectionLifecycle = <R>(
     // Create message queue for bridging Stream to callback
     const messageQueue = yield* Queue.unbounded<string>()
     const closedDeferred = yield* Deferred.make<CloseEvent, WebSocketError>()
-    let activeDispatch: Promise<void> | undefined
+    const activeDispatches = new Set<Promise<void>>()
     const stopDispatching = Effect.sync(() => {
       extra.closing = true
     })
@@ -269,10 +269,15 @@ const runConnectionLifecycle = <R>(
       Effect.gen(function* () {
         while (!extra.closing) {
           const message = yield* Queue.take(messageQueue)
-          yield* Effect.tryPromise({
-            try: () => (activeDispatch = dispatchMessage(message)),
-            catch: (error) => error,
-          }).pipe(Effect.catch(() => Effect.void))
+          yield* Effect.sync(() => {
+            if (extra.closing) return
+            const pending = dispatchMessage(message)
+            activeDispatches.add(pending)
+            const settled = () => {
+              activeDispatches.delete(pending)
+            }
+            void pending.then(settled, settled)
+          })
         }
       })
     )
@@ -294,14 +299,11 @@ const runConnectionLifecycle = <R>(
             catch: (error) => error,
           }).pipe(Effect.catchCause(() => Effect.void))
 
-          // Interrupting the Effect does not cancel its native dispatch Promise.
-          // Keep services alive through late setup, iterator cleanup, and hooks.
-          const pending = activeDispatch
-          if (pending) {
-            yield* Effect.tryPromise({
-              try: () => pending,
-              catch: (error) => error,
-            }).pipe(Effect.catchCause(() => Effect.void))
+          // Message callbacks include the entire subscription lifetime, so join
+          // them only after closing registered sources. Late setup can create
+          // additional iterator-return work while these callbacks settle.
+          if (activeDispatches.size > 0) {
+            yield* Effect.promise(() => Promise.allSettled(activeDispatches))
           }
           if (extra.pendingReturns.size > 0) {
             yield* Effect.promise(() => Promise.allSettled(extra.pendingReturns))

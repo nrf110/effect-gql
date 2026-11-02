@@ -20,6 +20,13 @@ acquired only once per build. Connection/subscription resources are released
 when that connection closes or that subscription completes or is cancelled;
 ambient services retain their surrounding scope.
 
+A WebSocket connection runs accepted operations concurrently. An open
+subscription does not block other subscriptions, queries, or ping/pong messages.
+A client `complete` message cancels only the operation with that ID. Clients
+must wait for `connection_ack` before sending operations; an operation sent
+while an asynchronous `onConnect` hook is still running closes the connection
+with code `4401` (`Unauthorized`).
+
 WebSocket shutdown discards queued messages and awaits active subscription source finalizers, in-flight setup and lifecycle hooks, and cleanup of any late-created iterator before releasing connection-scoped services. This includes asynchronous cleanup and closure during the handoff between operation setup and iterator registration. Operations whose setup was already running may finish setup during shutdown, but their iterators are closed without being consumed.
 
 If a WebSocket connection's service layer fails to initialize, the upgraded
