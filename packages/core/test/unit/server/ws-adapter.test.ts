@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { EventEmitter } from "node:events"
 import { Effect, Layer, Stream, Queue, Deferred, Fiber, Context, References } from "effect"
 import * as S from "effect/Schema"
@@ -10,6 +10,7 @@ import {
   GraphQLInt,
   GraphQLNonNull,
 } from "graphql"
+import * as GraphqlWs from "graphql-ws"
 import { makeGraphQLWSHandler } from "../../../src/server/ws-adapter"
 import { toEffectWebSocketFromWs, type WsWebSocket } from "../../../src/server/ws-utils"
 import type { EffectWebSocket, WebSocketError, CloseEvent } from "../../../src/server/ws-types"
@@ -648,6 +649,430 @@ describe("ws-adapter.ts", () => {
 
       // Handler should complete without hanging
       expect(result).toBeUndefined()
+    })
+
+    it("discards queued subscriptions while awaiting source and disconnect cleanup", async () => {
+      const events: string[] = []
+      const pulled = Effect.runSync(Deferred.make<void>())
+      const queued = Effect.runSync(Deferred.make<void>())
+      const returning = Effect.runSync(Deferred.make<void>())
+      const finishReturn = Effect.runSync(Deferred.make<void>())
+      const disconnecting = Effect.runSync(Deferred.make<void>())
+      const finishDisconnect = Effect.runSync(Deferred.make<void>())
+      const pending: Array<(result: IteratorResult<unknown>) => void> = []
+      let opened = 0
+      const schema = createTestSchema()
+      schema.getSubscriptionType()!.getFields().tick.subscribe = () => {
+        const id = ++opened
+        events.push(`subscribe:${id}`)
+        return {
+          [Symbol.asyncIterator]() {
+            return this
+          },
+          next: () =>
+            new Promise<IteratorResult<unknown>>((resolve) => {
+              pending.push(resolve)
+              Effect.runSync(Deferred.succeed(pulled, undefined))
+            }),
+          return: async () => {
+            events.push(`return:${id}`)
+            for (const resolve of pending) resolve({ done: true, value: undefined })
+            Effect.runSync(Deferred.succeed(returning, undefined))
+            await Effect.runPromise(Deferred.await(finishReturn))
+            events.push(`finalized:${id}`)
+            return { done: true, value: undefined }
+          },
+        }
+      }
+      const layer = Layer.effectDiscard(
+        Effect.acquireRelease(Effect.void, () =>
+          Effect.sync(() => {
+            events.push("released")
+          })
+        )
+      )
+      const mock = createMockSocket()
+      const socket: EffectWebSocket = {
+        ...mock.socket,
+        messages: mock.socket.messages.pipe(
+          Stream.tap((message) =>
+            JSON.parse(message).id === "queued" ? Deferred.succeed(queued, undefined) : Effect.void
+          )
+        ),
+      }
+      const fiber = Effect.runFork(
+        makeGraphQLWSHandler(schema, layer, {
+          onDisconnect: () =>
+            Effect.gen(function* () {
+              events.push("disconnect:start")
+              yield* Deferred.succeed(disconnecting, undefined)
+              yield* Deferred.await(finishDisconnect)
+              events.push("disconnect:end")
+            }),
+        })(socket)
+      )
+      try {
+        mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+        mock.sendMessage(
+          JSON.stringify({
+            id: "active",
+            type: "subscribe",
+            payload: { query: "subscription { tick { count } }" },
+          })
+        )
+        await Effect.runPromise(Deferred.await(pulled).pipe(Effect.timeout("2 seconds")))
+        mock.sendMessage(
+          JSON.stringify({
+            id: "queued",
+            type: "subscribe",
+            payload: { query: "subscription { tick { count } }" },
+          })
+        )
+        await Effect.runPromise(Deferred.await(queued).pipe(Effect.timeout("2 seconds")))
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Deferred.await(returning).pipe(Effect.timeout("2 seconds")))
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(opened).toBe(1)
+        expect(events).toEqual(["subscribe:1", "return:1"])
+
+        Effect.runSync(Deferred.succeed(finishReturn, undefined))
+        await Effect.runPromise(Deferred.await(disconnecting).pipe(Effect.timeout("2 seconds")))
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(opened).toBe(1)
+        expect(events).toEqual(["subscribe:1", "return:1", "finalized:1", "disconnect:start"])
+
+        Effect.runSync(Deferred.succeed(finishDisconnect, undefined))
+        await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+        expect(events).toEqual([
+          "subscribe:1",
+          "return:1",
+          "finalized:1",
+          "disconnect:start",
+          "disconnect:end",
+          "released",
+        ])
+      } finally {
+        for (const resolve of pending) resolve({ done: true, value: undefined })
+        Effect.runSync(Deferred.succeed(finishReturn, undefined))
+        Effect.runSync(Deferred.succeed(finishDisconnect, undefined))
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Fiber.interrupt(fiber))
+      }
+    })
+
+    it.each([
+      ["hook", "close"],
+      ["source", "close"],
+      ["hook", "interrupt"],
+      ["source", "interrupt"],
+    ] as const)(
+      "awaits in-flight %s setup and late iterator cleanup on %s",
+      async (phase, termination) => {
+        const events: string[] = []
+        const started = Effect.runSync(Deferred.make<void>())
+        const finishSetup = Effect.runSync(Deferred.make<void>())
+        const returning = Effect.runSync(Deferred.make<void>())
+        const finishReturn = Effect.runSync(Deferred.make<void>())
+        let released = false
+        let returns = 0
+        const setup = Effect.gen(function* () {
+          yield* Deferred.succeed(started, undefined)
+          yield* Deferred.await(finishSetup)
+          events.push(`setup:${released}`)
+        })
+        const schema = createTestSchema()
+        schema.getSubscriptionType()!.getFields().tick.subscribe = async () => {
+          if (phase === "source") await Effect.runPromise(setup)
+          events.push(`source:${released}`)
+          return {
+            [Symbol.asyncIterator]() {
+              return this
+            },
+            next: async () => {
+              throw new Error("A closed subscription must not be consumed")
+            },
+            return: async () => {
+              returns++
+              events.push(`return:start:${released}`)
+              Effect.runSync(Deferred.succeed(returning, undefined))
+              await Effect.runPromise(Deferred.await(finishReturn))
+              events.push(`return:end:${released}`)
+              return { done: true, value: undefined }
+            },
+          }
+        }
+        const layer = Layer.effectDiscard(
+          Effect.acquireRelease(Effect.void, () =>
+            Effect.sync(() => {
+              released = true
+              events.push("released")
+            })
+          )
+        )
+        const mock = createMockSocket()
+        const fiber = Effect.runFork(
+          makeGraphQLWSHandler(schema, layer, {
+            onSubscribe: () => (phase === "hook" ? setup : Effect.void),
+          })(mock.socket)
+        )
+        try {
+          mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+          mock.sendMessage(
+            JSON.stringify({
+              id: "pending",
+              type: "subscribe",
+              payload: { query: "subscription { tick { count } }" },
+            })
+          )
+          await Effect.runPromise(Deferred.await(started).pipe(Effect.timeout("2 seconds")))
+          if (termination === "close") mock.closeConnection(1000, "Done")
+          else Effect.runFork(Fiber.interrupt(fiber))
+          await new Promise<void>((resolve) => setImmediate(resolve))
+          expect(released).toBe(false)
+
+          Effect.runSync(Deferred.succeed(finishSetup, undefined))
+          await Effect.runPromise(Deferred.await(returning).pipe(Effect.timeout("2 seconds")))
+          expect(released).toBe(false)
+          expect(returns).toBe(1)
+
+          Effect.runSync(Deferred.succeed(finishReturn, undefined))
+          await Effect.runPromise(Fiber.await(fiber).pipe(Effect.timeout("2 seconds")))
+          expect(events).toEqual([
+            "setup:false",
+            "source:false",
+            "return:start:false",
+            "return:end:false",
+            "released",
+          ])
+          expect(returns).toBe(1)
+        } finally {
+          Effect.runSync(Deferred.succeed(finishSetup, undefined))
+          Effect.runSync(Deferred.succeed(finishReturn, undefined))
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.interrupt(fiber))
+        }
+      }
+    )
+
+    it("awaits an in-flight completion hook before releasing connection services", async () => {
+      const events: string[] = []
+      const completing = Effect.runSync(Deferred.make<void>())
+      const finishComplete = Effect.runSync(Deferred.make<void>())
+      const layer = Layer.effectDiscard(
+        Effect.acquireRelease(Effect.void, () =>
+          Effect.sync(() => {
+            events.push("released")
+          })
+        )
+      )
+      const mock = createMockSocket()
+      const fiber = Effect.runFork(
+        makeGraphQLWSHandler(createTestSchema(), layer, {
+          onComplete: () =>
+            Effect.gen(function* () {
+              events.push("complete:start")
+              yield* Deferred.succeed(completing, undefined)
+              yield* Deferred.await(finishComplete)
+              events.push("complete:end")
+            }),
+        })(mock.socket)
+      )
+      try {
+        mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+        mock.sendMessage(
+          JSON.stringify({
+            id: "completed",
+            type: "subscribe",
+            payload: { query: "subscription { tick { count } }" },
+          })
+        )
+        await Effect.runPromise(Deferred.await(completing).pipe(Effect.timeout("2 seconds")))
+        mock.closeConnection(1000, "Done")
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(events).toEqual(["complete:start"])
+        Effect.runSync(Deferred.succeed(finishComplete, undefined))
+        await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+        expect(events).toEqual(["complete:start", "complete:end", "released"])
+      } finally {
+        Effect.runSync(Deferred.succeed(finishComplete, undefined))
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Fiber.interrupt(fiber))
+      }
+    })
+
+    it.each(["before", "after"] as const)(
+      "awaits setup/registration handoff cleanup %s the close snapshot",
+      async (snapshot) => {
+        const returning = Effect.runSync(Deferred.make<void>())
+        const finishReturn = Effect.runSync(Deferred.make<void>())
+        const disconnecting = Effect.runSync(Deferred.make<void>())
+        const messageStopping = Effect.runSync(Deferred.make<void>())
+        const finishMessageStop = Effect.runSync(Deferred.make<void>())
+        const events: string[] = []
+        let released = false
+        let returns = 0
+        const mock = createMockSocket()
+        const socket: EffectWebSocket = {
+          ...mock.socket,
+          messages: mock.socket.messages.pipe(
+            Stream.ensuring(
+              snapshot === "before"
+                ? Deferred.succeed(messageStopping, undefined).pipe(
+                    Effect.andThen(Deferred.await(finishMessageStop))
+                  )
+                : Effect.void
+            )
+          ),
+        }
+        const createServer = GraphqlWs.makeServer
+        const serverSpy = vi.spyOn(GraphqlWs, "makeServer").mockImplementation((options) =>
+          createServer({
+            ...options,
+            onOperation: async (...args) => {
+              const result = await options.onOperation?.(...args)
+              // Close after the framework hook returns, before graphql-ws can
+              // register its result. Keep the real protocol implementation.
+              mock.closeConnection(1000, "Done")
+              await Effect.runPromise(
+                Deferred.await(snapshot === "before" ? messageStopping : disconnecting)
+              )
+              return result
+            },
+          })
+        )
+        const schema = createTestSchema()
+        schema.getSubscriptionType()!.getFields().tick.subscribe = () => ({
+          [Symbol.asyncIterator]() {
+            return this
+          },
+          next: async () => {
+            throw new Error("A closed subscription must not be consumed")
+          },
+          return: async () => {
+            returns++
+            events.push(`return:start:${released}`)
+            Effect.runSync(Deferred.succeed(returning, undefined))
+            await Effect.runPromise(Deferred.await(finishReturn))
+            events.push(`return:end:${released}`)
+            return { done: true, value: undefined }
+          },
+        })
+        const layer = Layer.effectDiscard(
+          Effect.acquireRelease(Effect.void, () =>
+            Effect.sync(() => {
+              released = true
+              events.push("released")
+            })
+          )
+        )
+        const fiber = Effect.runFork(
+          makeGraphQLWSHandler(schema, layer, {
+            onDisconnect: () => Deferred.succeed(disconnecting, undefined).pipe(Effect.asVoid),
+          })(socket)
+        )
+        try {
+          mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+          mock.sendMessage(
+            JSON.stringify({
+              id: "handoff",
+              type: "subscribe",
+              payload: { query: "subscription { tick { count } }" },
+            })
+          )
+          await Effect.runPromise(Deferred.await(returning).pipe(Effect.timeout("2 seconds")))
+          await new Promise<void>((resolve) => setImmediate(resolve))
+          expect(released).toBe(false)
+          expect(returns).toBe(1)
+          Effect.runSync(Deferred.succeed(finishReturn, undefined))
+          Effect.runSync(Deferred.succeed(finishMessageStop, undefined))
+          await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+          expect(returns).toBe(1)
+          expect(events).toEqual(["return:start:false", "return:end:false", "released"])
+        } finally {
+          Effect.runSync(Deferred.succeed(finishReturn, undefined))
+          Effect.runSync(Deferred.succeed(finishMessageStop, undefined))
+          Effect.runSync(Deferred.succeed(disconnecting, undefined))
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.interrupt(fiber))
+          serverSpy.mockRestore()
+        }
+      }
+    )
+
+    it("finishes cleanup failures without sending to a closed socket", async () => {
+      const ready = Effect.runSync(Deferred.make<void>())
+      const finishLateSend = Effect.runSync(Deferred.make<void>())
+      const events: string[] = []
+      let closed = false
+      let lateSends = 0
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+        .subscription("event", {
+          type: S.String,
+          subscribe: () =>
+            Effect.succeed(
+              Stream.make("first").pipe(
+                Stream.concat(Stream.never),
+                Stream.ensuring(
+                  Effect.gen(function* () {
+                    yield* Effect.promise(
+                      () => new Promise<void>((resolve) => setImmediate(resolve))
+                    )
+                    events.push("finalized")
+                    yield* Effect.die(new Error("Source cleanup failed"))
+                  })
+                )
+              )
+            ),
+        })
+        .buildSchema()
+      const layer = Layer.effectDiscard(
+        Effect.acquireRelease(Effect.void, () =>
+          Effect.sync(() => {
+            events.push("released")
+          })
+        )
+      )
+      const mock = createMockSocket()
+      const socket: EffectWebSocket = {
+        ...mock.socket,
+        closed: mock.socket.closed.pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              closed = true
+            })
+          )
+        ),
+        send: (data) => {
+          if (closed) {
+            lateSends++
+            return Deferred.await(finishLateSend)
+          }
+          return JSON.parse(data).type === "next"
+            ? Deferred.succeed(ready, undefined).pipe(Effect.asVoid)
+            : Effect.void
+        },
+      }
+      const fiber = Effect.runFork(makeGraphQLWSHandler(schema, layer)(socket))
+      try {
+        mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+        mock.sendMessage(
+          JSON.stringify({
+            id: "active",
+            type: "subscribe",
+            payload: { query: "subscription { event }" },
+          })
+        )
+        await Effect.runPromise(Deferred.await(ready).pipe(Effect.timeout("2 seconds")))
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+        expect(events).toEqual(["finalized", "released"])
+        expect(lateSends).toBe(0)
+      } finally {
+        Effect.runSync(Deferred.succeed(finishLateSend, undefined))
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Fiber.interrupt(fiber))
+      }
     })
   })
 

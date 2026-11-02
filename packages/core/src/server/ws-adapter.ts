@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Stream, Queue, Fiber, Deferred } from "effect"
-import { GraphQLSchema, subscribe, GraphQLError } from "graphql"
+import { GraphQLSchema, subscribe, GraphQLError, type ExecutionResult } from "graphql"
 import type { ServerOptions } from "graphql-ws"
 import { makeSubscriptionContext } from "../subscription-context"
 import type {
@@ -19,6 +19,8 @@ interface WSExtra<R> {
   socket: EffectWebSocket
   services: Context.Context<R>
   connectionParams: Record<string, unknown>
+  closing: boolean
+  pendingReturns: Set<Promise<unknown>>
 }
 
 /**
@@ -172,7 +174,8 @@ const makeOnErrorHandler = <R>(
 /**
  * Create a graphql-ws compatible socket adapter from an EffectWebSocket.
  */
-const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, services: Context.Context<R>) => {
+const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, extra: WSExtra<R>) => {
+  const services = extra.services
   let messageCallback: ((message: string) => Promise<void>) | null = null
 
   return {
@@ -180,11 +183,13 @@ const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, services: Cont
       protocol: socket.protocol,
 
       send: (data: string) =>
-        Effect.runPromiseWith(services)(
-          socket
-            .send(data)
-            .pipe(Effect.catch((error) => Effect.logError("WebSocket send error", error)))
-        ),
+        extra.closing
+          ? Promise.resolve()
+          : Effect.runPromiseWith(services)(
+              socket
+                .send(data)
+                .pipe(Effect.catch((error) => Effect.logError("WebSocket send error", error)))
+            ),
 
       close: (code?: number, reason?: string) => {
         Effect.runPromiseWith(services)(socket.close(code, reason)).catch(() => {
@@ -201,7 +206,7 @@ const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, services: Cont
       },
     },
     dispatchMessage: async (message: string) => {
-      if (messageCallback) {
+      if (!extra.closing && messageCallback) {
         await messageCallback(message)
       }
     },
@@ -227,24 +232,34 @@ const runConnectionLifecycle = <R>(
     // Create message queue for bridging Stream to callback
     const messageQueue = yield* Queue.unbounded<string>()
     const closedDeferred = yield* Deferred.make<CloseEvent, WebSocketError>()
+    let activeDispatch: Promise<void> | undefined
+    const stopDispatching = Effect.sync(() => {
+      extra.closing = true
+    })
 
     // Fork fiber to consume socket messages and push to queue
     const messageFiber = yield* Effect.forkChild(
       Stream.runForEach(socket.messages, (msg) => Queue.offer(messageQueue, msg)).pipe(
-        Effect.catch((error) => Deferred.fail(closedDeferred, error))
+        Effect.catch((error) =>
+          stopDispatching.pipe(Effect.andThen(Deferred.fail(closedDeferred, error)))
+        )
       )
     )
 
     // Fork fiber to handle socket close
     const closeFiber = yield* Effect.forkChild(
       socket.closed.pipe(
-        Effect.tap((event) => Deferred.succeed(closedDeferred, event)),
-        Effect.catch((error) => Deferred.fail(closedDeferred, error))
+        Effect.tap((event) =>
+          stopDispatching.pipe(Effect.andThen(Deferred.succeed(closedDeferred, event)))
+        ),
+        Effect.catch((error) =>
+          stopDispatching.pipe(Effect.andThen(Deferred.fail(closedDeferred, error)))
+        )
       )
     )
 
     // Create the graphql-ws socket adapter
-    const { adapter, dispatchMessage } = createGraphqlWsSocketAdapter(socket, extra.services)
+    const { adapter, dispatchMessage } = createGraphqlWsSocketAdapter(socket, extra)
 
     // Open the connection with graphql-ws
     const closedHandler = wsServer.opened(adapter, extra)
@@ -252,10 +267,10 @@ const runConnectionLifecycle = <R>(
     // Fork fiber to process messages from queue
     const processMessagesFiber = yield* Effect.forkChild(
       Effect.gen(function* () {
-        while (true) {
+        while (!extra.closing) {
           const message = yield* Queue.take(messageQueue)
           yield* Effect.tryPromise({
-            try: () => dispatchMessage(message),
+            try: () => (activeDispatch = dispatchMessage(message)),
             catch: (error) => error,
           }).pipe(Effect.catch(() => Effect.void))
         }
@@ -264,18 +279,36 @@ const runConnectionLifecycle = <R>(
 
     // Wait for connection to close
     yield* Deferred.await(closedDeferred).pipe(
-      Effect.catch(() => Effect.succeed({ code: 1000, reason: "Error" }))
-    )
+      Effect.catch(() => Effect.void),
+      Effect.ensuring(
+        Effect.gen(function* () {
+          yield* stopDispatching
+          yield* Fiber.interrupt(messageFiber)
+          yield* Fiber.interrupt(closeFiber)
+          yield* Fiber.interrupt(processMessagesFiber)
+          yield* Queue.shutdown(messageQueue)
 
-    // Finish subscription finalizers before closing the connection service scope.
-    yield* Effect.tryPromise({
-      try: () => closedHandler(1000, "Connection closed"),
-      catch: (error) => error,
-    }).pipe(Effect.catchCause(() => Effect.void))
-    yield* Fiber.interrupt(messageFiber)
-    yield* Fiber.interrupt(closeFiber)
-    yield* Fiber.interrupt(processMessagesFiber)
-    yield* Queue.shutdown(messageQueue)
+          // A streaming dispatch only settles after its source is closed.
+          yield* Effect.tryPromise({
+            try: () => closedHandler(1000, "Connection closed"),
+            catch: (error) => error,
+          }).pipe(Effect.catchCause(() => Effect.void))
+
+          // Interrupting the Effect does not cancel its native dispatch Promise.
+          // Keep services alive through late setup, iterator cleanup, and hooks.
+          const pending = activeDispatch
+          if (pending) {
+            yield* Effect.tryPromise({
+              try: () => pending,
+              catch: (error) => error,
+            }).pipe(Effect.catchCause(() => Effect.void))
+          }
+          if (extra.pendingReturns.size > 0) {
+            yield* Effect.promise(() => Promise.allSettled(extra.pendingReturns))
+          }
+        })
+      )
+    )
   }).pipe(
     Effect.catchCause(() => Effect.void),
     Effect.scoped
@@ -356,6 +389,38 @@ export const makeGraphQLWSHandler = <R, LE = never>(
 
           subscribe: async (args) => subscribe(args),
 
+          onOperation: (ctx, _id, _payload, _args, result) => {
+            if (!(Symbol.asyncIterator in result)) return
+            const extra = ctx.extra as WSExtra<R>
+            const iterator = result[Symbol.asyncIterator]()
+            let returned: Promise<IteratorResult<ExecutionResult>> | undefined
+            const stream = {
+              [Symbol.asyncIterator]() {
+                return this
+              },
+              next: (value?: unknown): Promise<IteratorResult<ExecutionResult>> =>
+                extra.closing ? stream.return(value) : iterator.next(value),
+              return: (value?: unknown) => {
+                if (!returned) {
+                  const pending = Promise.resolve().then(
+                    () => iterator.return?.(value) ?? { done: true as const, value }
+                  )
+                  returned = pending
+                  extra.pendingReturns.add(pending)
+                  const settled = () => {
+                    extra.pendingReturns.delete(pending)
+                  }
+                  void pending.then(settled, settled)
+                }
+                return returned
+              },
+            }
+            // Track every return: closure can land after this hook returns but
+            // before graphql-ws registers the iterator, and that path does not
+            // await return(). No event payloads or iterator results are wrapped.
+            return extra.closing ? stream.return().then(() => ({})) : stream
+          },
+
           onConnect: makeOnConnectHandler(options),
           onDisconnect: makeOnDisconnectHandler(options),
           onSubscribe: makeOnSubscribeHandler(options, schema, complexityConfig, fieldComplexities),
@@ -386,6 +451,8 @@ export const makeGraphQLWSHandler = <R, LE = never>(
         socket,
         services,
         connectionParams: {},
+        closing: false,
+        pendingReturns: new Set(),
       }
 
       yield* runConnectionLifecycle(socket, wsServer, extra)
