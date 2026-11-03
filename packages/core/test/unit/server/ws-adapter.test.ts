@@ -1016,12 +1016,13 @@ describe("ws-adapter.ts", () => {
       }
     )
 
-    it.each(["cancel", "reject", "close", "duplicate", "malformed"] as const)(
+    it.each(["cancel", "reject", "close", "duplicate", "malformed", "reinitialize"] as const)(
       "handles %s while an ID replacement is queued",
       async (action) => {
         const started = Effect.runSync(Deferred.make<void>())
         const finishSetup = Effect.runSync(Deferred.make<void>())
         const oldReturned = Effect.runSync(Deferred.make<void>())
+        const oldCompleted = Effect.runSync(Deferred.make<void>())
         const disconnected = Effect.runSync(Deferred.make<void>())
         const protocolClosed = Effect.runSync(Deferred.make<void>())
         const hooks: string[] = []
@@ -1095,6 +1096,7 @@ describe("ws-adapter.ts", () => {
                   if (action === "reject") return yield* Effect.fail(new Error("Expected failure"))
                 }
               }),
+            onComplete: () => Deferred.succeed(oldCompleted, undefined).pipe(Effect.asVoid),
             onDisconnect: () => Deferred.succeed(disconnected, undefined).pipe(Effect.asVoid),
           })(socket)
         )
@@ -1124,6 +1126,9 @@ describe("ws-adapter.ts", () => {
             if (action === "malformed") {
               mock.sendMessage(JSON.stringify({ id: "same", type: "subscribe", payload: {} }))
             }
+            if (action === "reinitialize") {
+              mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+            }
             if (action !== "close") {
               await Effect.runPromise(
                 Deferred.await(protocolClosed).pipe(Effect.timeout("2 seconds"))
@@ -1131,11 +1136,28 @@ describe("ws-adapter.ts", () => {
               expect(mock.closeInfo).toEqual(
                 action === "duplicate"
                   ? { code: 4409, reason: "Subscriber for same already exists" }
-                  : { code: 4400, reason: "Invalid message received" }
+                  : action === "malformed"
+                    ? { code: 4400, reason: "Invalid message received" }
+                    : { code: 4429, reason: "Too many initialisation requests" }
+              )
+              mock.sendMessage(
+                JSON.stringify({
+                  id: "fresh",
+                  type: "subscribe",
+                  payload: {
+                    query: "subscription Fresh { tick { count } }",
+                    operationName: "Fresh",
+                  },
+                })
+              )
+              mock.sendMessage(JSON.stringify({ type: "ping" }))
+            }
+            if (action === "close") {
+              mock.closeConnection(1000, "Done")
+              await Effect.runPromise(
+                Deferred.await(disconnected).pipe(Effect.timeout("2 seconds"))
               )
             }
-            mock.closeConnection(1000, "Done")
-            await Effect.runPromise(Deferred.await(disconnected).pipe(Effect.timeout("2 seconds")))
           }
           expect(hooks).toEqual(["Old"])
           expect(sources).toEqual([])
@@ -1151,6 +1173,20 @@ describe("ws-adapter.ts", () => {
               payload: { data: { tick: { count: 3 } } },
             })
             expect(await nextMessage()).toEqual({ id: "same", type: "complete" })
+            expect(released).toBe(0)
+            mock.closeConnection(1000, "Done")
+          }
+          if (!live && action !== "close") {
+            await Effect.runPromise(Deferred.await(oldCompleted).pipe(Effect.timeout("2 seconds")))
+            // Drain the native Promise continuations while socket.closed is
+            // still pending: neither the deferred replacement nor sends may start.
+            await new Promise<void>((resolve) => setImmediate(resolve))
+            expect(hooks).toEqual(["Old"])
+            expect(sources).toEqual(["Old"])
+            expect(reads).toEqual([])
+            expect(mock.sentMessages.map((message) => JSON.parse(message))).toEqual([
+              { type: "connection_ack" },
+            ])
             expect(released).toBe(0)
             mock.closeConnection(1000, "Done")
           }

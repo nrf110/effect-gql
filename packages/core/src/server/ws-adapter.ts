@@ -188,6 +188,7 @@ const createGraphqlWsSocketAdapter = <R>(
   }
   const operations = new Map<string, OperationDispatch>()
   const close = (code?: number, reason?: string) => {
+    extra.closing = true
     Effect.runPromiseWith(services)(socket.close(code, reason)).catch(() => {
       // Ignore close errors
     })

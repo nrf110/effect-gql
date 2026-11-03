@@ -34,6 +34,11 @@ messages remain concurrent. Cancelling a waiting replacement skips its setup;
 closing the connection skips all waiting replacements. Late iterator cleanup
 remains tracked independently, so it cannot outlive connection-scoped services.
 
+A protocol close request immediately suppresses further dispatch and sends,
+before the peer acknowledges the WebSocket close handshake. Deferred
+replacements cannot start during that window. Connection-scoped services remain
+alive until the transport closes and tracked cleanup finishes.
+
 WebSocket shutdown discards queued messages and awaits active subscription source finalizers, in-flight setup and lifecycle hooks, and cleanup of any late-created iterator before releasing connection-scoped services. This includes asynchronous cleanup and closure during the handoff between operation setup and iterator registration. Operations whose setup was already running may finish setup during shutdown, but their iterators are closed without being consumed.
 
 If a WebSocket connection's service layer fails to initialize, the upgraded
