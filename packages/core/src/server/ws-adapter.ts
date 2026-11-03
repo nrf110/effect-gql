@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Stream, Queue, Fiber, Deferred } from "effect"
 import { GraphQLSchema, subscribe, GraphQLError, type ExecutionResult } from "graphql"
-import type { ServerOptions } from "graphql-ws"
+import type { Server, ServerOptions } from "graphql-ws"
 import { makeSubscriptionContext } from "../subscription-context"
 import type {
   EffectWebSocket,
@@ -174,9 +174,24 @@ const makeOnErrorHandler = <R>(
 /**
  * Create a graphql-ws compatible socket adapter from an EffectWebSocket.
  */
-const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, extra: WSExtra<R>) => {
+const createGraphqlWsSocketAdapter = <R>(
+  socket: EffectWebSocket,
+  extra: WSExtra<R>,
+  parseMessage: typeof import("graphql-ws").parseMessage
+) => {
   const services = extra.services
   let messageCallback: ((message: string) => Promise<void>) | null = null
+  interface OperationDispatch {
+    cancelled: boolean
+    started: boolean
+    pending: Promise<void>
+  }
+  const operations = new Map<string, OperationDispatch>()
+  const close = (code?: number, reason?: string) => {
+    Effect.runPromiseWith(services)(socket.close(code, reason)).catch(() => {
+      // Ignore close errors
+    })
+  }
 
   return {
     adapter: {
@@ -191,11 +206,7 @@ const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, extra: WSExtra
                 .pipe(Effect.catch((error) => Effect.logError("WebSocket send error", error)))
             ),
 
-      close: (code?: number, reason?: string) => {
-        Effect.runPromiseWith(services)(socket.close(code, reason)).catch(() => {
-          // Ignore close errors
-        })
-      },
+      close,
 
       onMessage: (cb: (message: string) => Promise<void>) => {
         messageCallback = cb
@@ -206,26 +217,77 @@ const createGraphqlWsSocketAdapter = <R>(socket: EffectWebSocket, extra: WSExtra
       },
     },
     dispatchMessage: async (message: string) => {
-      if (!extra.closing && messageCallback) {
-        await messageCallback(message)
+      const callback = messageCallback
+      if (extra.closing || !callback) return
+      let parsed
+      try {
+        parsed = parseMessage(message)
+      } catch {
+        close(4400, "Invalid message received")
+        return
       }
+      if (parsed.type === "complete") {
+        const operation = operations.get(parsed.id)
+        if (operation) {
+          operation.cancelled = true
+          if (!operation.started) return
+        }
+        await callback(message)
+        return
+      }
+      if (parsed.type !== "subscribe") {
+        await callback(message)
+        return
+      }
+
+      const id = parsed.id
+      const previous = operations.get(id)
+      if (previous && !previous.cancelled) {
+        close(4409, `Subscriber for ${id} already exists`)
+        return
+      }
+      // graphql-ws identifies operations only by ID. A cancelled callback must
+      // leave its finally block before a replacement can reserve that same ID.
+      // Complete and unrelated IDs never wait for this per-ID barrier.
+      let operation: OperationDispatch
+      if (previous) {
+        const start = () => {
+          if (extra.closing || operation.cancelled) return
+          operation.started = true
+          return callback(message)
+        }
+        operation = {
+          cancelled: false,
+          started: false,
+          pending: previous.pending.then(start, start),
+        }
+      } else {
+        operation = { cancelled: false, started: true, pending: callback(message) }
+      }
+      operations.set(id, operation)
+      const settled = () => {
+        if (operations.get(id) === operation) operations.delete(id)
+      }
+      void operation.pending.then(settled, settled)
+      await operation.pending
     },
   }
 }
 
 /**
- * Type alias for the graphql-ws server instance.
+ * Server and parser loaded from the optional graphql-ws module.
  */
-type GraphQLWSServer<R> = ReturnType<
-  typeof import("graphql-ws").makeServer<Record<string, unknown>, WSExtra<R>>
->
+type GraphQLWSRuntime<R> = {
+  server: Server<WSExtra<R>>
+  parseMessage: typeof import("graphql-ws").parseMessage
+}
 
 /**
  * Run the connection lifecycle - manages message queue, fibers, and cleanup.
  */
 const runConnectionLifecycle = <R>(
   socket: EffectWebSocket,
-  wsServer: GraphQLWSServer<R>,
+  wsRuntime: GraphQLWSRuntime<R>,
   extra: WSExtra<R>
 ): Effect.Effect<void, never, never> =>
   Effect.gen(function* () {
@@ -259,10 +321,14 @@ const runConnectionLifecycle = <R>(
     )
 
     // Create the graphql-ws socket adapter
-    const { adapter, dispatchMessage } = createGraphqlWsSocketAdapter(socket, extra)
+    const { adapter, dispatchMessage } = createGraphqlWsSocketAdapter(
+      socket,
+      extra,
+      wsRuntime.parseMessage
+    )
 
     // Open the connection with graphql-ws
-    const closedHandler = wsServer.opened(adapter, extra)
+    const closedHandler = wsRuntime.server.opened(adapter, extra)
 
     // Fork fiber to process messages from queue
     const processMessagesFiber = yield* Effect.forkChild(
@@ -372,11 +438,11 @@ export const makeGraphQLWSHandler = <R, LE = never>(
   const fieldComplexities: FieldComplexityMap = options?.fieldComplexities ?? new Map()
 
   // Lazily create the server on first connection
-  let wsServerPromise: Promise<GraphQLWSServer<R>> | null = null
+  let wsServerPromise: Promise<GraphQLWSRuntime<R>> | null = null
 
   const getOrCreateServer = async () => {
     if (!wsServerPromise) {
-      wsServerPromise = Effect.runPromise(importGraphqlWs).then(({ makeServer }) => {
+      wsServerPromise = Effect.runPromise(importGraphqlWs).then(({ makeServer, parseMessage }) => {
         // Build server options using extracted handler factories
         const serverOptions: ServerOptions<Record<string, unknown>, WSExtra<R>> = {
           schema,
@@ -430,7 +496,7 @@ export const makeGraphQLWSHandler = <R, LE = never>(
           onError: makeOnErrorHandler(options),
         }
 
-        return makeServer(serverOptions)
+        return { server: makeServer(serverOptions), parseMessage }
       })
     }
     return wsServerPromise

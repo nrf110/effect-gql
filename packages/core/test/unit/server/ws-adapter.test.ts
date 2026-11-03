@@ -846,6 +846,340 @@ describe("ws-adapter.ts", () => {
       }
     )
 
+    it.each([
+      ["hook", "complete"],
+      ["source", "complete"],
+      ["hook", "close"],
+      ["source", "close"],
+    ] as const)(
+      "isolates reused IDs during %s setup and cleans up the replacement on %s",
+      async (phase, termination) => {
+        const started = Effect.runSync(Deferred.make<void>())
+        const finishSetup = Effect.runSync(Deferred.make<void>())
+        const oldReturning = Effect.runSync(Deferred.make<void>())
+        const finishOldReturn = Effect.runSync(Deferred.make<void>())
+        const liveReturning = Effect.runSync(Deferred.make<void>())
+        const finishLiveReturn = Effect.runSync(Deferred.make<void>())
+        const liveReturned = Effect.runSync(Deferred.make<void>())
+        const disconnected = Effect.runSync(Deferred.make<void>())
+        let released = 0
+        let liveClosed = false
+        let liveReads = 0
+        let finishLiveNext: ((result: IteratorResult<unknown>) => void) | undefined
+        const setup = Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(finishSetup))
+        )
+        const oldNext = vi.fn(async () => {
+          throw new Error("The cancelled operation must not consume its source")
+        })
+        const oldReturn = vi.fn(async () => {
+          Effect.runSync(Deferred.succeed(oldReturning, undefined))
+          await Effect.runPromise(Deferred.await(finishOldReturn))
+          return { done: true as const, value: undefined }
+        })
+        const liveReturn = vi.fn(async () => {
+          liveClosed = true
+          finishLiveNext?.({ done: true, value: undefined })
+          Effect.runSync(Deferred.succeed(liveReturning, undefined))
+          await Effect.runPromise(Deferred.await(finishLiveReturn))
+          Effect.runSync(Deferred.succeed(liveReturned, undefined))
+          return { done: true as const, value: undefined }
+        })
+        const schema = createTestSchema()
+        schema.getSubscriptionType()!.getFields().tick.subscribe = async (
+          _root,
+          _args,
+          _context,
+          info
+        ) => {
+          const old = info.operation.name?.value === "Old"
+          if (old && phase === "source") await Effect.runPromise(setup)
+          return {
+            [Symbol.asyncIterator]() {
+              return this
+            },
+            next: old
+              ? oldNext
+              : () => {
+                  if (liveClosed) return Promise.resolve({ done: true as const, value: undefined })
+                  if (liveReads++ === 0) {
+                    return Promise.resolve({ done: false as const, value: { tick: { count: 2 } } })
+                  }
+                  return new Promise<IteratorResult<unknown>>((resolve) => {
+                    finishLiveNext = resolve
+                  })
+                },
+            return: old ? oldReturn : liveReturn,
+          }
+        }
+        const layer = Layer.effectDiscard(
+          Effect.acquireRelease(Effect.void, () =>
+            Effect.sync(() => {
+              released++
+            })
+          )
+        )
+        const mock = createMockSocket()
+        const outgoing = Effect.runSync(
+          Queue.unbounded<{ type: string; id?: string; payload?: unknown }>()
+        )
+        const socket: EffectWebSocket = {
+          ...mock.socket,
+          send: (data) =>
+            mock.socket
+              .send(data)
+              .pipe(Effect.andThen(Queue.offer(outgoing, JSON.parse(data))), Effect.asVoid),
+        }
+        const nextMessage = () =>
+          Effect.runPromise(Queue.take(outgoing).pipe(Effect.timeout("2 seconds")))
+        const fiber = Effect.runFork(
+          makeGraphQLWSHandler(schema, layer, {
+            onSubscribe: (_ctx, { payload }) =>
+              phase === "hook" && payload.operationName === "Old" ? setup : Effect.void,
+            onDisconnect: () => Deferred.succeed(disconnected, undefined).pipe(Effect.asVoid),
+          })(socket)
+        )
+        try {
+          mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+          expect(await nextMessage()).toEqual({ type: "connection_ack" })
+          mock.sendMessage(
+            JSON.stringify({
+              id: "same",
+              type: "subscribe",
+              payload: { query: "subscription Old { tick { count } }", operationName: "Old" },
+            })
+          )
+          await Effect.runPromise(Deferred.await(started).pipe(Effect.timeout("2 seconds")))
+          mock.sendMessage(JSON.stringify({ id: "same", type: "complete" }))
+          mock.sendMessage(
+            JSON.stringify({
+              id: "same",
+              type: "subscribe",
+              payload: { query: "subscription Live { tick { count } }", operationName: "Live" },
+            })
+          )
+          mock.sendMessage(JSON.stringify({ type: "ping", payload: { barrier: "queued" } }))
+          expect(await nextMessage()).toEqual({ type: "pong", payload: { barrier: "queued" } })
+          mock.sendMessage(
+            JSON.stringify({ id: "query", type: "subscribe", payload: { query: "{ hello }" } })
+          )
+          expect(await nextMessage()).toEqual({
+            id: "query",
+            type: "next",
+            payload: { data: { hello: "world" } },
+          })
+          expect(await nextMessage()).toEqual({ id: "query", type: "complete" })
+
+          Effect.runSync(Deferred.succeed(finishSetup, undefined))
+          await Effect.runPromise(Deferred.await(oldReturning).pipe(Effect.timeout("2 seconds")))
+          expect(await nextMessage()).toEqual({
+            id: "same",
+            type: "next",
+            payload: { data: { tick: { count: 2 } } },
+          })
+          if (termination === "complete") {
+            mock.sendMessage(JSON.stringify({ id: "same", type: "complete" }))
+          } else {
+            mock.closeConnection(1000, "Done")
+          }
+          await Effect.runPromise(Deferred.await(liveReturning).pipe(Effect.timeout("2 seconds")))
+          expect(released).toBe(0)
+          Effect.runSync(Deferred.succeed(finishLiveReturn, undefined))
+          await Effect.runPromise(Deferred.await(liveReturned).pipe(Effect.timeout("2 seconds")))
+          if (termination === "complete") {
+            mock.sendMessage(JSON.stringify({ type: "ping", payload: { barrier: "cancelled" } }))
+            expect(await nextMessage()).toEqual({ type: "pong", payload: { barrier: "cancelled" } })
+            mock.closeConnection(1000, "Done")
+          }
+          await Effect.runPromise(Deferred.await(disconnected).pipe(Effect.timeout("2 seconds")))
+          expect(released).toBe(0)
+          Effect.runSync(Deferred.succeed(finishOldReturn, undefined))
+          await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+          expect(oldNext).not.toHaveBeenCalled()
+          expect(oldReturn).toHaveBeenCalledTimes(1)
+          expect(liveReturn).toHaveBeenCalledTimes(1)
+          expect(released).toBe(1)
+          expect(
+            mock.sentMessages
+              .map((message) => JSON.parse(message))
+              .filter(({ id }) => id === "same")
+          ).toEqual([{ id: "same", type: "next", payload: { data: { tick: { count: 2 } } } }])
+        } finally {
+          Effect.runSync(Deferred.succeed(finishSetup, undefined))
+          Effect.runSync(Deferred.succeed(finishOldReturn, undefined))
+          Effect.runSync(Deferred.succeed(finishLiveReturn, undefined))
+          liveClosed = true
+          finishLiveNext?.({ done: true, value: undefined })
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.interrupt(fiber))
+        }
+      }
+    )
+
+    it.each(["cancel", "reject", "close", "duplicate", "malformed"] as const)(
+      "handles %s while an ID replacement is queued",
+      async (action) => {
+        const started = Effect.runSync(Deferred.make<void>())
+        const finishSetup = Effect.runSync(Deferred.make<void>())
+        const oldReturned = Effect.runSync(Deferred.make<void>())
+        const disconnected = Effect.runSync(Deferred.make<void>())
+        const protocolClosed = Effect.runSync(Deferred.make<void>())
+        const hooks: string[] = []
+        const sources: string[] = []
+        const reads: string[] = []
+        let oldReturns = 0
+        let released = 0
+        const schema = createTestSchema()
+        schema.getSubscriptionType()!.getFields().tick.subscribe = (
+          _root,
+          _args,
+          _context,
+          info
+        ) => {
+          const name = info.operation.name!.value
+          sources.push(name)
+          let emitted = false
+          return {
+            [Symbol.asyncIterator]() {
+              return this
+            },
+            next: async () => {
+              reads.push(name)
+              if (name === "Live" && !emitted) {
+                emitted = true
+                return { done: false as const, value: { tick: { count: 3 } } }
+              }
+              return { done: true as const, value: undefined }
+            },
+            return: async () => {
+              if (name === "Old") {
+                oldReturns++
+                Effect.runSync(Deferred.succeed(oldReturned, undefined))
+              }
+              return { done: true as const, value: undefined }
+            },
+          }
+        }
+        const mock = createMockSocket()
+        const outgoing = Effect.runSync(
+          Queue.unbounded<{ type: string; id?: string; payload?: unknown }>()
+        )
+        const socket: EffectWebSocket = {
+          ...mock.socket,
+          send: (data) =>
+            mock.socket
+              .send(data)
+              .pipe(Effect.andThen(Queue.offer(outgoing, JSON.parse(data))), Effect.asVoid),
+          close: (code, reason) =>
+            mock.socket
+              .close(code, reason)
+              .pipe(Effect.andThen(Deferred.succeed(protocolClosed, undefined)), Effect.asVoid),
+        }
+        const nextMessage = () =>
+          Effect.runPromise(Queue.take(outgoing).pipe(Effect.timeout("2 seconds")))
+        const layer = Layer.effectDiscard(
+          Effect.acquireRelease(Effect.void, () =>
+            Effect.sync(() => {
+              released++
+            })
+          )
+        )
+        const fiber = Effect.runFork(
+          makeGraphQLWSHandler(schema, layer, {
+            onSubscribe: (_ctx, { payload }) =>
+              Effect.gen(function* () {
+                hooks.push(payload.operationName!)
+                if (payload.operationName === "Old") {
+                  yield* Deferred.succeed(started, undefined)
+                  yield* Deferred.await(finishSetup)
+                  if (action === "reject") return yield* Effect.fail(new Error("Expected failure"))
+                }
+              }),
+            onDisconnect: () => Deferred.succeed(disconnected, undefined).pipe(Effect.asVoid),
+          })(socket)
+        )
+        const subscribe = (name: string) =>
+          mock.sendMessage(
+            JSON.stringify({
+              id: "same",
+              type: "subscribe",
+              payload: { query: `subscription ${name} { tick { count } }`, operationName: name },
+            })
+          )
+        try {
+          mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+          expect(await nextMessage()).toEqual({ type: "connection_ack" })
+          subscribe("Old")
+          await Effect.runPromise(Deferred.await(started).pipe(Effect.timeout("2 seconds")))
+          mock.sendMessage(JSON.stringify({ id: "same", type: "complete" }))
+          subscribe("Discarded")
+          const live = action === "cancel" || action === "reject"
+          if (live) {
+            mock.sendMessage(JSON.stringify({ id: "same", type: "complete" }))
+            subscribe("Live")
+            mock.sendMessage(JSON.stringify({ type: "ping", payload: { barrier: "queued" } }))
+            expect(await nextMessage()).toEqual({ type: "pong", payload: { barrier: "queued" } })
+          } else {
+            if (action === "duplicate") subscribe("Discarded")
+            if (action === "malformed") {
+              mock.sendMessage(JSON.stringify({ id: "same", type: "subscribe", payload: {} }))
+            }
+            if (action !== "close") {
+              await Effect.runPromise(
+                Deferred.await(protocolClosed).pipe(Effect.timeout("2 seconds"))
+              )
+              expect(mock.closeInfo).toEqual(
+                action === "duplicate"
+                  ? { code: 4409, reason: "Subscriber for same already exists" }
+                  : { code: 4400, reason: "Invalid message received" }
+              )
+            }
+            mock.closeConnection(1000, "Done")
+            await Effect.runPromise(Deferred.await(disconnected).pipe(Effect.timeout("2 seconds")))
+          }
+          expect(hooks).toEqual(["Old"])
+          expect(sources).toEqual([])
+          expect(released).toBe(0)
+          Effect.runSync(Deferred.succeed(finishSetup, undefined))
+          if (action !== "reject") {
+            await Effect.runPromise(Deferred.await(oldReturned).pipe(Effect.timeout("2 seconds")))
+          }
+          if (live) {
+            expect(await nextMessage()).toEqual({
+              id: "same",
+              type: "next",
+              payload: { data: { tick: { count: 3 } } },
+            })
+            expect(await nextMessage()).toEqual({ id: "same", type: "complete" })
+            expect(released).toBe(0)
+            mock.closeConnection(1000, "Done")
+          }
+          await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+          expect(hooks).toEqual(live ? ["Old", "Live"] : ["Old"])
+          expect(sources).toEqual(action === "reject" ? ["Live"] : live ? ["Old", "Live"] : ["Old"])
+          expect(reads).toEqual(live ? ["Live", "Live"] : [])
+          expect(oldReturns).toBe(action === "reject" ? 0 : 1)
+          expect(released).toBe(1)
+          expect(
+            mock.sentMessages
+              .map((message) => JSON.parse(message))
+              .filter(({ id }) => id === "same")
+          ).toEqual(
+            live
+              ? [
+                  { id: "same", type: "next", payload: { data: { tick: { count: 3 } } } },
+                  { id: "same", type: "complete" },
+                ]
+              : []
+          )
+        } finally {
+          Effect.runSync(Deferred.succeed(finishSetup, undefined))
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.interrupt(fiber))
+        }
+      }
+    )
+
     it("drains every concurrent dispatch when one setup rejects and another creates a late iterator", async () => {
       const events: string[] = []
       const started = Effect.runSync(Queue.unbounded<string>())
