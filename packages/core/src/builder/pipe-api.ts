@@ -22,7 +22,7 @@ declare const operationServices: unique symbol
 
 // Generic function return types erase their input requirements to unknown.
 // Optional type-only metadata preserves the added services without runtime fields.
-interface SchemaOperation<R> {
+export interface SchemaOperation<R> {
   <RIn>(builder: GraphQLSchemaBuilder<RIn>): GraphQLSchemaBuilder<RIn | R>
   readonly [operationServices]?: R
 }

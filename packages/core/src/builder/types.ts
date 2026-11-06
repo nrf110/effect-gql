@@ -38,7 +38,7 @@ export interface CacheHint {
 /**
  * Configuration for a query or mutation field
  */
-export interface FieldRegistration<Args = any, A = any, E = any, R = any, RArgs = unknown> {
+export interface FieldRegistration<Args = any, A = any, E = any, R = any, RArgs = never> {
   type: S.Schema<A>
   args?: S.Decoder<Args, RArgs>
   description?: string
@@ -229,7 +229,7 @@ export interface SubscriptionFieldRegistration<
   A = any,
   E = any,
   R = any,
-  RArgs = unknown,
+  RArgs = never,
 > {
   type: S.Schema<A>
   args?: S.Decoder<Args, RArgs>
@@ -268,7 +268,7 @@ export interface ObjectFieldRegistration<
   A = any,
   E = any,
   R = any,
-  RArgs = unknown,
+  RArgs = never,
 > {
   type: S.Schema<A>
   args?: S.Decoder<Args, RArgs>

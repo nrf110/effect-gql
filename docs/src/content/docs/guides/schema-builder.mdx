@@ -87,6 +87,19 @@ applies to nested composition and arrays passed with `compose(...operations)`.
 `compose()` with no operations leaves the builder unchanged. Pass the resulting
 builder to `toRouter` with a layer providing all accumulated services.
 
+Built-in operations and `compose` return the public `SchemaOperation<R>` type,
+available from both `@effect-gql/core` and `@effect-gql/core/builder`. Reusable
+operations can be exported with inferred types, including from libraries that
+emit TypeScript declarations:
+
+```typescript
+export const withGreeting = query("hello", {
+  type: S.String,
+  resolve: () => Effect.succeed("world"),
+})
+export const withGreetingQueries = compose(withGreeting)
+```
+
 Custom generic operations are supported without annotations:
 
 ```typescript

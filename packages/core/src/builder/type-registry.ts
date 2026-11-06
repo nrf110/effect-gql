@@ -377,9 +377,15 @@ function makeInputConverter(
 ): InputConverter {
   const converted = (cache.convertedInputTypes ??= new WeakMap())
   const convert: InputConverter = (original, projected) => {
-    const exactName = cache.originalASTToInputName?.get(getASTIdentity(original))
-    const exactType = exactName ? inputRegistry.get(exactName) : undefined
-    if (exactType) return exactType
+    // Key codecs can wrap an exact registration before its shared projection.
+    let source = original
+    while (true) {
+      const exactName = cache.originalASTToInputName?.get(getASTIdentity(source))
+      const exactType = exactName ? inputRegistry.get(exactName) : undefined
+      if (exactType) return exactType
+      if (!source.encoding) break
+      source = source.encoding[source.encoding.length - 1].to
+    }
     if (
       isOptionDeclaration(original) &&
       original._tag === "Declaration" &&
@@ -393,7 +399,6 @@ function makeInputConverter(
           : projected
       )
     }
-    const source = getASTView(original, "input")
     const ast = getASTView(projected, "input")
     const identity = getASTIdentity(ast)
     const encodedName = cache.astToInputName?.get(identity)

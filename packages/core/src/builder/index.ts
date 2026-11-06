@@ -41,6 +41,7 @@ export {
   field,
   compose,
 } from "./pipe-api"
+export type { SchemaOperation } from "./pipe-api"
 
 // Re-export execute helper
 export { execute } from "./execute"

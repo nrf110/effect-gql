@@ -348,6 +348,173 @@ describe("field-builders.ts", () => {
       expect(observed).toHaveLength(3)
     })
 
+    it("distinguishes omitted optional Options, explicit null, and present values", async () => {
+      const args = S.Struct({
+        value: S.optional(S.Option(S.String)),
+        nullable: S.optional(S.NullOr(S.String)),
+        nullableOption: S.optional(S.NullOr(S.Option(S.String))),
+      })
+      const observed: S.Schema.Type<typeof args>[] = []
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args,
+                resolve: (args: S.Schema.Type<typeof args>) => {
+                  observed.push(args)
+                  return Effect.succeed("accepted")
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      for (const argumentsText of [
+        "",
+        "(value: null, nullable: null, nullableOption: null)",
+        '(value: "present", nullable: "present", nullableOption: "present")',
+      ]) {
+        expect(
+          await graphql({
+            schema,
+            source: `{ inspect${argumentsText} }`,
+            contextValue: createSimpleContext(),
+          })
+        ).toEqual({ data: { inspect: "accepted" } })
+      }
+      expect(observed).toEqual([
+        {},
+        { value: Option.none(), nullable: null, nullableOption: null },
+        {
+          value: Option.some("present"),
+          nullable: "present",
+          nullableOption: Option.some("present"),
+        },
+      ])
+    })
+
+    it("normalizes optional Options in computed field arguments and nested input objects", async () => {
+      const args = S.Struct({
+        value: S.optional(S.Option(S.String)),
+        input: S.Struct({
+          number: S.optional(S.Option(S.NumberFromString)),
+          children: S.Array(
+            S.Struct({
+              value: S.optional(S.Option(S.String)),
+            })
+          ),
+        }),
+      })
+      let observed: S.Schema.Type<typeof args> | undefined
+      const item = new GraphQLObjectType({
+        name: "Item",
+        fields: {
+          inspect: buildObjectField(
+            {
+              type: S.String,
+              args,
+              resolve: (_parent: unknown, args: S.Schema.Type<typeof args>) => {
+                observed = args
+                return Effect.succeed("accepted")
+              },
+            },
+            createFieldBuilderContext()
+          ),
+        },
+      })
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: { item: { type: item, resolve: () => ({}) } },
+        }),
+      })
+      expect(
+        await graphql({
+          schema,
+          source: `{
+            item {
+              inspect(
+                value: null
+                input: { number: "7", children: [{}, { value: null }, { value: "child" }] }
+              )
+            }
+          }`,
+          contextValue: createSimpleContext(),
+        })
+      ).toEqual({ data: { item: { inspect: "accepted" } } })
+      expect(observed).toEqual({
+        value: Option.none(),
+        input: {
+          number: Option.some(7),
+          children: [{}, { value: Option.none() }, { value: Option.some("child") }],
+        },
+      })
+    })
+
+    it("passes explicit null optional Options to subscription setup and event resolution as None", async () => {
+      const args = S.Struct({ value: S.optional(S.Option(S.String)) })
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: { ready: { type: GraphQLString, resolve: () => "ready" } },
+        }),
+        subscription: new GraphQLObjectType({
+          name: "Subscription",
+          fields: {
+            event: buildSubscriptionField(
+              {
+                type: S.String,
+                args,
+                subscribe: (args: S.Schema.Type<typeof args>) =>
+                  Effect.succeed(
+                    Stream.make(
+                      args.value === undefined
+                        ? "omitted"
+                        : Option.match(args.value, {
+                            onNone: () => "setup:none",
+                            onSome: (value) => `setup:${value}`,
+                          })
+                    )
+                  ),
+                resolve: (value: string, args: S.Schema.Type<typeof args>) =>
+                  Effect.succeed(
+                    `${value}:${
+                      args.value === undefined
+                        ? "omitted"
+                        : Option.isNone(args.value)
+                          ? "resolve:none"
+                          : "resolve:some"
+                    }`
+                  ),
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      const result = await subscribe({
+        schema,
+        document: parse("subscription { event(value: null) }"),
+        contextValue: createSimpleContext(),
+      })
+      if (!(Symbol.asyncIterator in result)) {
+        throw new Error(`Subscription failed: ${JSON.stringify(result)}`)
+      }
+      const iterator = result[Symbol.asyncIterator]()
+      try {
+        expect(await iterator.next()).toEqual({
+          done: false,
+          value: { data: { event: "setup:none:resolve:none" } },
+        })
+      } finally {
+        await iterator.return?.()
+      }
+    })
+
     it("normalizes Option values recursively inside tagged, class, list, and recursive inputs", async () => {
       const Child = S.TaggedStruct("OptionChild", { value: S.Option(S.NumberFromString) })
       class Entry extends S.TaggedClass<Entry>()("OptionEntry", {

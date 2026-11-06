@@ -56,17 +56,22 @@ function restoreGraphQLInput(original: AST.AST, value: unknown): unknown {
   if (value === undefined && isOptionDeclaration(original) && ast._tag === "Union") {
     if (ast.types.some((member) => member._tag === "Null")) return null
   }
+  if (ast._tag === "Union") {
+    // Preserve explicit nullish branches, but normalize an optional Option's null
+    // through its declaration when the union only adds undefined.
+    if (value === undefined || (value === null && ast.types.some((type) => type._tag === "Null"))) {
+      return value
+    }
+    // Input unions expose their first non-null member in GraphQL.
+    const member = ast.types.find(
+      (type) => type._tag !== "Null" && type._tag !== "Undefined" && type._tag !== "Void"
+    )
+    return member ? restoreGraphQLInput(member, value) : value
+  }
   if (value === null || value === undefined) return value
   switch (ast._tag) {
     case "Declaration":
       return ast.typeParameters[0] ? restoreGraphQLInput(ast.typeParameters[0], value) : value
-    case "Union": {
-      // Input unions expose their first non-null member in GraphQL.
-      const member = ast.types.find(
-        (type) => type._tag !== "Null" && type._tag !== "Undefined" && type._tag !== "Void"
-      )
-      return member ? restoreGraphQLInput(member, value) : value
-    }
     case "Arrays": {
       if (!Array.isArray(value)) return value
       let restored = value
@@ -229,7 +234,7 @@ function applyMiddleware<A, E, R>(
  * Build a GraphQL field config from a field registration (for queries/mutations)
  */
 export function buildField(
-  config: FieldRegistration,
+  config: FieldRegistration<any, any, any, any, unknown>,
   ctx: FieldBuilderContext
 ): GraphQLFieldConfig<any, any> {
   const decodeArgs = config.args ? makeArgsDecoder(config.args) : undefined
@@ -287,7 +292,7 @@ export function buildField(
  * Build a GraphQL field config for an object field (has parent param)
  */
 export function buildObjectField(
-  config: ObjectFieldRegistration,
+  config: ObjectFieldRegistration<any, any, any, any, any, unknown>,
   ctx: FieldBuilderContext
 ): GraphQLFieldConfig<any, any> {
   const decodeArgs = config.args ? makeArgsDecoder(config.args) : undefined
@@ -346,7 +351,7 @@ export function buildObjectField(
  * Effect's native AsyncIterable adapter preserves stream failure and cancellation.
  */
 export function buildSubscriptionField(
-  config: SubscriptionFieldRegistration,
+  config: SubscriptionFieldRegistration<any, any, any, any, unknown>,
   ctx: FieldBuilderContext
 ): GraphQLFieldConfig<any, any> {
   const decodeArgs = config.args ? makeArgsDecoder(config.args) : undefined

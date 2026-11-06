@@ -65,10 +65,10 @@ interface BuilderState {
   directives: Map<string, DirectiveRegistration>
   middlewares: readonly MiddlewareRegistration[] // Array to preserve registration order
   extensions: readonly GraphQLExtension<any>[] // Array to preserve registration order
-  queries: Map<string, FieldRegistration>
-  mutations: Map<string, FieldRegistration>
-  subscriptions: Map<string, SubscriptionFieldRegistration>
-  objectFields: Map<string, Map<string, ObjectFieldRegistration>>
+  queries: Map<string, FieldRegistration<any, any, any, any, unknown>>
+  mutations: Map<string, FieldRegistration<any, any, any, any, unknown>>
+  subscriptions: Map<string, SubscriptionFieldRegistration<any, any, any, any, unknown>>
+  objectFields: Map<string, Map<string, ObjectFieldRegistration<any, any, any, any, any, unknown>>>
 }
 
 /**
@@ -322,9 +322,12 @@ export class GraphQLSchemaBuilder<out R = never> implements Pipeable.Pipeable {
     let newObjectFields = this.state.objectFields
     if (fields) {
       newObjectFields = new Map(this.state.objectFields)
-      const typeFields = new Map<string, ObjectFieldRegistration>()
+      const typeFields = new Map<
+        string,
+        ObjectFieldRegistration<any, any, any, any, any, unknown>
+      >()
       for (const [fieldName, fieldConfig] of Object.entries(fields)) {
-        typeFields.set(fieldName, fieldConfig as ObjectFieldRegistration)
+        typeFields.set(fieldName, fieldConfig)
       }
       newObjectFields.set(name, typeFields)
     }

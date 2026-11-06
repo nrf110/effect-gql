@@ -4,7 +4,13 @@ import * as S from "effect/Schema"
 import * as Getter from "effect/SchemaGetter"
 import { graphql, parse, subscribe } from "graphql"
 import { HttpRouter } from "effect/http"
-import { GraphQLSchemaBuilder, makeSubscriptionContext } from "../../../src/builder"
+import {
+  GraphQLSchemaBuilder,
+  makeSubscriptionContext,
+  type FieldRegistration,
+  type ObjectFieldRegistration,
+  type SubscriptionFieldRegistration,
+} from "../../../src/builder"
 import * as api from "../../../src/builder/pipe-api"
 import { toRouter } from "../../../src/server/schema-builder-extensions"
 
@@ -27,6 +33,156 @@ describe("argument decoding service requirements", () => {
   type Requirements =
     | Context.Service.Identifier<typeof Offset>
     | Context.Service.Identifier<typeof Label>
+
+  it.each(["methods", "pipe"] as const)(
+    "keeps explicitly typed service-free registrations runnable with Layer.empty through %s",
+    async (style) => {
+      const hello: FieldRegistration<void, string, never, never> = {
+        type: S.String,
+        resolve: () => Effect.succeed("world"),
+      }
+      const idCopy: ObjectFieldRegistration<
+        S.Schema.Type<typeof Box>,
+        void,
+        string,
+        never,
+        never
+      > = {
+        type: S.String,
+        resolve: (parent) => Effect.succeed(parent.id),
+      }
+      const updates: SubscriptionFieldRegistration<void, string, never, never> = {
+        type: S.String,
+        subscribe: () => Effect.succeed(Stream.make("updated")),
+      }
+      const base = GraphQLSchemaBuilder.empty.query("box", {
+        type: Box,
+        resolve: () => Effect.succeed({ id: "box" }),
+      })
+      const builder =
+        style === "methods"
+          ? base
+              .query("hello", hello)
+              .mutation("hello", hello)
+              .objectType({ name: "Box", schema: Box, fields: { idCopy } })
+              .field("Box", "idAgain", idCopy)
+              .subscription("updates", updates)
+          : base.pipe(
+              api.query("hello", hello),
+              api.mutation("hello", hello),
+              api.objectType({ name: "Box", schema: Box, fields: { idCopy } }),
+              api.field("Box", "idAgain", idCopy),
+              api.subscription("updates", updates)
+            )
+      expectTypeOf<BuilderRequirements<typeof builder>>().toEqualTypeOf<never>()
+      const app = HttpRouter.toWebHandler(toRouter(builder, Layer.empty))
+      try {
+        const response = await app.handler(
+          new Request("http://localhost/graphql", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ query: "{ hello box { idCopy idAgain } }" }),
+          })
+        )
+        expect(await response.json()).toEqual({
+          data: { hello: "world", box: { idCopy: "box", idAgain: "box" } },
+        })
+      } finally {
+        await app.dispose()
+      }
+      const result = await subscribe({
+        schema: builder.buildSchema(),
+        document: parse("subscription { updates }"),
+        contextValue: makeSubscriptionContext({ services: Context.empty() }),
+      })
+      if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+      const iterator = result[Symbol.asyncIterator]()
+      expect(await iterator.next()).toEqual({
+        done: false,
+        value: { data: { updates: "updated" } },
+      })
+      await iterator.return?.()
+    }
+  )
+
+  it.each(["methods", "pipe"] as const)(
+    "retains explicitly annotated decoder requirements through %s",
+    async (style) => {
+      type Args = S.Schema.Type<typeof args>
+      type DecoderServices = Context.Service.Identifier<typeof Offset>
+      const amount: FieldRegistration<Args, number, never, never, DecoderServices> = {
+        type: S.Number,
+        args,
+        resolve: ({ amount }) => Effect.succeed(amount),
+      }
+      const inline: ObjectFieldRegistration<
+        S.Schema.Type<typeof Box>,
+        Args,
+        number,
+        never,
+        never,
+        DecoderServices
+      > = {
+        type: S.Number,
+        args,
+        resolve: (parent, { amount }) => Effect.succeed(amount + parent.id.length),
+      }
+      const updates: SubscriptionFieldRegistration<Args, number, never, never, DecoderServices> = {
+        type: S.Number,
+        args,
+        subscribe: ({ amount }) => Effect.succeed(Stream.make(amount)),
+      }
+      const base = GraphQLSchemaBuilder.empty.query("box", {
+        type: Box,
+        resolve: () => Effect.succeed({ id: "box" }),
+      })
+      const query =
+        style === "methods" ? base.query("amount", amount) : base.pipe(api.query("amount", amount))
+      const mutation =
+        style === "methods"
+          ? base.mutation("amount", amount)
+          : base.pipe(api.mutation("amount", amount))
+      const field =
+        style === "methods"
+          ? base.objectType({ name: "Box", schema: Box }).field("Box", "amount", inline)
+          : base.pipe(
+              api.objectType({ name: "Box", schema: Box }),
+              api.field("Box", "amount", inline)
+            )
+      const object =
+        style === "methods"
+          ? base.objectType({ name: "Box", schema: Box, fields: { amount: inline } })
+          : base.pipe(api.objectType({ name: "Box", schema: Box, fields: { amount: inline } }))
+      const subscription =
+        style === "methods"
+          ? base.subscription("amount", updates)
+          : base.pipe(api.subscription("amount", updates))
+      expectTypeOf<BuilderRequirements<typeof query>>().toEqualTypeOf<DecoderServices>()
+      expectTypeOf<BuilderRequirements<typeof mutation>>().toEqualTypeOf<DecoderServices>()
+      expectTypeOf<BuilderRequirements<typeof field>>().toEqualTypeOf<DecoderServices>()
+      expectTypeOf<BuilderRequirements<typeof object>>().toEqualTypeOf<DecoderServices>()
+      expectTypeOf<BuilderRequirements<typeof subscription>>().toEqualTypeOf<DecoderServices>()
+      const _missingServices = () => {
+        // @ts-expect-error an annotated query still requires its argument decoder service
+        toRouter(query, Layer.empty)
+        // @ts-expect-error an annotated mutation still requires its argument decoder service
+        toRouter(mutation, Layer.empty)
+        // @ts-expect-error an annotated object field still requires its argument decoder service
+        toRouter(field, Layer.empty)
+        // @ts-expect-error an annotated inline field still requires its argument decoder service
+        toRouter(object, Layer.empty)
+        // @ts-expect-error an annotated subscription still requires its argument decoder service
+        toRouter(subscription, Layer.empty)
+      }
+      expect(
+        await graphql({
+          schema: object.buildSchema(),
+          source: '{ box { amount(amount: "2") } }',
+          contextValue: { services },
+        })
+      ).toEqual({ data: { box: { amount: 15 } } })
+    }
+  )
 
   it("retains decoder services through nested composition and operation arrays", async () => {
     const amount = api.query("amount", {

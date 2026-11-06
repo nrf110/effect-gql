@@ -366,6 +366,12 @@ Exact schema and original-AST registrations take precedence over directional pro
 
 This includes separate `X.pipe(S.decodeTo(Y))` wrappers that reuse the same `X` and `Y` schemas and the default transformation. `S.optionalKey`, `S.mutableKey`, and their combinations retain the originating wrapper's registration rather than merging wrappers with shared transformations.
 
+Input key codecs preserve this exact-registration precedence before projecting
+to their encoded representation. In particular, `S.OptionFromOptionalKey(codec)`
+keeps the input name registered for `codec`. Two registered codecs sharing an
+encoded schema still expose their own input names when wrapped this way,
+independent of registration order.
+
 Output Option wrappers retain the registration of their original value codec, including when `S.toType(codec)` was registered first under a different name. This applies to object and interface registrations in root and nested fields: `S.Option(codec)`, `S.OptionFromNullOr(codec)`, the undefined/nullish variants, and the optional-key variants select the original codec's registered type and computed fields rather than its projection's registration. Option fields remain nullable; for example, `S.OptionFromNullOr(codec)` exposes `None` as GraphQL `null`.
 
 Output registrations apply only to the decoded representation. Registering an object decoded from a string does not turn unrelated string fields into that object. Input registrations apply to the encoded representation. Recursive input references reuse the registered input object, and inferred output types share one conversion context across registered fields and root operations.

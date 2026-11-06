@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import * as S from "effect/Schema"
 import * as SchemaGetter from "effect/SchemaGetter"
 import {
@@ -1468,6 +1468,47 @@ describe("exact registration precedence", () => {
           projected: { projectedOnly: "Projected" },
         },
       })
+    }
+  )
+
+  it.each([false, true])(
+    "keeps optional-key codecs distinct when their encoded input is shared (%s)",
+    async (reversed) => {
+      const encoded = S.Struct({ id: S.String })
+      const decoded = S.Struct({ id: S.String })
+      const one = encoded.pipe(S.decodeTo(decoded))
+      const two = encoded.pipe(S.decodeTo(decoded))
+      const registrations = [
+        { name: "OneInput", schema: one },
+        { name: "TwoInput", schema: two },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reversed ? registrations.reverse() : registrations) {
+        builder = builder.inputType(registration)
+      }
+      const schema = builder
+        .query("echo", {
+          type: S.String,
+          args: S.Struct({
+            one: S.OptionFromOptionalKey(one),
+            two: S.OptionFromOptionalKey(two),
+          }),
+          resolve: ({ one, two }) =>
+            Effect.succeed(
+              `${Option.isSome(one) ? one.value.id : "absent"}:${Option.isSome(two) ? two.value.id : "absent"}`
+            ),
+        })
+        .buildSchema()
+
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)(
+          "query($one: OneInput, $two: TwoInput) { echo(one: $one, two: $two) }",
+          { one: { id: "1" }, two: { id: "2" } }
+        )
+      )
+
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ echo: "1:2" })
     }
   )
 })
