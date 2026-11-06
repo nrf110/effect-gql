@@ -79,14 +79,14 @@ export const serve = <E, R, RE>(
     never,
     E,
     | HttpRouter.HttpRouter
-    | R
-    | HttpRouter.Request<"Requires", R>
+    | NoInfer<R>
+    | HttpRouter.Request<"Requires", NoInfer<R>>
     | HttpRouter.Request<"Error", unknown>
-    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalRequires", NoInfer<R>>
     | HttpRouter.Request<"GlobalError", unknown>
   >,
   layer: Layer.Layer<R, RE>,
-  options: ServeOptions<R> = {}
+  options: ServeOptions<NoInfer<R>> = {}
 ): void => {
   if (!Bun.semver.satisfies(Bun.version, ">=1.4.2")) {
     throw new Error(

@@ -743,6 +743,20 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 const router = toRouter(builder, DatabaseLive, { graphiql: true })
 ```
 
+The adapters also use their supplied layer for router construction and request
+middleware. If these phases need different services, pass their composition
+directly:
+
+```typescript
+serve(routes, Layer.merge(ConstructionLive, RequestLive))
+```
+
+The service union is inferred from the layer, so this has the same requirements
+as first assigning the merged layer to a variable. Node and Bun `serve`, Express
+`toMiddleware`, and Web `toHandler` all check construction, route-local, and global
+middleware dependencies. Extra services are accepted, while missing services
+are rejected.
+
 ## Error Handling
 
 HTTP-level errors are handled automatically:

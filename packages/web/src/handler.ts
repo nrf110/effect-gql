@@ -60,10 +60,10 @@ export const toHandler = <E, R, RE>(
     never,
     E,
     | HttpRouter.HttpRouter
-    | R
-    | HttpRouter.Request<"Requires", R>
+    | NoInfer<R>
+    | HttpRouter.Request<"Requires", NoInfer<R>>
     | HttpRouter.Request<"Error", unknown>
-    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalRequires", NoInfer<R>>
     | HttpRouter.Request<"GlobalError", unknown>
   >,
   layer: Layer.Layer<R, RE>

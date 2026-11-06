@@ -79,14 +79,14 @@ export const serve = <E, R, RE>(
     never,
     E,
     | HttpRouter.HttpRouter
-    | R
-    | HttpRouter.Request<"Requires", R>
+    | NoInfer<R>
+    | HttpRouter.Request<"Requires", NoInfer<R>>
     | HttpRouter.Request<"Error", unknown>
-    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalRequires", NoInfer<R>>
     | HttpRouter.Request<"GlobalError", unknown>
   >,
   layer: Layer.Layer<R, RE>,
-  options: ServeOptions<R> = {}
+  options: ServeOptions<NoInfer<R>> = {}
 ): void => {
   const { port = 4000, host = "0.0.0.0", onStart, subscriptions } = options
   const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`

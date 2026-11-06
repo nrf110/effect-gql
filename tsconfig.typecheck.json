@@ -4,15 +4,16 @@
     "noEmit": true,
     "paths": {
       "@effect-gql/core": ["packages/core/src/index.ts"],
-      "@effect-gql/core/*": ["packages/core/src/*"],
-    },
+      "@effect-gql/core/*": ["packages/core/src/*"]
+    }
   },
   "files": [
     "packages/core/test/unit/builder/argument-services.test.ts",
     "packages/core/test/unit/server/schema-builder-extensions.test.ts",
     "packages/federation/test/unit/argument-services.test.ts",
+    "packages/web/test/type-contracts/adapter-services.ts"
   ],
   "include": ["packages/*/src/**/*"],
   "exclude": ["docs", "node_modules", "**/dist/**", "**/test/**"],
-  "references": [],
+  "references": []
 }

@@ -303,12 +303,12 @@ export interface ObjectFieldRegistration<
  * Requirements of each inline field's resolver and optional argument decoder.
  */
 export type ObjectFieldsServices<Fields> = {
-  [K in keyof Fields]: Fields[K] extends {
+  [K in keyof Fields]-?: NonNullable<Fields[K]> extends {
     resolve: (...args: never[]) => Effect.Effect<unknown, unknown, infer R>
   }
     ?
         | R
-        | (Fields[K] extends { args?: infer Args }
+        | (NonNullable<Fields[K]> extends { args?: infer Args }
             ? Args extends S.Decoder<unknown, infer RArgs>
               ? RArgs
               : never

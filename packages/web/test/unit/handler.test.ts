@@ -78,6 +78,61 @@ describe("handler.ts", () => {
       expect(released).toBe(1)
     })
 
+    it("provides distinct scoped construction and request services from an inline layer", async () => {
+      class Construct extends Context.Service<Construct, { readonly value: string }>()(
+        "web/DistinctConstruct"
+      ) {}
+      class RequestService extends Context.Service<RequestService, { readonly value: string }>()(
+        "web/DistinctRequest"
+      ) {}
+      let constructionAcquired = 0
+      let requestAcquired = 0
+      let constructionReleased = 0
+      let requestReleased = 0
+      const construction = Layer.effect(
+        Construct,
+        Effect.acquireRelease(
+          Effect.sync(() => ({ value: `construct-${++constructionAcquired}` })),
+          () => Effect.sync(() => constructionReleased++)
+        )
+      )
+      const requests = Layer.effect(
+        RequestService,
+        Effect.acquireRelease(
+          Effect.sync(() => ({ value: `request-${++requestAcquired}` })),
+          () => Effect.sync(() => requestReleased++)
+        )
+      )
+      const router = Layer.unwrap(
+        Effect.gen(function* () {
+          const built = yield* Construct
+          return HttpRouter.add(
+            "GET",
+            "/distinct",
+            Effect.map(RequestService, (request) =>
+              HttpServerResponse.text(`${built.value}:${request.value}`)
+            )
+          )
+        })
+      )
+      const app = toHandler(router, Layer.merge(construction, requests))
+      try {
+        for (let request = 0; request < 2; request++) {
+          const response = await app.handler(new Request("http://localhost/distinct"))
+          expect(response.status).toBe(200)
+          expect(await response.text()).toBe("construct-1:request-1")
+          expect(constructionReleased).toBe(0)
+          expect(requestReleased).toBe(0)
+        }
+        expect(constructionAcquired).toBe(1)
+        expect(requestAcquired).toBe(1)
+      } finally {
+        await app.dispose()
+      }
+      expect(constructionReleased).toBe(1)
+      expect(requestReleased).toBe(1)
+    })
+
     it("should handle GET requests", async () => {
       const router = HttpRouter.add("GET", "/hello", HttpServerResponse.text("Hello!"))
 

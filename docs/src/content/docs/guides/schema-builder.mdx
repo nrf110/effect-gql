@@ -184,6 +184,12 @@ The resolver's `parent` is contextually typed from the registered schema; pure
 fields and empty `fields` add no services. Provide a layer containing the complete
 union when passing the builder to `toRouter`.
 
+Typed maps with optional fields, including `Partial<Record<...>>`, follow the
+same rules. Optional-property absence adds no service requirement; each declared
+field still contributes its resolver and argument-decoder services when the
+field itself requires them. Pure optional fields remain compatible with
+`Layer.empty`, whether present or omitted.
+
 ### Adding Fields Separately
 
 Use `.field()` to add fields after type registration:

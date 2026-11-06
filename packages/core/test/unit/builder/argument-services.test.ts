@@ -35,6 +35,105 @@ describe("argument decoding service requirements", () => {
     | Context.Service.Identifier<typeof Label>
 
   it.each(["methods", "pipe"] as const)(
+    "keeps absent and present optional pure fields service-free through %s",
+    async (style) => {
+      type PureField = ObjectFieldRegistration<
+        S.Schema.Type<typeof Box>,
+        void,
+        string,
+        never,
+        never
+      >
+      for (const present of [false, true]) {
+        const fields: { readonly text?: PureField } = present
+          ? { text: { type: S.String, resolve: (parent) => Effect.succeed(parent.id) } }
+          : {}
+        const base = GraphQLSchemaBuilder.empty.query("box", {
+          type: Box,
+          resolve: () => Effect.succeed({ id: "box" }),
+        })
+        const builder =
+          style === "methods"
+            ? base.objectType({ name: "Box", schema: Box, fields })
+            : base.pipe(api.objectType({ name: "Box", schema: Box, fields }))
+        expectTypeOf<BuilderRequirements<typeof builder>>().toEqualTypeOf<never>()
+        const app = HttpRouter.toWebHandler(toRouter(builder, Layer.empty))
+        try {
+          const response = await app.handler(
+            new Request("http://localhost/graphql", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ query: present ? "{ box { id text } }" : "{ box { id } }" }),
+            })
+          )
+          expect(await response.json()).toEqual({
+            data: { box: present ? { id: "box", text: "box" } : { id: "box" } },
+          })
+        } finally {
+          await app.dispose()
+        }
+      }
+    }
+  )
+
+  it.each(["methods", "pipe"] as const)(
+    "retains optional fields' decoder and resolver services through %s",
+    async (style) => {
+      type OptionalField = ObjectFieldRegistration<
+        S.Schema.Type<typeof Box>,
+        S.Schema.Type<typeof args>,
+        string,
+        never,
+        Context.Service.Identifier<typeof Label>,
+        Context.Service.Identifier<typeof Offset>
+      >
+      const fields: Partial<Record<"text", OptionalField>> = {
+        text: {
+          type: S.String,
+          args,
+          resolve: (parent, { amount }) =>
+            Effect.map(Label, ({ label }) => `${label}:${parent.id}:${amount}`),
+        },
+      }
+      const base = GraphQLSchemaBuilder.empty.query("box", {
+        type: Box,
+        resolve: () => Effect.succeed({ id: "box" }),
+      })
+      const builder =
+        style === "methods"
+          ? base.objectType({ name: "Box", schema: Box, fields })
+          : base.pipe(api.objectType({ name: "Box", schema: Box, fields }))
+      expectTypeOf<BuilderRequirements<typeof builder>>().toEqualTypeOf<Requirements>()
+      const _missingServices = () => {
+        // @ts-expect-error optional fields still require their argument decoder service
+        toRouter(builder, Layer.succeed(Label, { label: "ready" }))
+        // @ts-expect-error optional fields still require their resolver service
+        toRouter(builder, Layer.succeed(Offset, { offset: 10 }))
+      }
+      const app = HttpRouter.toWebHandler(
+        toRouter(
+          builder,
+          Layer.merge(
+            Layer.succeed(Offset, { offset: 10 }),
+            Layer.succeed(Label, { label: "ready" })
+          )
+        )
+      )
+      try {
+        const response = await app.handler(
+          new Request("http://localhost/graphql", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ query: '{ box { text(amount: "2") } }' }),
+          })
+        )
+        expect(await response.json()).toEqual({ data: { box: { text: "ready:box:12" } } })
+      } finally {
+        await app.dispose()
+      }
+    }
+  )
+  it.each(["methods", "pipe"] as const)(
     "keeps explicitly typed service-free registrations runnable with Layer.empty through %s",
     async (style) => {
       const hello: FieldRegistration<void, string, never, never> = {
