@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Context, Effect, Stream, Option } from "effect"
+import { Context, Deferred, Effect, Stream, Option } from "effect"
 import * as S from "effect/Schema"
 import * as SchemaGetter from "effect/SchemaGetter"
 import {
@@ -25,7 +25,7 @@ import {
   FieldBuilderContext,
 } from "../../../src/builder/field-builders"
 import type { GraphQLEffectContext, MiddlewareContext } from "../../../src/builder/types"
-import { makeSubscriptionContext } from "../../../src/builder"
+import { GraphQLSchemaBuilder, makeSubscriptionContext } from "../../../src/builder"
 
 // Minimal metadata for tests that invoke subscription field configs directly.
 const subscriptionInfo = {} as GraphQLResolveInfo
@@ -1858,6 +1858,164 @@ describe("field-builders.ts", () => {
   // buildSubscriptionField - Iterator cleanup
   // ==========================================================================
   describe("buildSubscriptionField - Iterator cleanup", () => {
+    it("serializes overlapping native GraphQL pulls without duplicating stream state", async () => {
+      let active = 0
+      let maximumActive = 0
+      const schema = GraphQLSchemaBuilder.empty
+        .query("ready", { type: S.String, resolve: () => Effect.succeed("ready") })
+        .subscription("event", {
+          type: S.Number,
+          subscribe: () =>
+            Effect.succeed(
+              Stream.unfold(0, (value) =>
+                Effect.promise(async () => {
+                  active++
+                  maximumActive = Math.max(maximumActive, active)
+                  await Promise.resolve()
+                  active--
+                  return [value, value + 1] as const
+                })
+              )
+            ),
+        })
+        .buildSchema()
+      const result = await subscribe({
+        schema,
+        document: parse("subscription { event }"),
+        contextValue: createSimpleContext(),
+      })
+      if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+      const iterator = result[Symbol.asyncIterator]()
+      try {
+        expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 0 } } })
+        expect(await Promise.all([iterator.next(), iterator.next()])).toEqual([
+          { done: false, value: { data: { event: 1 } } },
+          { done: false, value: { data: { event: 2 } } },
+        ])
+        expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 3 } } })
+        expect(maximumActive).toBe(1)
+      } finally {
+        await iterator.return?.()
+      }
+    })
+
+    it("interrupts an active pull immediately and closes queued pulls exactly once", async () => {
+      const entered = Effect.runSync(Deferred.make<void>())
+      let pulls = 0
+      let closed = 0
+      const schema = GraphQLSchemaBuilder.empty
+        .query("ready", { type: S.String, resolve: () => Effect.succeed("ready") })
+        .subscription("event", {
+          type: S.Number,
+          subscribe: () =>
+            Effect.succeed(
+              Stream.unfold(0, (value) =>
+                Effect.gen(function* () {
+                  pulls++
+                  if (value === 0) return [value, value + 1] as const
+                  yield* Deferred.succeed(entered, undefined)
+                  return yield* Effect.never
+                })
+              ).pipe(
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    closed++
+                  })
+                )
+              )
+            ),
+        })
+        .buildSchema()
+      const result = await subscribe({
+        schema,
+        document: parse("subscription { event }"),
+        contextValue: createSimpleContext(),
+      })
+      if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+      const iterator = result[Symbol.asyncIterator]()
+      expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 0 } } })
+      const active = iterator.next()
+      const queued = iterator.next()
+      await Effect.runPromise(Deferred.await(entered))
+      const ending = iterator.return!()
+      const repeated = iterator.return!()
+      expect(await ending).toEqual({ done: true, value: undefined })
+      expect(await repeated).toEqual({ done: true, value: undefined })
+      expect(await active).toEqual({ done: true, value: undefined })
+      expect(await queued).toEqual({ done: true, value: undefined })
+      expect(await iterator.next()).toEqual({ done: true, value: undefined })
+      expect(pulls).toBe(2)
+      expect(closed).toBe(1)
+    })
+
+    it("preserves a source failure while closing subsequent queued reads", async () => {
+      const failure = new Error("subscription source failed")
+      let closed = 0
+      const schema = GraphQLSchemaBuilder.empty
+        .query("ready", { type: S.String, resolve: () => Effect.succeed("ready") })
+        .subscription("event", {
+          type: S.Number,
+          subscribe: () =>
+            Effect.succeed(
+              Stream.make(0).pipe(
+                Stream.concat(Stream.fail(failure)),
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    closed++
+                  })
+                )
+              )
+            ),
+        })
+        .buildSchema()
+      const result = await subscribe({
+        schema,
+        document: parse("subscription { event }"),
+        contextValue: createSimpleContext(),
+      })
+      if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+      const iterator = result[Symbol.asyncIterator]()
+      expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 0 } } })
+      const [failed, queued] = await Promise.allSettled([iterator.next(), iterator.next()])
+      expect(failed.status).toBe("rejected")
+      if (failed.status === "rejected") expect(failed.reason).toBe(failure)
+      expect(queued).toEqual({ status: "fulfilled", value: { done: true, value: undefined } })
+      await iterator.return?.()
+      expect(closed).toBe(1)
+    })
+
+    it.each(["before next", "before queued pull"] as const)(
+      "does not acquire a stream when returned %s",
+      async (transition) => {
+        let acquired = 0
+        const schema = GraphQLSchemaBuilder.empty
+          .query("ready", { type: S.String, resolve: () => Effect.succeed("ready") })
+          .subscription("event", {
+            type: S.Number,
+            subscribe: () =>
+              Effect.succeed(
+                Stream.suspend(() => {
+                  acquired++
+                  return Stream.make(1)
+                })
+              ),
+          })
+          .buildSchema()
+        const result = await subscribe({
+          schema,
+          document: parse("subscription { event }"),
+          contextValue: createSimpleContext(),
+        })
+        if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+        const iterator = result[Symbol.asyncIterator]()
+        const first = transition === "before queued pull" ? iterator.next() : undefined
+        await iterator.return!()
+        if (first) expect(await first).toEqual({ done: true, value: undefined })
+        expect(await iterator.next()).toEqual({ done: true, value: undefined })
+        expect(acquired).toBe(0)
+      }
+    )
+
     it("should handle return() for early termination", async () => {
       const ctx = createFieldBuilderContext()
       const config = buildSubscriptionField(

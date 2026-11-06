@@ -267,6 +267,17 @@ default. This option affects **only already-parsed strings**: Buffers, other
 parsed values, unparsed streaming uploads, and GET/HEAD requests retain their
 existing handling.
 
+For already-parsed bodies, the middleware removes the original `Content-Length`
+because serialization or parser decoding can change the byte length. Effect's
+configured body-size limit still applies to the forwarded body. Unparsed uploads
+retain their original headers and stream without buffering.
+
+If a handler ignores an upload or reads only part of it, the middleware drains
+the remaining request bytes once response processing finishes (or the handler
+cancels the request body). This preserves keep-alive connection reuse without
+destroying the incoming request. Uploads used by streaming responses remain
+readable until the response completes.
+
 Response bodies stream with backpressure rather than being buffered in memory.
 If a body fails before the first bytes are sent, `toMiddleware` forwards the
 error to Express without destroying the response, so an error handler can still
@@ -274,6 +285,10 @@ send an appropriate status and body. After headers have been sent, an error
 handler must delegate with `next(error)` (or close the response) instead of
 attempting a second response. Client disconnects cancel the source stream and
 release its reader.
+
+Conditional GET and HEAD requests retain Express freshness handling. A matching
+`ETag` or `Last-Modified` validator produces a bodyless `304` response. Any unused
+response stream is cancelled and its cleanup is awaited before the response ends.
 
 ### Web Standards (Cloudflare Workers, Deno)
 

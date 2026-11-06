@@ -81,6 +81,34 @@ const schema = GraphQLSchemaBuilder.empty.pipe(
 ).buildSchema()
 ```
 
+`compose` preserves the services required by every operation, including argument
+decoders, and retains services already required by its input builder. This also
+applies to nested composition and arrays passed with `compose(...operations)`.
+`compose()` with no operations leaves the builder unchanged. Pass the resulting
+builder to `toRouter` with a layer providing all accumulated services.
+
+Custom generic operations are supported without annotations:
+
+```typescript
+const withHello = <R>(builder: GraphQLSchemaBuilder<R>) =>
+  builder.query("hello", {
+    type: S.String,
+    resolve: () => Effect.succeed("world"),
+  })
+
+const withGreetings = compose(withHello)
+```
+
+Calls infer up to 20 custom operations independently. For dynamically sized,
+heterogeneous arrays of custom operations, normalize each with `compose(custom)`
+before combining them; built-in and already-composed operation arrays retain their
+individual requirements without an arity limit:
+
+```typescript
+const operations = [compose(withHello), compose(withServiceQueries)]
+const withOperations = compose(...operations)
+```
+
 ## Object Types
 
 ### Basic Registration
@@ -135,6 +163,13 @@ builder.objectType({
   },
 })
 ```
+
+Each inline field contributes its own resolver and argument-decoder service
+requirements. `objectType` unions these requirements across all fields and keeps
+services already required by the builder, for both the method and pipe APIs.
+The resolver's `parent` is contextually typed from the registered schema; pure
+fields and empty `fields` add no services. Provide a layer containing the complete
+union when passing the builder to `toRouter`.
 
 ### Adding Fields Separately
 

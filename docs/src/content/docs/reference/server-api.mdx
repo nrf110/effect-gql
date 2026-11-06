@@ -12,9 +12,12 @@ Effect GraphQL provides server integration APIs in `@effect-gql/core` for HTTP r
 Create an HttpRouter configured for GraphQL.
 
 The Node and Bun `serve`, Express `toMiddleware`, and Web `toHandler` adapters
-accept router layers with both route-local and global middleware requirements
-and errors. Supply middleware services through the adapter's service layer,
-including middleware registered with `HttpRouter.middleware(..., { global: true })`.
+accept router layers with construction-time service dependencies, route-local
+and global middleware requirements, and errors. The adapter's service layer is
+provided while building the router and retained for request dispatch, including
+effectful `HttpRouter.middleware` initialization. Scoped services shared between
+construction and requests are acquired once and released when the adapter stops
+or its handler is disposed.
 
 The resolver `layer` is built afresh for every request, even when the same layer
 has already been supplied to the surrounding HTTP application. Dependencies are
@@ -63,12 +66,18 @@ Convert a GraphQLSchemaBuilder directly to an HttpRouter.
 ```typescript
 import { toRouter } from "@effect-gql/core"
 
-function toRouter<R, R2>(
+function toRouter<R>(
   builder: GraphQLSchemaBuilder<R>,
-  layer: Layer.Layer<R2>,
+  layer: Layer.Layer<NoInfer<Exclude<R, GraphQLRequestContext>>>,
   config?: GraphQLRouterConfigInput
 ): Layer.Layer<never, never, HttpRouter.HttpRouter>
 ```
+
+The layer must provide resolver and argument-decoder services accumulated by the
+builder. `GraphQLRequestContext` is supplied by the router for each request and
+does not belong in that layer. Additional services are allowed. Unlike `toRouter`,
+APIs accepting a bare `GraphQLSchema` cannot statically recover the builder's
+service requirements.
 
 **Example:**
 

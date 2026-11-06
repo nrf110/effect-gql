@@ -183,10 +183,12 @@ const createGraphqlWsSocketAdapter = <R>(
   let messageCallback: ((message: string) => Promise<void>) | null = null
   interface OperationDispatch {
     cancelled: boolean
+    terminal: boolean
     started: boolean
     pending: Promise<void>
   }
   const operations = new Map<string, OperationDispatch>()
+  const runningOperations = new Map<string, OperationDispatch>()
   const close = (code?: number, reason?: string) => {
     extra.closing = true
     Effect.runPromiseWith(services)(socket.close(code, reason)).catch(() => {
@@ -198,14 +200,25 @@ const createGraphqlWsSocketAdapter = <R>(
     adapter: {
       protocol: socket.protocol,
 
-      send: (data: string) =>
-        extra.closing
-          ? Promise.resolve()
-          : Effect.runPromiseWith(services)(
-              socket
-                .send(data)
-                .pipe(Effect.catch((error) => Effect.logError("WebSocket send error", error)))
-            ),
+      send: (data: string) => {
+        if (extra.closing) return Promise.resolve()
+        const message = parseMessage(data)
+        if (message.type === "complete" || message.type === "error") {
+          // The client can reuse the ID as soon as it receives this frame, but
+          // graphql-ws keeps its reservation until the sending callback settles.
+          // Attribute frames to the running callback, not its queued replacement.
+          // ERROR is already terminal: graphql-ws may still invoke its completion
+          // hook afterward, but its COMPLETE must not terminate a reused client ID.
+          const operation = runningOperations.get(message.id)
+          if (message.type === "complete" && operation?.terminal) return Promise.resolve()
+          if (operation) operation.terminal = true
+        }
+        return Effect.runPromiseWith(services)(
+          socket
+            .send(data)
+            .pipe(Effect.catch((error) => Effect.logError("WebSocket send error", error)))
+        )
+      },
 
       close,
 
@@ -243,31 +256,31 @@ const createGraphqlWsSocketAdapter = <R>(
 
       const id = parsed.id
       const previous = operations.get(id)
-      if (previous && !previous.cancelled) {
+      if (previous && !previous.cancelled && !previous.terminal) {
         close(4409, `Subscriber for ${id} already exists`)
         return
       }
-      // graphql-ws identifies operations only by ID. A cancelled callback must
-      // leave its finally block before a replacement can reserve that same ID.
-      // Complete and unrelated IDs never wait for this per-ID barrier.
-      let operation: OperationDispatch
-      if (previous) {
-        const start = () => {
-          if (extra.closing || operation.cancelled) return
-          operation.started = true
-          return callback(message)
-        }
-        operation = {
-          cancelled: false,
-          started: false,
-          pending: previous.pending.then(start, start),
-        }
-      } else {
-        operation = { cancelled: false, started: true, pending: callback(message) }
+      // Replacements wait for the old callback's finally block to release the
+      // graphql-ws reservation. Control messages and other IDs remain concurrent.
+      const start = () => {
+        if (extra.closing || operation.cancelled) return
+        operation.started = true
+        runningOperations.set(id, operation)
+        return callback(message)
+      }
+      const operation: OperationDispatch = {
+        cancelled: false,
+        terminal: false,
+        started: false,
+        pending: previous?.pending ?? Promise.resolve(),
       }
       operations.set(id, operation)
+      // Publish ownership before native dispatch, which validates fresh IDs
+      // synchronously (in particular, before connection initialization can ACK).
+      operation.pending = previous ? previous.pending.then(start, start) : Promise.resolve(start())
       const settled = () => {
         if (operations.get(id) === operation) operations.delete(id)
+        if (runningOperations.get(id) === operation) runningOperations.delete(id)
       }
       void operation.pending.then(settled, settled)
       await operation.pending

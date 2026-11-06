@@ -427,7 +427,10 @@ function makeInputConverter(
           )
         break
       case "Union": {
-        const member = nonNullMembers(ast)[0]
+        const members = nonNullMembers(ast)
+        // A failed whole-union match must not narrow to an enum for one member.
+        if (members.length > 1) break
+        const member = members[0]
         if (member)
           return convert(
             source._tag === "Union" ? (nonNullMembers(source)[0] ?? member) : member,

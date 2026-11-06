@@ -1216,6 +1216,308 @@ describe("ws-adapter.ts", () => {
       }
     )
 
+    it("delivers replacement results to a graphql-ws client reusing an ID after a blocked error send", async () => {
+      const finishError = Effect.runSync(Deferred.make<void>())
+      const receivedError = Effect.runSync(Deferred.make<void>())
+      const liveSent = Effect.runSync(Deferred.make<void>())
+      const pong = Effect.runSync(Deferred.make<void>())
+      const completed = Effect.runSync(Deferred.make<void>())
+      const mock = createMockSocket()
+      const sources: string[] = []
+      const values: unknown[] = []
+      const oldErrors: unknown[] = []
+      const failures: unknown[] = []
+      const schema = createTestSchema()
+      schema.getSubscriptionType()!.getFields().tick.subscribe = async function* (
+        _root,
+        _args,
+        _context,
+        info
+      ) {
+        const name = info.operation.name!.value
+        sources.push(name)
+        if (name === "Old") throw new Error("Expected source failure")
+        yield { tick: { count: 3 } }
+      }
+      let connection:
+        | {
+            receive: (data: string) => void
+            close: (code?: number, reason?: string) => void
+          }
+        | undefined
+      class ClientSocket {
+        static CONNECTING = 0
+        static OPEN = 1
+        static CLOSING = 2
+        static CLOSED = 3
+        readyState = ClientSocket.CONNECTING
+        onopen: (() => void) | null = null
+        onmessage: ((event: { data: string }) => void) | null = null
+        onclose: ((event: CloseEvent) => void) | null = null
+        onerror: ((error: unknown) => void) | null = null
+
+        constructor() {
+          connection = {
+            receive: (data) => this.onmessage?.({ data }),
+            close: (code, reason) => this.close(code, reason),
+          }
+          queueMicrotask(() => {
+            this.readyState = ClientSocket.OPEN
+            this.onopen?.()
+          })
+        }
+
+        send(data: string) {
+          mock.sendMessage(data)
+          if (JSON.parse(data).payload?.operationName === "Live") {
+            Effect.runSync(Deferred.succeed(liveSent, undefined))
+          }
+        }
+
+        close(code = 1000, reason = "") {
+          if (this.readyState === ClientSocket.CLOSED) return
+          this.readyState = ClientSocket.CLOSED
+          mock.closeConnection(code, reason)
+          this.onclose?.({ code, reason })
+        }
+      }
+      const socket: EffectWebSocket = {
+        ...mock.socket,
+        send: (data) =>
+          Effect.gen(function* () {
+            yield* mock.socket.send(data)
+            connection?.receive(data)
+            if (JSON.parse(data).type === "error") yield* Deferred.await(finishError)
+          }),
+        close: (code, reason) => Effect.sync(() => connection?.close(code, reason)),
+      }
+      const fiber = Effect.runFork(makeGraphQLWSHandler(schema, Layer.empty)(socket))
+      const client = GraphqlWs.createClient({
+        url: "ws://in-memory",
+        webSocketImpl: ClientSocket,
+        lazy: false,
+        retryAttempts: 0,
+        generateID: () => "same",
+        onNonLazyError: (error) => failures.push(error),
+        on: {
+          pong: () => {
+            Effect.runSync(Deferred.succeed(pong, undefined))
+          },
+        },
+      })
+      try {
+        client.subscribe(
+          { query: "subscription Old { tick { count } }", operationName: "Old" },
+          {
+            next: (value) => failures.push(value),
+            error: (error) => {
+              oldErrors.push(error)
+              Effect.runSync(Deferred.succeed(receivedError, undefined))
+            },
+            complete: () => failures.push("Old unexpectedly completed"),
+          }
+        )
+        await Effect.runPromise(Deferred.await(receivedError).pipe(Effect.timeout("2 seconds")))
+        expect(oldErrors).toEqual([
+          [expect.objectContaining({ message: "Expected source failure" })],
+        ])
+        client.subscribe(
+          { query: "subscription Live { tick { count } }", operationName: "Live" },
+          {
+            next: (value) => values.push(value),
+            error: (error) => {
+              failures.push(error)
+              Effect.runSync(Deferred.succeed(completed, undefined))
+            },
+            complete: () => {
+              Effect.runSync(Deferred.succeed(completed, undefined))
+            },
+          }
+        )
+        await Effect.runPromise(Deferred.await(liveSent).pipe(Effect.timeout("2 seconds")))
+        mock.sendMessage(JSON.stringify({ type: "ping" }))
+        await Effect.runPromise(Deferred.await(pong).pipe(Effect.timeout("2 seconds")))
+        expect(sources).toEqual(["Old"])
+        Effect.runSync(Deferred.succeed(finishError, undefined))
+        await Effect.runPromise(Deferred.await(completed).pipe(Effect.timeout("2 seconds")))
+        expect(values).toEqual([{ data: { tick: { count: 3 } } }])
+        expect(failures).toEqual([])
+        expect(sources).toEqual(["Old", "Live"])
+      } finally {
+        Effect.runSync(Deferred.succeed(finishError, undefined))
+        await client.dispose()
+        connection?.close()
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+      }
+    })
+
+    it.each([
+      ["complete", "replace"],
+      ["validation-error", "replace"],
+      ["source-error", "replace"],
+      ["complete", "cancel-queued"],
+      ["source-error", "cancel-queued"],
+      ["complete", "cancel-current"],
+      ["source-error", "cancel-current"],
+      ["complete", "duplicate"],
+      ["source-error", "duplicate"],
+    ] as const)(
+      "hands off an ID after %s delivery begins while handling %s",
+      async (terminal, action) => {
+        const finishTerminal = Effect.runSync(Deferred.make<void>())
+        const protocolClosed = Effect.runSync(Deferred.make<void>())
+        const hooks: string[] = []
+        const sources: string[] = []
+        const schema = createTestSchema()
+        schema.getSubscriptionType()!.getFields().tick.subscribe = async function* (
+          _root,
+          _args,
+          _context,
+          info
+        ) {
+          const name = info.operation.name!.value
+          sources.push(name)
+          if (name === "Old") {
+            if (terminal === "source-error") throw new Error("Expected terminal failure")
+            return
+          }
+          yield { tick: { count: 3 } }
+        }
+        const mock = createMockSocket()
+        const outgoing = Effect.runSync(
+          Queue.unbounded<{ type: string; id?: string; payload?: unknown }>()
+        )
+        let terminalSends = 0
+        const socket: EffectWebSocket = {
+          ...mock.socket,
+          send: (data) =>
+            Effect.gen(function* () {
+              const message = JSON.parse(data)
+              yield* mock.socket.send(data)
+              // Model a transport that exposes bytes before its send completes.
+              yield* Queue.offer(outgoing, message)
+              if (
+                message.id === "same" &&
+                (message.type === "complete" || message.type === "error")
+              ) {
+                terminalSends++
+                if (terminalSends === 1) yield* Deferred.await(finishTerminal)
+              }
+            }),
+          close: (code, reason) =>
+            mock.socket
+              .close(code, reason)
+              .pipe(Effect.andThen(Deferred.succeed(protocolClosed, undefined)), Effect.asVoid),
+        }
+        const nextMessage = () =>
+          Effect.runPromise(Queue.take(outgoing).pipe(Effect.timeout("2 seconds")))
+        const fiber = Effect.runFork(
+          makeGraphQLWSHandler(schema, Layer.empty, {
+            onSubscribe: (_ctx, { id, payload }) =>
+              Effect.sync(() => {
+                if (id === "same") hooks.push(payload.operationName!)
+              }),
+          })(socket)
+        )
+        const subscribe = (name: string) =>
+          mock.sendMessage(
+            JSON.stringify({
+              id: "same",
+              type: "subscribe",
+              payload: {
+                query:
+                  name === "Old" && terminal === "validation-error"
+                    ? "query Old { missing }"
+                    : `subscription ${name} { tick { count } }`,
+                operationName: name,
+              },
+            })
+          )
+        const ping = async (barrier: string) => {
+          mock.sendMessage(JSON.stringify({ type: "ping", payload: { barrier } }))
+          expect(await nextMessage()).toEqual({ type: "pong", payload: { barrier } })
+        }
+        try {
+          mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+          expect(await nextMessage()).toEqual({ type: "connection_ack" })
+          subscribe("Old")
+          const firstTerminal = await nextMessage()
+          if (terminal === "complete") {
+            expect(firstTerminal).toEqual({ id: "same", type: "complete" })
+          } else {
+            expect(firstTerminal).toMatchObject({
+              id: "same",
+              type: "error",
+              payload: [{ message: expect.any(String) }],
+            })
+          }
+          if (action === "cancel-current") {
+            mock.sendMessage(JSON.stringify({ id: "same", type: "complete" }))
+          }
+          subscribe(action === "cancel-queued" ? "Discarded" : "Live")
+          await ping("queued")
+          mock.sendMessage(
+            JSON.stringify({ id: "other", type: "subscribe", payload: { query: "{ hello }" } })
+          )
+          expect(await nextMessage()).toEqual({
+            id: "other",
+            type: "next",
+            payload: { data: { hello: "world" } },
+          })
+          expect(await nextMessage()).toEqual({ id: "other", type: "complete" })
+          if (action === "cancel-queued") {
+            mock.sendMessage(JSON.stringify({ id: "same", type: "complete" }))
+            subscribe("Live")
+            await ping("latest")
+          }
+          expect(hooks).toEqual(["Old"])
+          expect(mock.closeInfo.code).toBeUndefined()
+
+          if (action === "duplicate") {
+            // A queued replacement owns the ID even while the old send is blocked.
+            subscribe("Duplicate")
+            await Effect.runPromise(
+              Deferred.await(protocolClosed).pipe(Effect.timeout("2 seconds"))
+            )
+            expect(mock.closeInfo).toEqual({
+              code: 4409,
+              reason: "Subscriber for same already exists",
+            })
+          }
+          Effect.runSync(Deferred.succeed(finishTerminal, undefined))
+          const replacementFrames = [
+            { id: "same", type: "next", payload: { data: { tick: { count: 3 } } } },
+            { id: "same", type: "complete" },
+          ]
+          if (action !== "duplicate") {
+            expect(await nextMessage()).toEqual(replacementFrames[0])
+            expect(await nextMessage()).toEqual(replacementFrames[1])
+            expect(mock.closeInfo.code).toBeUndefined()
+          }
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+          expect(hooks).toEqual(action === "duplicate" ? ["Old"] : ["Old", "Live"])
+          expect(sources).toEqual(
+            terminal === "validation-error"
+              ? ["Live"]
+              : action === "duplicate"
+                ? ["Old"]
+                : ["Old", "Live"]
+          )
+          expect(
+            mock.sentMessages
+              .map((message) => JSON.parse(message))
+              .filter(({ id }) => id === "same")
+          ).toEqual([firstTerminal, ...(action === "duplicate" ? [] : replacementFrames)])
+        } finally {
+          Effect.runSync(Deferred.succeed(finishTerminal, undefined))
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.interrupt(fiber))
+        }
+      }
+    )
+
     it("drains every concurrent dispatch when one setup rejects and another creates a late iterator", async () => {
       const events: string[] = []
       const started = Effect.runSync(Queue.unbounded<string>())
@@ -1311,6 +1613,41 @@ describe("ws-adapter.ts", () => {
         Effect.runSync(Deferred.succeed(finishPending, undefined))
         Effect.runSync(Deferred.succeed(finishRejecting, undefined))
         Effect.runSync(Deferred.succeed(finishReturn, undefined))
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Fiber.interrupt(fiber))
+      }
+    })
+
+    it("rejects an already queued subscribe before initialization can acknowledge", async () => {
+      const rejected = Effect.runSync(Deferred.make<void>())
+      const mock = createMockSocket()
+      const schema = createTestSchema()
+      const resolve = vi.fn(() => "world")
+      schema.getQueryType()!.getFields().hello.resolve = resolve
+      const socket: EffectWebSocket = {
+        ...mock.socket,
+        close: (code, reason) =>
+          mock.socket
+            .close(code, reason)
+            .pipe(Effect.andThen(Deferred.succeed(rejected, undefined)), Effect.asVoid),
+      }
+      // Both messages are available before native connection initialization starts.
+      mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+      mock.sendMessage(
+        JSON.stringify({
+          id: "early",
+          type: "subscribe",
+          payload: { query: "{ hello }" },
+        })
+      )
+      const fiber = Effect.runFork(makeGraphQLWSHandler(schema, Layer.empty)(socket))
+      try {
+        await Effect.runPromise(Deferred.await(rejected).pipe(Effect.timeout("2 seconds")))
+        expect(mock.closeInfo).toEqual({ code: 4401, reason: "Unauthorized" })
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+        expect(resolve).not.toHaveBeenCalled()
+      } finally {
         mock.closeConnection(1000, "Done")
         await Effect.runPromise(Fiber.interrupt(fiber))
       }

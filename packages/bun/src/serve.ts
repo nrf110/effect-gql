@@ -79,6 +79,7 @@ export const serve = <E, R, RE>(
     never,
     E,
     | HttpRouter.HttpRouter
+    | R
     | HttpRouter.Request<"Requires", R>
     | HttpRouter.Request<"Error", unknown>
     | HttpRouter.Request<"GlobalRequires", R>
@@ -95,9 +96,19 @@ export const serve = <E, R, RE>(
 
   const { port = 4000, host = "0.0.0.0", onStart, subscriptions } = options
   const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`
+  // Resolve construction services before interpreting request requirement markers.
+  const routes: Layer.Layer<
+    R,
+    E | RE,
+    | HttpRouter.HttpRouter
+    | HttpRouter.Request<"Requires", R>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalError", unknown>
+  > = Layer.provideMerge(router, layer)
 
   if (!subscriptions) {
-    const app = HttpRouter.serve(router).pipe(Layer.provide(layer))
+    const app = HttpRouter.serve(routes).pipe(Layer.provide(layer))
     const serverLayer = BunHttpServer.layer({ port, hostname: host })
     if (onStart) onStart(url)
     BunRuntime.runMain(Layer.launch(Layer.provide(app, serverLayer)))
@@ -107,7 +118,6 @@ export const serve = <E, R, RE>(
   const program = Effect.gen(function* () {
     const { createBunWSHandlers } = yield* Effect.tryPromise(() => import("./ws"))
     const app = yield* Effect.acquireRelease(
-      // The merged layer supplies all R services; no per-request context remains.
       Effect.sync(() =>
         HttpRouter.toWebHandler<
           R,
@@ -119,7 +129,7 @@ export const serve = <E, R, RE>(
           | HttpRouter.Request<"GlobalError", unknown>,
           never,
           never
-        >(Layer.merge(router, layer))
+        >(routes)
       ),
       ({ dispose }) => Effect.promise(dispose)
     )

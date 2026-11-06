@@ -7,6 +7,11 @@
       "@effect-gql/core/*": ["packages/core/src/*"],
     },
   },
+  "files": [
+    "packages/core/test/unit/builder/argument-services.test.ts",
+    "packages/core/test/unit/server/schema-builder-extensions.test.ts",
+    "packages/federation/test/unit/argument-services.test.ts",
+  ],
   "include": ["packages/*/src/**/*"],
   "exclude": ["docs", "node_modules", "**/dist/**", "**/test/**"],
   "references": [],

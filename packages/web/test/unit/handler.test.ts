@@ -35,6 +35,49 @@ describe("handler.ts", () => {
       expect(calls).toBe(2)
     })
 
+    it("shares scoped services between middleware construction and requests", async () => {
+      const Config = Context.Service<{ readonly value: string }>("web/ConstructionConfig")
+      let acquired = 0
+      let released = 0
+      const services = Layer.effect(
+        Config,
+        Effect.acquireRelease(
+          Effect.sync(() => ({ value: `instance-${++acquired}` })),
+          () => Effect.sync(() => released++)
+        )
+      )
+      const middleware = HttpRouter.middleware(
+        Effect.map(
+          Config,
+          (config) => (effect) =>
+            Effect.map(effect, HttpServerResponse.setHeader("x-config", config.value))
+        ),
+        { global: true }
+      )
+      const router = Layer.merge(
+        HttpRouter.add(
+          "GET",
+          "/config",
+          Effect.map(Config, (config) => HttpServerResponse.text(config.value))
+        ),
+        middleware
+      )
+      const app = toHandler(router, services)
+      try {
+        for (let request = 0; request < 2; request++) {
+          const response = await app.handler(new Request("http://localhost/config"))
+          expect(response.status).toBe(200)
+          expect(response.headers.get("x-config")).toBe("instance-1")
+          expect(await response.text()).toBe("instance-1")
+          expect(released).toBe(0)
+        }
+        expect(acquired).toBe(1)
+      } finally {
+        await app.dispose()
+      }
+      expect(released).toBe(1)
+    })
+
     it("should handle GET requests", async () => {
       const router = HttpRouter.add("GET", "/hello", HttpServerResponse.text("Hello!"))
 

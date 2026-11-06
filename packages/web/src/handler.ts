@@ -60,6 +60,7 @@ export const toHandler = <E, R, RE>(
     never,
     E,
     | HttpRouter.HttpRouter
+    | R
     | HttpRouter.Request<"Requires", R>
     | HttpRouter.Request<"Error", unknown>
     | HttpRouter.Request<"GlobalRequires", R>
@@ -67,5 +68,5 @@ export const toHandler = <E, R, RE>(
   >,
   layer: Layer.Layer<R, RE>
 ): WebHandler => {
-  return HttpRouter.toWebHandler(Layer.merge(router, layer))
+  return HttpRouter.toWebHandler(Layer.provideMerge(router, layer))
 }

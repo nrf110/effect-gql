@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest"
+import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
 import * as SchemaGetter from "effect/SchemaGetter"
 import {
@@ -24,6 +25,8 @@ import {
   TypeConversionContext,
   buildInputTypeLookupCache,
 } from "../../../src/builder/type-registry"
+import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
+import { execute } from "../../../src/builder/execute"
 
 // Helper to create a minimal context
 const createEmptyContext = (): TypeConversionContext => ({
@@ -527,6 +530,71 @@ describe("type-registry.ts", () => {
       )
 
       expect(result).toBe(StatusEnum)
+    })
+
+    it("decodes unmatched literal unions without narrowing them to an overlapping enum", async () => {
+      const status = S.Literals(["ACTIVE", "PENDING"]).pipe(
+        S.decodeTo(S.String, {
+          decode: SchemaGetter.transform((value) => value.toLowerCase()),
+          encode: SchemaGetter.transform((value) => value.toUpperCase() as "ACTIVE" | "PENDING"),
+        })
+      )
+      const received: string[] = []
+      const schema = GraphQLSchemaBuilder.empty
+        .enumType({ name: "Status", values: ["ACTIVE", "INACTIVE"] })
+        .query("echo", {
+          type: S.String,
+          args: S.Struct({
+            status,
+            exact: S.Literals(["ACTIVE", "INACTIVE"]),
+          }),
+          resolve: ({ status, exact }) =>
+            Effect.sync(() => {
+              received.push(status)
+              return `${status}:${exact}`
+            }),
+        })
+        .buildSchema()
+      const run = execute(schema, Layer.empty)
+      const source =
+        "query($status: String!, $exact: Status!) { echo(status: $status, exact: $exact) }"
+
+      const accepted = await Effect.runPromise(
+        run(source, { status: "PENDING", exact: "INACTIVE" })
+      )
+      expect(accepted.errors).toBeUndefined()
+      expect(accepted.data).toEqual({ echo: "pending:INACTIVE" })
+      expect(received).toEqual(["pending"])
+
+      const rejected = await Effect.runPromise(run(source, { status: "INACTIVE", exact: "ACTIVE" }))
+      expect(rejected.data).toEqual({ echo: null })
+      expect(rejected.errors?.[0].path).toEqual(["echo"])
+      expect(received).toEqual(["pending"])
+    })
+
+    it("keeps mixed-member union fallback scalar after a failed enum match", async () => {
+      const received: Array<string | number> = []
+      const schema = GraphQLSchemaBuilder.empty
+        .enumType({ name: "Status", values: ["ACTIVE", "INACTIVE"] })
+        .query("echo", {
+          type: S.String,
+          args: S.Struct({ status: S.Union([S.Literal("ACTIVE"), S.Number]) }),
+          resolve: ({ status }) =>
+            Effect.sync(() => {
+              received.push(status)
+              return String(status)
+            }),
+        })
+        .buildSchema()
+      const run = execute(schema, Layer.empty)
+      const source = "query($status: String!) { echo(status: $status) }"
+      const accepted = await Effect.runPromise(run(source, { status: "ACTIVE" }))
+      expect(accepted.errors).toBeUndefined()
+      expect(accepted.data).toEqual({ echo: "ACTIVE" })
+      const rejected = await Effect.runPromise(run(source, { status: "INACTIVE" }))
+      expect(rejected.data).toEqual({ echo: null })
+      expect(rejected.errors?.[0].path).toEqual(["echo"])
+      expect(received).toEqual(["ACTIVE"])
     })
 
     it("should handle S.optional wrapping", () => {

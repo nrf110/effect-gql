@@ -38,9 +38,9 @@ export interface CacheHint {
 /**
  * Configuration for a query or mutation field
  */
-export interface FieldRegistration<Args = any, A = any, E = any, R = any> {
+export interface FieldRegistration<Args = any, A = any, E = any, R = any, RArgs = unknown> {
   type: S.Schema<A>
-  args?: S.Schema<Args>
+  args?: S.Decoder<Args, RArgs>
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
@@ -224,9 +224,15 @@ export interface MiddlewareRegistration<R = never> {
  * Configuration for a subscription field
  * Returns a Stream that yields values over time
  */
-export interface SubscriptionFieldRegistration<Args = any, A = any, E = any, R = any> {
+export interface SubscriptionFieldRegistration<
+  Args = any,
+  A = any,
+  E = any,
+  R = any,
+  RArgs = unknown,
+> {
   type: S.Schema<A>
-  args?: S.Schema<Args>
+  args?: S.Decoder<Args, RArgs>
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
@@ -256,9 +262,16 @@ export interface SubscriptionFieldRegistration<Args = any, A = any, E = any, R =
 /**
  * Configuration for a field on an object type
  */
-export interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = any, R = any> {
+export interface ObjectFieldRegistration<
+  Parent = any,
+  Args = any,
+  A = any,
+  E = any,
+  R = any,
+  RArgs = unknown,
+> {
   type: S.Schema<A>
-  args?: S.Schema<Args>
+  args?: S.Decoder<Args, RArgs>
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
@@ -285,6 +298,23 @@ export interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = 
   cacheControl?: CacheHint
   resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
 }
+
+/**
+ * Requirements of each inline field's resolver and optional argument decoder.
+ */
+export type ObjectFieldsServices<Fields> = {
+  [K in keyof Fields]: Fields[K] extends {
+    resolve: (...args: never[]) => Effect.Effect<unknown, unknown, infer R>
+  }
+    ?
+        | R
+        | (Fields[K] extends { args?: infer Args }
+            ? Args extends S.Decoder<unknown, infer RArgs>
+              ? RArgs
+              : never
+            : never)
+    : never
+}[keyof Fields]
 
 /**
  * GraphQL context containing the request's Effect services.

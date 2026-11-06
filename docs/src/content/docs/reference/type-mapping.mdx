@@ -183,6 +183,10 @@ enumType({
 })
 ```
 
+For input arguments, a literal union matches a registered enum only when its non-null literal values exactly match that enum's values. For example, registering `Status` with `["ACTIVE", "INACTIVE"]` maps `S.Literals(["ACTIVE", "INACTIVE"])` to `Status`, including nullable and optional forms. A different union such as `S.Literals(["ACTIVE", "PENDING"])` falls back to `String`, even though it shares `ACTIVE` with `Status`. Clients send `"PENDING"` as a string; Effect Schema still validates the original literal union before passing the decoded value to the resolver. The same matching applies inside arrays and to the encoded side of transformations.
+
+Unmatched multi-member input unions use the automatic converter's first-member fallback without looking up that member as an enum. This also applies to mixed unions: `S.Union([S.Literal("ACTIVE"), S.Number])` falls back to `String`, not a registered enum containing `ACTIVE`. Effect Schema still validates the original union after GraphQL input coercion.
+
 ### Using S.Enum
 
 ```typescript

@@ -49,6 +49,11 @@ This decoding applies to query, mutation, and object-field resolvers, as well as
 
 Middleware receives the same decoded arguments as the callback it wraps. Decoders run with the request's services, so effectful schema transformations can use request-scoped dependencies. Invalid inputs produce GraphQL errors without invoking the callback. Fields without an `args` schema skip decoding.
 
+Argument schemas preserve their decoding-service requirements in the builder's
+type parameter, even when the resolver itself requires no services. This applies
+to method and pipe APIs, inline object fields, and federated builders. `toRouter`
+requires a layer supplying both decoder and resolver dependencies.
+
 For subscription events, `info.rootValue` is the original emitted payload throughout GraphQL execution: middleware `match(info)` and `apply(effect, context)`, nested computed fields, native GraphQL resolvers, and abstract-type callbacks all see that same root. Object payload identity is preserved, even when the custom subscription resolver transforms the value used as nested fields' parent. Primitive, null, and undefined payloads are not wrapped. Subscription setup middleware still sees the operation's initial root value, before any events are emitted.
 
 Async resolver wrappers may delay or reorder event resolution without changing which decoded arguments an operation receives. They must forward the exact factory-returned operation context to the wrapped resolver. Ordinary objects and spread copies are rejected, while freezing the actual returned object is supported. A context is claimed once before argument decoding and cannot be reused even after setup fails, the operation completes, or it is cancelled. The factory creates only a shallow wrapper: services and extra values retain their references without rebuilding service layers. Arguments are associated with that context, not the payload, document, or event timing.
@@ -154,8 +159,11 @@ const result = await Effect.runPromise(
 ```
 
 <Aside>
-  The builder's type parameter `R` accumulates all service requirements as you add resolvers.
-  TypeScript will error if you forget to provide a required service at execution time.
+  The builder's type parameter `R` accumulates resolver and argument-decoder service requirements.
+  `toRouter(builder, layer)` rejects a layer missing any of those services. Calling
+  `buildSchema()` returns a standard `GraphQLSchema`, which does not retain this
+  type information; when using `execute(schema, layer)` or another bare-schema API,
+  you must supply the required services yourself.
 </Aside>
 
 ## Effect Composition

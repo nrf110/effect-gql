@@ -110,6 +110,40 @@ function makeArgsDecoder(schema: S.Top) {
   return (args: unknown) => decode(restoreGraphQLInput(schema.ast, args))
 }
 
+/**
+ * Effect's adapter owns acquisition, failure and interruption. Only pulls are
+ * queued: return/throw must reach it immediately to interrupt a blocked pull.
+ */
+function serializeStreamPulls<A>(source: AsyncIterable<A>): AsyncIterable<A> {
+  return {
+    [Symbol.asyncIterator]() {
+      const iterator = source[Symbol.asyncIterator]()
+      let pending = Promise.resolve()
+      return {
+        next() {
+          const result = pending.then(() => iterator.next())
+          pending = result.then(
+            () => undefined,
+            () => undefined
+          )
+          return result
+        },
+        return(value?: unknown) {
+          return (
+            iterator.return?.(value) ??
+            Promise.resolve<IteratorResult<A>>({ done: true, value: undefined })
+          )
+        },
+        throw(error?: unknown) {
+          return iterator.throw
+            ? iterator.throw(error)
+            : Promise.resolve(iterator.return?.()).then(() => Promise.reject(error))
+        },
+      }
+    },
+  }
+}
+
 function claimSubscriptionContext(context: GraphQLEffectContext<any>) {
   const operation = subscriptionOperations.get(context)
   if (!operation || !Context.isContext(context.services)) {
@@ -349,7 +383,7 @@ export function buildSubscriptionField(
 
       const stream = await Effect.runPromiseWith(context.services)(subscribeEffect)
 
-      return Stream.toAsyncIterableWith(stream, context.services)
+      return serializeStreamPulls(Stream.toAsyncIterableWith(stream, context.services))
     },
 
     // The resolve function transforms each yielded value

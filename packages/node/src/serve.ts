@@ -79,6 +79,7 @@ export const serve = <E, R, RE>(
     never,
     E,
     | HttpRouter.HttpRouter
+    | R
     | HttpRouter.Request<"Requires", R>
     | HttpRouter.Request<"Error", unknown>
     | HttpRouter.Request<"GlobalRequires", R>
@@ -89,9 +90,19 @@ export const serve = <E, R, RE>(
 ): void => {
   const { port = 4000, host = "0.0.0.0", onStart, subscriptions } = options
   const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`
+  // Resolve construction services before interpreting request requirement markers.
+  const routes: Layer.Layer<
+    R,
+    E | RE,
+    | HttpRouter.HttpRouter
+    | HttpRouter.Request<"Requires", R>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalError", unknown>
+  > = Layer.provideMerge(router, layer)
 
   if (!subscriptions) {
-    const app = HttpRouter.serve(router).pipe(Layer.provide(layer))
+    const app = HttpRouter.serve(routes).pipe(Layer.provide(layer))
     const serverLayer = NodeHttpServer.layer(() => createServer(), { port, host })
     if (onStart) onStart(url)
     NodeRuntime.runMain(Layer.launch(Layer.provide(app, serverLayer)))
@@ -101,7 +112,7 @@ export const serve = <E, R, RE>(
   const program = Effect.gen(function* () {
     const { createGraphQLWSServer } = yield* Effect.tryPromise(() => import("./ws"))
     const scope = yield* Effect.scope
-    const httpEffect = yield* HttpRouter.toHttpEffect(router)
+    const httpEffect = yield* HttpRouter.toHttpEffect(routes)
     const requestHandler = yield* NodeHttpServer.makeHandler(httpEffect, { scope })
     const server = createServer(requestHandler)
     yield* Effect.acquireRelease(

@@ -2,8 +2,78 @@ import { Layer } from "effect"
 import { HttpRouter } from "effect/http"
 import type { Request, Response, NextFunction, RequestHandler } from "express"
 import { toWebHeaders } from "./http-utils"
-import { Readable } from "node:stream"
 import { finished } from "node:stream/promises"
+
+interface RequestBody {
+  readonly body: ReadableStream<Uint8Array>
+  readonly drain: () => void
+}
+
+// Own the conversion so cancelling or abandoning the web body never destroys
+// IncomingMessage (Readable.toWeb's cancellation would also close its socket).
+const requestBody = (req: Request, abort: AbortController): RequestBody => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  let attached = true
+  let draining = false
+  const detach = () => {
+    attached = false
+    req.off("data", onData)
+    req.off("end", onEnd)
+    req.off("error", onError)
+    req.off("close", onClose)
+  }
+  const onData = (chunk: Buffer) => {
+    req.pause()
+    controller.enqueue(chunk)
+  }
+  const onEnd = () => {
+    detach()
+    controller.close()
+  }
+  const onError = (error: Error) => {
+    detach()
+    controller.error(error)
+    abort.abort(error)
+  }
+  const onClose = () => onError(new Error("Request body closed before completion"))
+  const drain = () => {
+    if (attached) {
+      detach()
+      controller.close()
+    }
+    if (!draining && !req.destroyed && !req.readableEnded) {
+      draining = true
+      // Observe errors until draining ends, then remove every drain listener.
+      void finished(req, { cleanup: true }).catch(() => {})
+      req.resume()
+    }
+  }
+  const body = new ReadableStream<Uint8Array>(
+    {
+      start(source) {
+        controller = source
+        req.pause()
+        req.on("data", onData)
+        req.once("end", onEnd)
+        req.once("error", onError)
+        req.once("close", onClose)
+        if (req.readableEnded) onEnd()
+        else if (req.destroyed) onClose()
+      },
+      pull() {
+        req.resume()
+      },
+      cancel() {
+        // A cancelled stream is already closed; just relinquish its source.
+        if (attached) detach()
+        drain()
+      },
+    },
+    // Read only on demand: no abandoned queue retains upload chunks.
+    { highWaterMark: 0 }
+  )
+  return { body, drain }
+}
 
 // Pump directly instead of piping into ServerResponse: a source error must not
 // destroy the socket before Express can send its error response.
@@ -102,6 +172,7 @@ export const toMiddleware = <E, R, RE>(
     never,
     E,
     | HttpRouter.HttpRouter
+    | R
     | HttpRouter.Request<"Requires", R>
     | HttpRouter.Request<"Error", unknown>
     | HttpRouter.Request<"GlobalRequires", R>
@@ -110,7 +181,7 @@ export const toMiddleware = <E, R, RE>(
   layer: Layer.Layer<R, RE>,
   options: ToMiddlewareOptions = {}
 ): RequestHandler & { readonly dispose: () => Promise<void> } => {
-  // The merged layer supplies all R services; no per-request context remains.
+  // Provide construction dependencies and retain services for request dispatch.
   const { handler, dispose } = HttpRouter.toWebHandler<
     R,
     E | RE,
@@ -121,10 +192,11 @@ export const toMiddleware = <E, R, RE>(
     | HttpRouter.Request<"GlobalError", unknown>,
     never,
     never
-  >(Layer.merge(router, layer))
+  >(Layer.provideMerge(router, layer))
 
   const middleware: RequestHandler = async (req: Request, res: Response, next: NextFunction) => {
     const abort = new AbortController()
+    let upload: RequestBody | undefined
     const onClose = () => {
       if (!res.writableFinished) abort.abort()
     }
@@ -139,13 +211,19 @@ export const toMiddleware = <E, R, RE>(
       // MIME-based defaults cannot identify which parser produced a string;
       // explicit encoding handles custom JSON/text parsers without touching streams.
       const hasBody = !["GET", "HEAD"].includes(req.method)
+      if (hasBody && req.body !== undefined) {
+        // Parsers can change byte length through JSON serialization, text
+        // decoding, or decompression, even when they return a Buffer.
+        headers.delete("content-length")
+      }
+      if (hasBody && req.body === undefined) upload = requestBody(req, abort)
       const webRequest = new Request(url, {
         method: req.method,
         headers,
         body: !hasBody
           ? undefined
           : req.body === undefined
-            ? (Readable.toWeb(req) as ReadableStream<Uint8Array>)
+            ? upload!.body
             : Buffer.isBuffer(req.body) ||
                 (typeof req.body === "string" &&
                   (options.bodyEncoding === "raw" ||
@@ -165,7 +243,16 @@ export const toMiddleware = <E, R, RE>(
       webResponse.headers.forEach((value, key) => {
         res.setHeader(key, value)
       })
-      if (webResponse.body) {
+      if (req.fresh) {
+        res.status(304)
+        res.removeHeader("content-type")
+        res.removeHeader("content-length")
+        res.removeHeader("transfer-encoding")
+        // The handler may own request-scoped resources until its stream ends.
+        // Await cancellation before completing the bodyless response.
+        await webResponse.body?.cancel()
+        res.end()
+      } else if (webResponse.body) {
         await writeBody(webResponse.body, res)
       } else {
         res.end()
@@ -173,6 +260,7 @@ export const toMiddleware = <E, R, RE>(
     } catch (error) {
       if (!res.destroyed) next(error)
     } finally {
+      upload?.drain()
       res.off("close", onClose)
     }
   }

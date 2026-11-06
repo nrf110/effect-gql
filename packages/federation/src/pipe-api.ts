@@ -36,52 +36,52 @@ export const entity =
  * Add a query field
  */
 export const query =
-  <A, E, R, Args = void>(
+  <A, E, R, Args = void, RArgs = never>(
     name: string,
     config: {
       type: S.Schema<A>
-      args?: S.Schema<Args>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R>
     }
   ) =>
-  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2 | RArgs> =>
     builder.query(name, config)
 
 /**
  * Add a mutation field
  */
 export const mutation =
-  <A, E, R, Args = void>(
+  <A, E, R, Args = void, RArgs = never>(
     name: string,
     config: {
       type: S.Schema<A>
-      args?: S.Schema<Args>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R>
     }
   ) =>
-  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2 | RArgs> =>
     builder.mutation(name, config)
 
 /**
  * Add a subscription field
  */
 export const subscription =
-  <A, E, R, Args = void>(
+  <A, E, R, Args = void, RArgs = never>(
     name: string,
     config: {
       type: S.Schema<A>
-      args?: S.Schema<Args>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R>, E, R>
       resolve?: (value: A, args: Args) => Effect.Effect<A, E, R>
     }
   ) =>
-  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2 | RArgs> =>
     builder.subscription(name, config)
 
 // ============================================================================
@@ -157,18 +157,18 @@ export const inputType =
  * Add a computed/relational field to an object type
  */
 export const field =
-  <Parent, A, E, R, Args = void>(
+  <Parent, A, E, R, Args = void, RArgs = never>(
     typeName: string,
     fieldName: string,
     config: {
       type: S.Schema<A>
-      args?: S.Schema<Args>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
     }
   ) =>
-  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2 | RArgs> =>
     builder.field(typeName, fieldName, config)
 
 // ============================================================================

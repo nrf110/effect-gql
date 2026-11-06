@@ -22,6 +22,7 @@ import type {
   DirectiveApplication,
   SubscriptionFieldRegistration,
   ObjectFieldRegistration,
+  ObjectFieldsServices,
   MiddlewareRegistration,
   MiddlewareContext,
   CacheHint,
@@ -84,11 +85,11 @@ function updateState<K extends keyof BuilderState>(
 /**
  * GraphQL Schema Builder with type-safe service requirements (Layer-per-Request Pattern)
  *
- * The type parameter R accumulates all service requirements from resolvers.
+ * The type parameter R accumulates resolver and argument-decoding service requirements.
  * Unlike the runtime-in-context approach, this pattern builds the schema without
  * executing any Effects. At request time, you provide a Layer with all required services.
  */
-export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
+export class GraphQLSchemaBuilder<out R = never> implements Pipeable.Pipeable {
   private constructor(private readonly state: BuilderState) {}
 
   /**
@@ -179,11 +180,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a query field
    */
-  query<A, E, R2, Args = void>(
+  query<A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
       type: S.Schema<A>
-      args?: S.Schema<Args>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -198,7 +199,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       cacheControl?: CacheHint
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
-  ): GraphQLSchemaBuilder<R | R2> {
+  ): GraphQLSchemaBuilder<R | R2 | RArgs> {
     const newQueries = new Map(this.state.queries)
     newQueries.set(name, config)
     return this.with(updateState(this.state, "queries", newQueries))
@@ -207,11 +208,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a mutation field
    */
-  mutation<A, E, R2, Args = void>(
+  mutation<A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
       type: S.Schema<A>
-      args?: S.Schema<Args>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -221,7 +222,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       complexity?: FieldComplexity
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
-  ): GraphQLSchemaBuilder<R | R2> {
+  ): GraphQLSchemaBuilder<R | R2 | RArgs> {
     const newMutations = new Map(this.state.mutations)
     newMutations.set(name, config)
     return this.with(updateState(this.state, "mutations", newMutations))
@@ -244,11 +245,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    * })
    * ```
    */
-  subscription<A, E, R2, Args = void>(
+  subscription<A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
       type: S.Schema<A>
-      args?: S.Schema<Args>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -264,7 +265,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R2>, E, R2>
       resolve?: (value: A, args: Args) => Effect.Effect<A, E, R2>
     }
-  ): GraphQLSchemaBuilder<R | R2> {
+  ): GraphQLSchemaBuilder<R | R2 | RArgs> {
     const newSubscriptions = new Map(this.state.subscriptions)
     newSubscriptions.set(name, config)
     return this.with(updateState(this.state, "subscriptions", newSubscriptions))
@@ -273,7 +274,13 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Register an object type from a schema
    */
-  objectType<A, R2 = never>(config: {
+  objectType<
+    A,
+    Fields extends Record<
+      string,
+      ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>
+    > = {},
+  >(config: {
     name?: string
     schema: S.Schema<A>
     description?: string
@@ -284,25 +291,9 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
      * Can be overridden by field-level cacheControl.
      */
     cacheControl?: CacheHint
-    fields?: Record<
-      string,
-      {
-        type: S.Schema<any>
-        args?: S.Schema<any>
-        description?: string
-        directives?: readonly DirectiveApplication[]
-        /**
-         * Complexity cost of this field for query complexity limiting.
-         */
-        complexity?: FieldComplexity
-        /**
-         * Cache control hint for this field.
-         */
-        cacheControl?: CacheHint
-        resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
-      }
-    >
-  }): GraphQLSchemaBuilder<R | R2> {
+    fields?: Fields &
+      Record<string, ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>>
+  }): GraphQLSchemaBuilder<R | ObjectFieldsServices<Fields>> {
     const {
       schema,
       description,
@@ -538,12 +529,12 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a computed/relational field to an object type
    */
-  field<Parent, A, E, R2, Args = void>(
+  field<Parent, A, E, R2, Args = void, RArgs = never>(
     typeName: string,
     fieldName: string,
     config: {
       type: S.Schema<A>
-      args?: S.Schema<Args>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -558,7 +549,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       cacheControl?: CacheHint
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>
     }
-  ): GraphQLSchemaBuilder<R | R2> {
+  ): GraphQLSchemaBuilder<R | R2 | RArgs> {
     const newObjectFields = new Map(this.state.objectFields)
     const typeFields = newObjectFields.get(typeName) || new Map()
     typeFields.set(fieldName, config)
