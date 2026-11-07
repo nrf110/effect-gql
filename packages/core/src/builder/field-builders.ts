@@ -1,6 +1,7 @@
-import { Effect, Runtime, Stream, Queue, Fiber, Option } from "effect"
+import { Context, Effect, Option, Stream } from "effect"
 import * as S from "effect/Schema"
-import { GraphQLFieldConfig, GraphQLResolveInfo } from "graphql"
+import * as AST from "effect/SchemaAST"
+import { GraphQLError, GraphQLFieldConfig, GraphQLResolveInfo } from "graphql"
 import type {
   FieldRegistration,
   SubscriptionFieldRegistration,
@@ -16,30 +17,8 @@ import {
   type TypeConversionContext,
   type InputTypeLookupCache,
 } from "./type-registry"
-
-/**
- * Check if a schema represents an Option type (e.g., S.OptionFromNullOr).
- * These schemas have a Transformation with a Declaration on the "to" side
- * that has a TypeConstructor annotation of 'effect/Option'.
- */
-function isOptionSchema(schema: S.Schema<any, any, any>): boolean {
-  const ast = schema.ast
-  if (ast._tag === "Transformation") {
-    const toAst = (ast as any).to
-    if (toAst._tag === "Declaration") {
-      // Check for the TypeConstructor annotation which identifies Option types
-      const annotations = toAst.annotations
-      if (annotations) {
-        const TypeConstructorSymbol = Symbol.for("effect/annotation/TypeConstructor")
-        const typeConstructor = annotations[TypeConstructorSymbol]
-        if (typeConstructor && typeConstructor._tag === "effect/Option") {
-          return true
-        }
-      }
-    }
-  }
-  return false
-}
+import { getASTView, isOptionDeclaration } from "../schema-mapping"
+import { subscriptionOperations } from "../subscription-context"
 
 /**
  * Encode a resolver's output value using the schema.
@@ -48,18 +27,149 @@ function isOptionSchema(schema: S.Schema<any, any, any>): boolean {
  *
  * For non-Option schemas, this is a no-op pass-through.
  */
-function encodeResolverOutput<A, I, R>(
-  schema: S.Schema<A, I, R>,
-  value: A
-): Effect.Effect<I, never, R> {
-  // Only encode Option schemas - other schemas pass through unchanged
-  // This optimization avoids the overhead of encoding for simple types
-  if (isOptionSchema(schema)) {
-    // Use Schema.encode to convert Option<A> back to I (null | A)
-    return Effect.orDie(S.encode(schema)(value))
+function encodeResolverOutput(
+  schema: S.Top,
+  value: unknown
+): Effect.Effect<unknown, never, unknown> {
+  if (isOptionDeclaration(schema.ast)) {
+    return S.encodeUnknownEffect(schema)(value).pipe(
+      Effect.orDie,
+      Effect.map((encoded) => (Option.isOption(encoded) ? Option.getOrNull(encoded) : encoded))
+    )
   }
-  // For non-Option types, pass through unchanged
-  return Effect.succeed(value as unknown as I)
+  return Effect.succeed(value)
+}
+
+/**
+ * Restore the representations hidden by GraphQL before full-schema decoding.
+ * Optional keys stay absent so schema defaults and key-level codecs still run.
+ */
+function restoreGraphQLInput(original: AST.AST, value: unknown): unknown {
+  const ast = getASTView(original, "input")
+  if (ast._tag === "Suspend") return restoreGraphQLInput(ast.thunk(), value)
+  if (isOptionDeclaration(ast) && ast._tag === "Declaration") {
+    const inner = ast.typeParameters[0]
+    return value == null
+      ? Option.none()
+      : Option.some(inner ? restoreGraphQLInput(inner, value) : value)
+  }
+  if (value === undefined && isOptionDeclaration(original) && ast._tag === "Union") {
+    if (ast.types.some((member) => member._tag === "Null")) return null
+  }
+  if (ast._tag === "Union") {
+    // Preserve explicit nullish branches, but normalize an optional Option's null
+    // through its declaration when the union only adds undefined.
+    if (value === undefined || (value === null && ast.types.some((type) => type._tag === "Null"))) {
+      return value
+    }
+    // Input unions expose their first non-null member in GraphQL.
+    const member = ast.types.find(
+      (type) => type._tag !== "Null" && type._tag !== "Undefined" && type._tag !== "Void"
+    )
+    return member ? restoreGraphQLInput(member, value) : value
+  }
+  if (value === null || value === undefined) return value
+  switch (ast._tag) {
+    case "Declaration":
+      return ast.typeParameters[0] ? restoreGraphQLInput(ast.typeParameters[0], value) : value
+    case "Arrays": {
+      if (!Array.isArray(value)) return value
+      let restored = value
+      // The first rest schema repeats; any remaining schemas are anchored at the end.
+      const tailStart = value.length - ast.rest.length + 1
+      for (let index = 0; index < value.length; index++) {
+        const element =
+          ast.elements[index] ??
+          (index >= tailStart ? ast.rest[index - tailStart + 1] : ast.rest[0])
+        if (!element) continue
+        const item = restoreGraphQLInput(element, value[index])
+        if (item !== value[index]) {
+          if (restored === value) restored = value.slice()
+          restored[index] = item
+        }
+      }
+      return restored
+    }
+    case "Objects": {
+      if (typeof value !== "object" || Array.isArray(value)) return value
+      const record = value as Record<PropertyKey, unknown>
+      let restored = record
+      for (const field of ast.propertySignatures) {
+        const present = Object.hasOwn(record, field.name)
+        const encoded = present ? undefined : AST.toEncoded(field.type)
+        if (encoded && AST.isOptional(encoded)) continue
+        const item =
+          field.name === "_tag" && encoded?._tag === "Literal"
+            ? encoded.literal
+            : restoreGraphQLInput(field.type, record[field.name])
+        if (!present && item === undefined) continue
+        if (!present || item !== record[field.name]) {
+          if (restored === record) restored = { ...record }
+          restored[field.name] = item
+        }
+      }
+      return restored
+    }
+    default:
+      return value
+  }
+}
+
+function makeArgsDecoder(schema: S.Top) {
+  const decode = S.decodeUnknownEffect(schema)
+  return (args: unknown) => decode(restoreGraphQLInput(schema.ast, args))
+}
+
+/**
+ * Effect's adapter owns acquisition, failure and interruption. Only pulls are
+ * queued: return/throw must reach it immediately to interrupt a blocked pull.
+ */
+function serializeStreamPulls<A>(source: AsyncIterable<A>): AsyncIterable<A> {
+  return {
+    [Symbol.asyncIterator]() {
+      const iterator = source[Symbol.asyncIterator]()
+      let pending = Promise.resolve()
+      return {
+        next() {
+          const result = pending.then(() => iterator.next())
+          pending = result.then(
+            () => undefined,
+            () => undefined
+          )
+          return result
+        },
+        return(value?: unknown) {
+          return (
+            iterator.return?.(value) ??
+            Promise.resolve<IteratorResult<A>>({ done: true, value: undefined })
+          )
+        },
+        throw(error?: unknown) {
+          return iterator.throw
+            ? iterator.throw(error)
+            : Promise.resolve(iterator.return?.()).then(() => Promise.reject(error))
+        },
+      }
+    },
+  }
+}
+
+function claimSubscriptionContext(context: GraphQLEffectContext<any>) {
+  const operation = subscriptionOperations.get(context)
+  if (!operation || !Context.isContext(context.services)) {
+    throw new GraphQLError(
+      "Pass a fresh context from makeSubscriptionContext({ services }) to each subscribe() call. Plain objects and copied contexts are not registered.",
+      { extensions: { code: "SUBSCRIPTION_CONTEXT_REQUIRED" } }
+    )
+  }
+  if (operation.claimed) {
+    throw new GraphQLError(
+      "This subscription context has already been used. Call makeSubscriptionContext({ services }) for each subscribe() invocation, not once per WebSocket connection. Reuse the services, not the context object.",
+      { extensions: { code: "SUBSCRIPTION_CONTEXT_REUSED" } }
+    )
+  }
+  operation.claimed = true
+  return operation
 }
 
 /**
@@ -129,9 +239,10 @@ function applyMiddleware<A, E, R>(
  * Build a GraphQL field config from a field registration (for queries/mutations)
  */
 export function buildField(
-  config: FieldRegistration,
+  config: FieldRegistration<any, any, any, any, unknown>,
   ctx: FieldBuilderContext
 ): GraphQLFieldConfig<any, any> {
+  const decodeArgs = config.args ? makeArgsDecoder(config.args) : undefined
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
     resolve: async (
@@ -140,22 +251,28 @@ export function buildField(
       context: GraphQLEffectContext<any>,
       info: GraphQLResolveInfo
     ) => {
+      const decodedArgs = decodeArgs
+        ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
+        : args
+
       // Apply directives first (per-field, explicit)
       let effect = applyDirectives(
-        config.resolve(args),
+        config.resolve(decodedArgs),
         config.directives,
         ctx.directiveRegistrations
       )
 
       // Apply middleware (global/pattern-matched)
-      const middlewareContext: MiddlewareContext = { parent: _parent, args, info }
+      const middlewareContext: MiddlewareContext = { parent: _parent, args: decodedArgs, info }
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       // Execute the resolver
-      const result = await Runtime.runPromise(context.runtime)(effect)
+      const result = await Effect.runPromiseWith(context.services)(effect)
 
       // Encode the result (converts Option.none() to null, Option.some(x) to x)
-      return await Runtime.runPromise(context.runtime)(encodeResolverOutput(config.type, result))
+      return await Effect.runPromiseWith(context.services)(
+        encodeResolverOutput(config.type, result)
+      )
     },
   }
 
@@ -180,28 +297,35 @@ export function buildField(
  * Build a GraphQL field config for an object field (has parent param)
  */
 export function buildObjectField(
-  config: ObjectFieldRegistration,
+  config: ObjectFieldRegistration<any, any, any, any, any, unknown>,
   ctx: FieldBuilderContext
 ): GraphQLFieldConfig<any, any> {
+  const decodeArgs = config.args ? makeArgsDecoder(config.args) : undefined
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
     resolve: async (parent, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
+      const decodedArgs = decodeArgs
+        ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
+        : args
+
       // Apply directives first (per-field, explicit)
       let effect = applyDirectives(
-        config.resolve(parent, args),
+        config.resolve(parent, decodedArgs),
         config.directives,
         ctx.directiveRegistrations
       )
 
       // Apply middleware (global/pattern-matched)
-      const middlewareContext: MiddlewareContext = { parent, args, info }
+      const middlewareContext: MiddlewareContext = { parent, args: decodedArgs, info }
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       // Execute the resolver
-      const result = await Runtime.runPromise(context.runtime)(effect)
+      const result = await Effect.runPromiseWith(context.services)(effect)
 
       // Encode the result (converts Option.none() to null, Option.some(x) to x)
-      return await Runtime.runPromise(context.runtime)(encodeResolverOutput(config.type, result))
+      return await Effect.runPromiseWith(context.services)(
+        encodeResolverOutput(config.type, result)
+      )
     },
   }
 
@@ -229,12 +353,13 @@ export function buildObjectField(
  * - `subscribe` returns an AsyncIterator that yields the "root value" for each event
  * - `resolve` transforms each yielded value into the final result
  *
- * We convert Effect's Stream to an AsyncIterator using a Queue-based approach.
+ * Effect's native AsyncIterable adapter preserves stream failure and cancellation.
  */
 export function buildSubscriptionField(
-  config: SubscriptionFieldRegistration,
+  config: SubscriptionFieldRegistration<any, any, any, any, unknown>,
   ctx: FieldBuilderContext
 ): GraphQLFieldConfig<any, any> {
+  const decodeArgs = config.args ? makeArgsDecoder(config.args) : undefined
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
 
@@ -245,8 +370,15 @@ export function buildSubscriptionField(
       context: GraphQLEffectContext<any>,
       info: GraphQLResolveInfo
     ) => {
+      // Claim before the first await: concurrent setup cannot reuse this identity.
+      const operation = claimSubscriptionContext(context)
+      const decodedArgs = decodeArgs
+        ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
+        : args
+      operation.args = decodedArgs
+
       // Get the Stream from the subscribe Effect
-      let subscribeEffect = config.subscribe(args)
+      let subscribeEffect = config.subscribe(decodedArgs)
 
       // Apply directives to the subscribe effect
       subscribeEffect = applyDirectives(
@@ -256,36 +388,45 @@ export function buildSubscriptionField(
       ) as any
 
       // Apply middleware to the subscribe effect
-      const middlewareContext: MiddlewareContext = { parent: _parent, args, info }
+      const middlewareContext: MiddlewareContext = { parent: _parent, args: decodedArgs, info }
       subscribeEffect = applyMiddleware(subscribeEffect, middlewareContext, ctx.middlewares) as any
 
-      const stream = await Runtime.runPromise(context.runtime)(subscribeEffect)
+      const stream = await Effect.runPromiseWith(context.services)(subscribeEffect)
 
-      // Convert Stream to AsyncIterator using queue-based approach
-      return streamToAsyncIterator(stream, context.runtime)
+      return serializeStreamPulls(Stream.toAsyncIterableWith(stream, context.services))
     },
 
     // The resolve function transforms each yielded value
     // If no custom resolve is provided, encode and return the payload directly
     resolve: config.resolve
-      ? async (value, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
-          let effect = config.resolve!(value, args)
+      ? async (value, _args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
+          const operation = subscriptionOperations.get(context)
+          if (!operation?.claimed) {
+            throw new GraphQLError(
+              "Subscription event resolvers must preserve the registered context from makeSubscriptionContext passed to subscribe().",
+              { extensions: { code: "SUBSCRIPTION_CONTEXT_REQUIRED" } }
+            )
+          }
+          const decodedArgs = operation.args
+          let effect = config.resolve!(value, decodedArgs)
 
           // Apply middleware to the resolve effect
-          const middlewareContext: MiddlewareContext = { parent: value, args, info }
+          const middlewareContext: MiddlewareContext = { parent: value, args: decodedArgs, info }
           effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
           // Execute the resolver
-          const result = await Runtime.runPromise(context.runtime)(effect)
+          const result = await Effect.runPromiseWith(context.services)(effect)
 
           // Encode the result (converts Option.none() to null, Option.some(x) to x)
-          return await Runtime.runPromise(context.runtime)(
+          return await Effect.runPromiseWith(context.services)(
             encodeResolverOutput(config.type, result)
           )
         }
       : async (value, _args, context: GraphQLEffectContext<any>) => {
           // Even without custom resolve, encode Option values
-          return await Runtime.runPromise(context.runtime)(encodeResolverOutput(config.type, value))
+          return await Effect.runPromiseWith(context.services)(
+            encodeResolverOutput(config.type, value)
+          )
         },
   }
 
@@ -304,82 +445,4 @@ export function buildSubscriptionField(
   }
 
   return fieldConfig
-}
-
-/**
- * Convert an Effect Stream to an AsyncIterator using a Queue-based approach.
- *
- * This is needed because Stream.toAsyncIterable() requires R = never,
- * but our streams may have service requirements that need to be provided
- * by the runtime context.
- */
-function streamToAsyncIterator<A, E, R>(
-  stream: Stream.Stream<A, E, R>,
-  runtime: Runtime.Runtime<R>
-): AsyncIterator<A> {
-  // Create the queue synchronously via runSync since unbounded queue creation is synchronous
-  let queue: Queue.Queue<Option.Option<A>>
-  let fiber: Fiber.RuntimeFiber<void, E>
-  let initialized = false
-  let done = false
-
-  const initialize = async () => {
-    if (initialized) return
-    initialized = true
-
-    queue = await Runtime.runPromise(runtime)(Queue.unbounded<Option.Option<A>>())
-
-    // Fork a fiber to run the stream and push values to the queue
-    fiber = Runtime.runFork(runtime)(
-      Effect.ensuring(
-        Stream.runForEach(stream, (value) => Queue.offer(queue, Option.some(value))),
-        // Signal completion by pushing None
-        Queue.offer(queue, Option.none())
-      )
-    )
-  }
-
-  return {
-    [Symbol.asyncIterator]() {
-      return this
-    },
-
-    async next(): Promise<IteratorResult<A>> {
-      await initialize()
-
-      if (done) {
-        return { done: true, value: undefined }
-      }
-
-      try {
-        const optionValue = await Runtime.runPromise(runtime)(Queue.take(queue))
-
-        if (Option.isNone(optionValue)) {
-          done = true
-          return { done: true, value: undefined }
-        }
-
-        return { done: false, value: optionValue.value }
-      } catch (error) {
-        done = true
-        throw error
-      }
-    },
-
-    async return(): Promise<IteratorResult<A>> {
-      // Cleanup - interrupt the fiber and shutdown the queue
-      done = true
-      if (initialized) {
-        try {
-          await Runtime.runPromise(runtime)(
-            Fiber.interrupt(fiber as unknown as Fiber.Fiber<any, any>)
-          )
-          await Runtime.runPromise(runtime)(Queue.shutdown(queue))
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
-      return { done: true, value: undefined }
-    },
-  } as AsyncIterator<A>
 }

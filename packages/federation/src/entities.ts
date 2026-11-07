@@ -1,4 +1,4 @@
-import { Effect, Runtime } from "effect"
+import { Context, Effect } from "effect"
 import { GraphQLObjectType, GraphQLUnionType, GraphQLString } from "@effect-gql/core"
 import type { EntityRegistration, EntityRepresentation } from "./types"
 
@@ -37,7 +37,7 @@ export function createEntitiesResolver<R>(entities: Map<string, EntityRegistrati
   return async (
     _parent: any,
     args: { representations: readonly EntityRepresentation[] },
-    context: { runtime: Runtime.Runtime<R> }
+    context: { services: Context.Context<R> }
   ): Promise<(any | null)[]> => {
     const effects = args.representations.map((representation) => {
       const entityName = representation.__typename
@@ -56,13 +56,15 @@ export function createEntitiesResolver<R>(entities: Map<string, EntityRegistrati
           return result
         }),
         // Catch individual entity resolution errors and return null
-        Effect.catchAll((error) =>
+        Effect.catch((error) =>
           Effect.logError(`Failed to resolve entity ${entityName}`, error).pipe(Effect.as(null))
         )
       )
     })
 
-    return Runtime.runPromise(context.runtime)(Effect.all(effects, { concurrency: "unbounded" }))
+    return Effect.runPromiseWith(context.services)(
+      Effect.all(effects, { concurrency: "unbounded" })
+    )
   }
 }
 

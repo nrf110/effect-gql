@@ -1,10 +1,9 @@
 import { Effect, Layer } from "effect"
-import { HttpApp, HttpRouter, HttpServer } from "@effect/platform"
+import { HttpRouter } from "effect/http"
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import { createServer } from "node:http"
 import type { GraphQLSchema } from "graphql"
 import type { GraphQLWSOptions } from "@effect-gql/core"
-import { toWebHeaders } from "./http-utils"
 
 /**
  * Configuration for WebSocket subscriptions
@@ -76,142 +75,74 @@ export interface ServeOptions<R = never> {
  * ```
  */
 export const serve = <E, R, RE>(
-  router: HttpRouter.HttpRouter<E, R>,
+  router: Layer.Layer<
+    never,
+    E,
+    | HttpRouter.HttpRouter
+    | NoInfer<R>
+    | HttpRouter.Request<"Requires", NoInfer<R>>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", NoInfer<R>>
+    | HttpRouter.Request<"GlobalError", unknown>
+  >,
   layer: Layer.Layer<R, RE>,
-  options: ServeOptions<R> = {}
+  options: ServeOptions<NoInfer<R>> = {}
 ): void => {
   const { port = 4000, host = "0.0.0.0", onStart, subscriptions } = options
+  const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`
+  // Resolve construction services before interpreting request requirement markers.
+  const routes: Layer.Layer<
+    R,
+    E | RE,
+    | HttpRouter.HttpRouter
+    | HttpRouter.Request<"Requires", R>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalError", unknown>
+  > = Layer.provideMerge(router, layer)
 
-  if (subscriptions) {
-    // With WebSocket subscriptions - we need to manage the HTTP server ourselves
-    serveWithSubscriptions(router, layer, port, host, subscriptions, onStart)
-  } else {
-    // Without subscriptions - use the standard Effect approach
-    const app = router.pipe(
-      Effect.catchAllCause((cause) => Effect.die(cause)),
-      HttpServer.serve()
-    )
-
-    const serverLayer = NodeHttpServer.layer(() => createServer(), { port })
-    const fullLayer = Layer.merge(serverLayer, layer)
-
-    if (onStart) {
-      onStart(`http://${host === "0.0.0.0" ? "localhost" : host}:${port}`)
-    }
-
-    NodeRuntime.runMain(Layer.launch(Layer.provide(app, fullLayer)))
+  if (!subscriptions) {
+    const app = HttpRouter.serve(routes).pipe(Layer.provide(layer))
+    const serverLayer = NodeHttpServer.layer(() => createServer(), { port, host })
+    if (onStart) onStart(url)
+    NodeRuntime.runMain(Layer.launch(Layer.provide(app, serverLayer)))
+    return
   }
-}
 
-/**
- * Internal implementation for serving with WebSocket subscriptions.
- * Uses a custom HTTP server setup to enable WebSocket upgrade handling.
- */
-function serveWithSubscriptions<E, R, RE>(
-  router: HttpRouter.HttpRouter<E, R>,
-  layer: Layer.Layer<R, RE>,
-  port: number,
-  host: string,
-  subscriptions: SubscriptionsConfig<R>,
-  onStart?: (url: string) => void
-): void {
-  // Dynamically import ws module to keep it optional
-  const importWs = Effect.tryPromise({
-    try: () => import("./ws"),
-    catch: (error) => error as Error,
-  })
-
-  Effect.runPromise(
-    importWs.pipe(
-      Effect.catchAll((error) =>
-        Effect.logError("Failed to load WebSocket support", error).pipe(
-          Effect.andThen(Effect.logError("Make sure 'ws' package is installed: npm install ws")),
-          Effect.andThen(Effect.sync(() => process.exit(1))),
-          Effect.andThen(Effect.fail(error))
+  const program = Effect.gen(function* () {
+    const { createGraphQLWSServer } = yield* Effect.tryPromise(() => import("./ws"))
+    const scope = yield* Effect.scope
+    const httpEffect = yield* HttpRouter.toHttpEffect(routes)
+    const requestHandler = yield* NodeHttpServer.makeHandler(httpEffect, { scope })
+    const server = createServer(requestHandler)
+    yield* Effect.acquireRelease(
+      Effect.callback<void, Error>((resume) => {
+        const onError = (error: Error) => resume(Effect.fail(error))
+        server.once("error", onError)
+        server.listen(port, host, () => {
+          server.off("error", onError)
+          resume(Effect.void)
+        })
+      }),
+      () =>
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve, reject) => {
+              server.close((error) => (error ? reject(error) : resolve()))
+              // Scoped request fibers have already been interrupted and finalized.
+              // Incomplete headers have no request fiber, so close their sockets too.
+              server.closeAllConnections()
+            })
         )
-      )
     )
-  ).then(({ createGraphQLWSServer }) => {
-    // Create the web handler from the Effect router
-    const { handler } = HttpApp.toWebHandlerLayer(router, layer)
-
-    // Create the HTTP server
-    const httpServer = createServer(async (req, res) => {
-      try {
-        // Collect request body
-        const chunks: Buffer[] = []
-        for await (const chunk of req) {
-          chunks.push(chunk as Buffer)
-        }
-        const body = Buffer.concat(chunks).toString()
-
-        // Convert Node.js request to web standard Request
-        // Use URL constructor for safe URL parsing (avoids injection via req.url)
-        const baseUrl = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`
-        const url = new URL(req.url || "/", baseUrl).href
-        const headers = toWebHeaders(req.headers)
-
-        const webRequest = new Request(url, {
-          method: req.method,
-          headers,
-          body: ["GET", "HEAD"].includes(req.method!) ? undefined : body,
-        })
-
-        // Process through Effect handler
-        const webResponse = await handler(webRequest)
-
-        // Write response
-        res.statusCode = webResponse.status
-        webResponse.headers.forEach((value, key) => {
-          res.setHeader(key, value)
-        })
-        const responseBody = await webResponse.text()
-        res.end(responseBody)
-      } catch (error) {
-        res.statusCode = 500
-        res.end(JSON.stringify({ error: String(error) }))
-      }
-    })
-
-    // Create WebSocket server for subscriptions
-    const { handleUpgrade, close: closeWS } = createGraphQLWSServer(
-      subscriptions.schema,
-      layer as Layer.Layer<R>,
-      {
-        path: subscriptions.path,
-        complexity: subscriptions.complexity,
-        fieldComplexities: subscriptions.fieldComplexities,
-        onConnect: subscriptions.onConnect,
-        onDisconnect: subscriptions.onDisconnect,
-        onSubscribe: subscriptions.onSubscribe,
-        onComplete: subscriptions.onComplete,
-        onError: subscriptions.onError,
-      }
+    // Scope finalizers run in reverse order: close upgraded connections before HTTP.
+    const ws = yield* Effect.acquireRelease(
+      Effect.sync(() => createGraphQLWSServer(subscriptions.schema, layer, subscriptions)),
+      (ws) => Effect.promise(() => ws.close())
     )
-
-    // Attach WebSocket upgrade handler
-    httpServer.on("upgrade", (request, socket, head) => {
-      handleUpgrade(request, socket, head)
-    })
-
-    // Handle shutdown
-    process.on("SIGINT", async () => {
-      await closeWS()
-      httpServer.close()
-      process.exit(0)
-    })
-
-    process.on("SIGTERM", async () => {
-      await closeWS()
-      httpServer.close()
-      process.exit(0)
-    })
-
-    // Start listening
-    httpServer.listen(port, host, () => {
-      if (onStart) {
-        onStart(`http://${host === "0.0.0.0" ? "localhost" : host}:${port}`)
-      }
-    })
-  })
+    server.on("upgrade", ws.handleUpgrade)
+    if (onStart) yield* Effect.sync(() => onStart(url))
+    yield* Effect.never
+  }).pipe(Effect.provide(layer), Effect.provide(NodeHttpServer.layerHttpServices), Effect.scoped)
+  NodeRuntime.runMain(program)
 }

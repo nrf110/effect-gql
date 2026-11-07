@@ -22,11 +22,12 @@ import type {
   DirectiveApplication,
   SubscriptionFieldRegistration,
   ObjectFieldRegistration,
+  ObjectFieldsServices,
   MiddlewareRegistration,
   MiddlewareContext,
   CacheHint,
 } from "./types"
-import type { GraphQLExtension, ExecutionArgs } from "../extensions"
+import type { GraphQLExtension, ExecutionArgs, ExtensionsService } from "../extensions"
 import type {
   GraphQLResolveInfo,
   DocumentNode,
@@ -43,6 +44,7 @@ import {
   buildReverseLookups,
   buildInputTypeLookupCache,
   type TypeConversionContext,
+  type InputTypeLookupCache,
 } from "./type-registry"
 import {
   buildField,
@@ -63,10 +65,10 @@ interface BuilderState {
   directives: Map<string, DirectiveRegistration>
   middlewares: readonly MiddlewareRegistration[] // Array to preserve registration order
   extensions: readonly GraphQLExtension<any>[] // Array to preserve registration order
-  queries: Map<string, FieldRegistration>
-  mutations: Map<string, FieldRegistration>
-  subscriptions: Map<string, SubscriptionFieldRegistration>
-  objectFields: Map<string, Map<string, ObjectFieldRegistration>>
+  queries: Map<string, FieldRegistration<any, any, any, any, unknown>>
+  mutations: Map<string, FieldRegistration<any, any, any, any, unknown>>
+  subscriptions: Map<string, SubscriptionFieldRegistration<any, any, any, any, unknown>>
+  objectFields: Map<string, Map<string, ObjectFieldRegistration<any, any, any, any, any, unknown>>>
 }
 
 /**
@@ -83,11 +85,11 @@ function updateState<K extends keyof BuilderState>(
 /**
  * GraphQL Schema Builder with type-safe service requirements (Layer-per-Request Pattern)
  *
- * The type parameter R accumulates all service requirements from resolvers.
+ * The type parameter R accumulates resolver and argument-decoding service requirements.
  * Unlike the runtime-in-context approach, this pattern builds the schema without
  * executing any Effects. At request time, you provide a Layer with all required services.
  */
-export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
+export class GraphQLSchemaBuilder<out R = never> implements Pipeable.Pipeable {
   private constructor(private readonly state: BuilderState) {}
 
   /**
@@ -178,11 +180,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a query field
    */
-  query<A, E, R2, Args = void>(
+  query<A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -197,7 +199,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       cacheControl?: CacheHint
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
-  ): GraphQLSchemaBuilder<R | R2> {
+  ): GraphQLSchemaBuilder<R | R2 | RArgs> {
     const newQueries = new Map(this.state.queries)
     newQueries.set(name, config)
     return this.with(updateState(this.state, "queries", newQueries))
@@ -206,11 +208,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a mutation field
    */
-  mutation<A, E, R2, Args = void>(
+  mutation<A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -220,7 +222,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       complexity?: FieldComplexity
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
-  ): GraphQLSchemaBuilder<R | R2> {
+  ): GraphQLSchemaBuilder<R | R2 | RArgs> {
     const newMutations = new Map(this.state.mutations)
     newMutations.set(name, config)
     return this.with(updateState(this.state, "mutations", newMutations))
@@ -243,11 +245,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    * })
    * ```
    */
-  subscription<A, E, R2, Args = void>(
+  subscription<A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -263,7 +265,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R2>, E, R2>
       resolve?: (value: A, args: Args) => Effect.Effect<A, E, R2>
     }
-  ): GraphQLSchemaBuilder<R | R2> {
+  ): GraphQLSchemaBuilder<R | R2 | RArgs> {
     const newSubscriptions = new Map(this.state.subscriptions)
     newSubscriptions.set(name, config)
     return this.with(updateState(this.state, "subscriptions", newSubscriptions))
@@ -272,9 +274,15 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Register an object type from a schema
    */
-  objectType<A, R2 = never>(config: {
+  objectType<
+    A,
+    Fields extends Record<
+      string,
+      ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>
+    > = {},
+  >(config: {
     name?: string
-    schema: S.Schema<A, any, any>
+    schema: S.Schema<A>
     description?: string
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
@@ -283,25 +291,12 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
      * Can be overridden by field-level cacheControl.
      */
     cacheControl?: CacheHint
-    fields?: Record<
-      string,
-      {
-        type: S.Schema<any, any, any>
-        args?: S.Schema<any, any, any>
-        description?: string
-        directives?: readonly DirectiveApplication[]
-        /**
-         * Complexity cost of this field for query complexity limiting.
-         */
-        complexity?: FieldComplexity
-        /**
-         * Cache control hint for this field.
-         */
-        cacheControl?: CacheHint
-        resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
-      }
-    >
-  }): GraphQLSchemaBuilder<R | R2> {
+    // Infer the whole map union while retaining contextual resolver parent types.
+    fields?:
+      | Fields
+      | (NoInfer<Fields> &
+          Record<string, ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>>)
+  }): GraphQLSchemaBuilder<R | ObjectFieldsServices<Fields>> {
     const {
       schema,
       description,
@@ -330,9 +325,12 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     let newObjectFields = this.state.objectFields
     if (fields) {
       newObjectFields = new Map(this.state.objectFields)
-      const typeFields = new Map<string, ObjectFieldRegistration>()
+      const typeFields = new Map<
+        string,
+        ObjectFieldRegistration<any, any, any, any, any, unknown>
+      >()
       for (const [fieldName, fieldConfig] of Object.entries(fields)) {
-        typeFields.set(fieldName, fieldConfig as ObjectFieldRegistration)
+        typeFields.set(fieldName, fieldConfig)
       }
       newObjectFields.set(name, typeFields)
     }
@@ -349,7 +347,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   interfaceType(config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     resolveType?: (value: any) => string
     directives?: readonly DirectiveApplication[]
   }): GraphQLSchemaBuilder<R> {
@@ -412,7 +410,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   inputType(config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     description?: string
     directives?: readonly DirectiveApplication[]
   }): GraphQLSchemaBuilder<R> {
@@ -436,7 +434,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     name: string
     description?: string
     locations: readonly DirectiveLocation[]
-    args?: S.Schema<Args, any, any>
+    args?: S.Schema<Args>
     apply?: (
       args: Args
     ) => <A, E, R3>(effect: Effect.Effect<A, E, R3>) => Effect.Effect<A, E, R2 | R3>
@@ -522,7 +520,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
     ) => Effect.Effect<void, never, R2>
     onExecuteStart?: (args: ExecutionArgs) => Effect.Effect<void, never, R2>
     onExecuteEnd?: (result: ExecutionResult) => Effect.Effect<void, never, R2>
-  }): GraphQLSchemaBuilder<R | R2> {
+  }): GraphQLSchemaBuilder<R | Exclude<R2, ExtensionsService>> {
     const newExtensions = [...this.state.extensions, config as GraphQLExtension<R2>]
     return this.with({ ...this.state, extensions: newExtensions })
   }
@@ -537,12 +535,12 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a computed/relational field to an object type
    */
-  field<Parent, A, E, R2, Args = void>(
+  field<Parent, A, E, R2, Args = void, RArgs = never>(
     typeName: string,
     fieldName: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       /**
@@ -557,7 +555,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
       cacheControl?: CacheHint
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>
     }
-  ): GraphQLSchemaBuilder<R | R2> {
+  ): GraphQLSchemaBuilder<R | R2 | RArgs> {
     const newObjectFields = new Map(this.state.objectFields)
     const typeFields = newObjectFields.get(typeName) || new Map()
     typeFields.set(fieldName, config)
@@ -661,39 +659,35 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
    * all registered input types are already available in the inputRegistry.
    */
   buildSchema(): GraphQLSchema {
-    // Phase 1: Build foundational registries first
     const enumRegistry = this.buildEnumRegistry()
-    const inputRegistry = this.buildInputRegistry(enumRegistry)
-
-    // Build cache once for all operations that need input type lookups
     const inputTypeLookupCache = buildInputTypeLookupCache(this.state.inputs, this.state.enums)
+    const inputRegistry = this.buildInputRegistry(enumRegistry, inputTypeLookupCache)
+    const ctx: TypeConversionContext = {
+      types: this.state.types,
+      interfaces: this.state.interfaces,
+      enums: this.state.enums,
+      unions: this.state.unions,
+      inputs: this.state.inputs,
+      typeRegistry: new Map(),
+      interfaceRegistry: new Map(),
+      enumRegistry,
+      unionRegistry: new Map(),
+      inputRegistry,
+      convertedOutputTypes: new WeakMap(),
+    }
+    buildReverseLookups(ctx)
 
-    // Phase 2: Build types that may reference inputs
     const directiveRegistry = this.buildDirectiveRegistry(
       enumRegistry,
       inputRegistry,
       inputTypeLookupCache
     )
-    const interfaceRegistry = this.buildInterfaceRegistry(
-      enumRegistry,
-      inputRegistry,
-      inputTypeLookupCache
-    )
+    const interfaceRegistry = this.buildInterfaceRegistry(ctx)
     const { typeRegistry, unionRegistry } = this.buildTypeAndUnionRegistries(
-      enumRegistry,
-      interfaceRegistry,
-      inputRegistry,
+      ctx,
       inputTypeLookupCache
     )
-
-    // Build field builder context for root operations
-    const fieldCtx = this.createFieldBuilderContext(
-      typeRegistry,
-      interfaceRegistry,
-      enumRegistry,
-      unionRegistry,
-      inputRegistry
-    )
+    const fieldCtx = this.createFieldBuilderContext(ctx, inputTypeLookupCache)
 
     // Build root type fields
     const queryFields = this.buildQueryFields(fieldCtx)
@@ -717,7 +711,7 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   private buildDirectiveRegistry(
     enumRegistry: Map<string, GraphQLEnumType>,
     inputRegistry: Map<string, GraphQLInputObjectType>,
-    cache: ReturnType<typeof buildInputTypeLookupCache>
+    cache: InputTypeLookupCache
   ): Map<string, GraphQLDirective> {
     const registry = new Map<string, GraphQLDirective>()
 
@@ -766,12 +760,10 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   }
 
   private buildInputRegistry(
-    enumRegistry: Map<string, GraphQLEnumType>
+    enumRegistry: Map<string, GraphQLEnumType>,
+    cache: InputTypeLookupCache
   ): Map<string, GraphQLInputObjectType> {
     const registry = new Map<string, GraphQLInputObjectType>()
-
-    // Build cache once for O(1) lookups across all input types
-    const cache = buildInputTypeLookupCache(this.state.inputs, this.state.enums)
 
     for (const [name, reg] of this.state.inputs) {
       const inputType = new GraphQLInputObjectType({
@@ -795,31 +787,9 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   }
 
   private buildInterfaceRegistry(
-    enumRegistry: Map<string, GraphQLEnumType>,
-    inputRegistry: Map<string, GraphQLInputObjectType>,
-    _cache: ReturnType<typeof buildInputTypeLookupCache>
+    sharedCtx: TypeConversionContext
   ): Map<string, GraphQLInterfaceType> {
-    const registry = new Map<string, GraphQLInterfaceType>()
-    // We need type and union registries for interface fields, but they're built later
-    // Use empty maps for now - interfaces shouldn't reference object types directly
-    const typeRegistry = new Map<string, GraphQLObjectType>()
-    const unionRegistry = new Map<string, GraphQLUnionType>()
-
-    // Create shared TypeConversionContext once for all interface field builders
-    const sharedCtx: TypeConversionContext = {
-      types: this.state.types,
-      interfaces: this.state.interfaces,
-      enums: this.state.enums,
-      unions: this.state.unions,
-      inputs: this.state.inputs,
-      typeRegistry,
-      interfaceRegistry: registry,
-      enumRegistry,
-      unionRegistry,
-      inputRegistry,
-    }
-    // Pre-build reverse lookup maps once
-    buildReverseLookups(sharedCtx)
+    const registry = sharedCtx.interfaceRegistry
 
     for (const [name, reg] of this.state.interfaces) {
       const interfaceType = new GraphQLInterfaceType({
@@ -835,32 +805,13 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   }
 
   private buildTypeAndUnionRegistries(
-    enumRegistry: Map<string, GraphQLEnumType>,
-    interfaceRegistry: Map<string, GraphQLInterfaceType>,
-    inputRegistry: Map<string, GraphQLInputObjectType>,
-    inputTypeLookupCache: ReturnType<typeof buildInputTypeLookupCache>
+    sharedCtx: TypeConversionContext,
+    inputTypeLookupCache: InputTypeLookupCache
   ): {
     typeRegistry: Map<string, GraphQLObjectType>
     unionRegistry: Map<string, GraphQLUnionType>
   } {
-    const typeRegistry = new Map<string, GraphQLObjectType>()
-    const unionRegistry = new Map<string, GraphQLUnionType>()
-
-    // Create shared TypeConversionContext once and reuse for all lazy field builders
-    const sharedCtx: TypeConversionContext = {
-      types: this.state.types,
-      interfaces: this.state.interfaces,
-      enums: this.state.enums,
-      unions: this.state.unions,
-      inputs: this.state.inputs,
-      typeRegistry,
-      interfaceRegistry,
-      enumRegistry,
-      unionRegistry,
-      inputRegistry,
-    }
-    // Pre-build reverse lookup maps once
-    buildReverseLookups(sharedCtx)
+    const { typeRegistry, unionRegistry, interfaceRegistry } = sharedCtx
 
     // Create shared FieldBuilderContext for additional fields
     // IMPORTANT: Use the real inputRegistry so that args with registered input types
@@ -913,26 +864,11 @@ export class GraphQLSchemaBuilder<R = never> implements Pipeable.Pipeable {
   }
 
   private createFieldBuilderContext(
-    typeRegistry: Map<string, GraphQLObjectType>,
-    interfaceRegistry: Map<string, GraphQLInterfaceType>,
-    enumRegistry: Map<string, GraphQLEnumType>,
-    unionRegistry: Map<string, GraphQLUnionType>,
-    inputRegistry: Map<string, GraphQLInputObjectType>
+    ctx: TypeConversionContext,
+    inputTypeLookupCache: InputTypeLookupCache
   ): FieldBuilderContext {
-    // Build cache once for O(1) input type lookups across all fields
-    const inputTypeLookupCache = buildInputTypeLookupCache(this.state.inputs, this.state.enums)
-
     return {
-      types: this.state.types,
-      interfaces: this.state.interfaces,
-      enums: this.state.enums,
-      unions: this.state.unions,
-      inputs: this.state.inputs,
-      typeRegistry,
-      interfaceRegistry,
-      enumRegistry,
-      unionRegistry,
-      inputRegistry,
+      ...ctx,
       directiveRegistrations: this.state.directives,
       middlewares: this.state.middlewares,
       inputTypeLookupCache,

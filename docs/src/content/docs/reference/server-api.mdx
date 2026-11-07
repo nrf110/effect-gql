@@ -11,6 +11,30 @@ Effect GraphQL provides server integration APIs in `@effect-gql/core` for HTTP r
 
 Create an HttpRouter configured for GraphQL.
 
+The Node and Bun `serve`, Express `toMiddleware`, and Web `toHandler` adapters
+accept router layers with construction-time service dependencies, route-local
+and global middleware requirements, and errors. The adapter's service layer is
+provided while building the router and retained for request dispatch, including
+effectful `HttpRouter.middleware` initialization. Scoped services shared between
+construction and requests are acquired once and released when the adapter stops
+or its handler is disposed.
+
+The supplied service layer determines the adapters' service union. Construction,
+route-local, and global middleware requirements are checked against that union,
+so inline composition such as `serve(routes, Layer.merge(ConstructionLive, RequestLive))`
+works without prebinding the merged layer or specifying generic arguments.
+The same inference applies to `toMiddleware` and `toHandler`. Additional services
+are allowed, including services used only by subscription hooks; missing
+dependencies remain compile-time errors.
+
+The resolver `layer` is built afresh for every request, even when the same layer
+has already been supplied to the surrounding HTTP application. Dependencies are
+still memoized within that request. Resolvers and lifecycle hooks retain ambient
+request and middleware services, while the resolver layer takes precedence for
+services it provides. Request resources remain alive through execution and hooks,
+then finalize on success or failure without closing application-owned resources.
+Standalone `execute(schema, layer)(source)` uses the same fresh-per-call lifecycle.
+
 ```typescript
 import { makeGraphQLRouter } from "@effect-gql/core"
 
@@ -18,7 +42,7 @@ function makeGraphQLRouter<R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
   config?: GraphQLRouterConfigInput
-): HttpRouter.HttpRouter<never, never>
+): Layer.Layer<never, never, HttpRouter.HttpRouter>
 ```
 
 **Parameters:**
@@ -50,12 +74,18 @@ Convert a GraphQLSchemaBuilder directly to an HttpRouter.
 ```typescript
 import { toRouter } from "@effect-gql/core"
 
-function toRouter<R, R2>(
+function toRouter<R>(
   builder: GraphQLSchemaBuilder<R>,
-  layer: Layer.Layer<R2>,
+  layer: Layer.Layer<NoInfer<Exclude<R, GraphQLRequestContext>>>,
   config?: GraphQLRouterConfigInput
-): HttpRouter.HttpRouter<never, never>
+): Layer.Layer<never, never, HttpRouter.HttpRouter>
 ```
+
+The layer must provide resolver and argument-decoder services accumulated by the
+builder. `GraphQLRequestContext` is supplied by the router for each request and
+does not belong in that layer. Additional services are allowed. Unlike `toRouter`,
+APIs accepting a bare `GraphQLSchema` cannot statically recover the builder's
+service requirements.
 
 **Example:**
 
@@ -194,8 +224,8 @@ Context available during WebSocket connection.
 
 ```typescript
 interface ConnectionContext<R> {
-  /** Effect runtime for this connection */
-  readonly runtime: Runtime.Runtime<R>
+  /** Effect service context for this connection */
+  readonly services: Context.Context<R>
 
   /** Client-provided connection parameters */
   readonly connectionParams: Record<string, unknown>
@@ -236,11 +266,16 @@ The `@effect-gql/node` package provides Node.js-specific server utilities.
 
 Start a Node.js HTTP server.
 
+On shutdown, the subscriptions-enabled server finalizes active Effect requests,
+closes WebSocket connections, and then closes the HTTP server. Incomplete HTTP
+connections, including clients that have not finished sending request headers,
+are closed without waiting for the client or Node's header timeout.
+
 ```typescript
 import { serve } from "@effect-gql/node"
 
 function serve<E, R, RE>(
-  router: HttpRouter.HttpRouter<E, R>,
+  router: Layer.Layer<never, E, HttpRouter.HttpRouter | R>,
   layer: Layer.Layer<R, RE>,
   options?: ServeOptions<R>
 ): void

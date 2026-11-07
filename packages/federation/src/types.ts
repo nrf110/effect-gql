@@ -41,7 +41,7 @@ export interface EntityRegistration<A, R = never> {
   /** Type name */
   readonly name: string
   /** Effect Schema for the entity type */
-  readonly schema: S.Schema<A, any, any>
+  readonly schema: S.Schema<A>
   /** Key directive configurations (at least one required) */
   readonly keys: readonly KeyDirective[]
   /** Additional directives to apply to the type */

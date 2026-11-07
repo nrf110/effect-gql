@@ -76,9 +76,8 @@ export interface GraphQLExtension<R = never> {
 /**
  * Service for accumulating extension data during request processing.
  *
- * This service is automatically provided for each request and allows
- * extensions, middleware, and resolvers to contribute to the response
- * extensions field.
+ * This service is automatically provided to lifecycle hooks for each request.
+ * Resolvers and middleware require an application-provided service if they use it.
  *
  * @example
  * ```typescript
@@ -119,9 +118,7 @@ export interface ExtensionsService {
 /**
  * Tag for the ExtensionsService
  */
-export const ExtensionsService = Context.GenericTag<ExtensionsService>(
-  "@effect-gql/ExtensionsService"
-)
+export const ExtensionsService = Context.Service<ExtensionsService>("@effect-gql/ExtensionsService")
 
 /**
  * Deep merge two objects
@@ -194,7 +191,7 @@ const runExtensionHooks = <R, K extends keyof GraphQLExtension<R>>(
     extensions.filter((ext) => ext[hookName] !== undefined),
     (ext) =>
       getHookEffect(ext).pipe(
-        Effect.catchAllCause((cause) =>
+        Effect.catchCause((cause) =>
           Effect.logWarning(`Extension "${ext.name}" ${String(hookName)} hook failed`, cause)
         )
       ),

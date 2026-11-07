@@ -1,5 +1,5 @@
 import { Effect, Context } from "effect"
-import { HttpServerRequest } from "@effect/platform"
+import { HttpServerRequest } from "effect/http"
 
 /**
  * W3C Trace Context header names
@@ -42,10 +42,9 @@ export interface TraceContext {
 /**
  * Context tag for TraceContext
  */
-export class TraceContextTag extends Context.Tag("@effect-gql/opentelemetry/TraceContext")<
-  TraceContextTag,
-  TraceContext
->() {}
+export class TraceContextTag extends Context.Service<TraceContextTag, TraceContext>()(
+  "@effect-gql/opentelemetry/TraceContext"
+) {}
 
 /**
  * Parse a W3C traceparent header value.

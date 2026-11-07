@@ -1,4 +1,4 @@
-import { Effect, Layer, Runtime, Context, Exit } from "effect"
+import { Effect, Layer, Context, Exit } from "effect"
 
 /**
  * Run an Effect synchronously for tests (simple cases with no requirements)
@@ -37,16 +37,9 @@ export const runSyncWithLayer = <A, R>(
  * Create a mock service layer
  */
 export const mockService = <I, S extends I>(
-  tag: Context.Tag<I, S>,
+  tag: Context.Service<I, S>,
   implementation: S
 ): Layer.Layer<I, never, never> => Layer.succeed(tag, implementation)
-
-/**
- * Create a test runtime with services
- */
-export const createTestRuntime = <R>(
-  layer: Layer.Layer<R, never, never>
-): Effect.Effect<Runtime.Runtime<R>, never, never> => Effect.scoped(Layer.toRuntime(layer))
 
 /**
  * Helper to test async iterator behavior (for subscriptions)

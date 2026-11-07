@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Stream, Layer } from "effect"
+import { Context, Deferred, Effect, Fiber, References, Stream, Layer } from "effect"
 import * as S from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 import {
   GraphQLSchema,
   GraphQLObjectType,
   GraphQLString,
   GraphQLNonNull,
+  GraphQLScalarType,
   GraphQLInt,
 } from "graphql"
 import { makeGraphQLSSEHandler, makeSSESubscriptionStream } from "../../../src/server/sse-adapter"
@@ -221,6 +223,230 @@ describe("sse-adapter.ts", () => {
       expect(JSON.parse(events[2].data)).toEqual({ data: { tick: { count: 3 } } })
       expect(events[3].event).toBe("complete")
     })
+    it.each(["failure", "throw"])("frames onConnect %s as a rejected connection", async (mode) => {
+      const events = await Effect.runPromise(
+        makeSSESubscriptionStream(
+          createTestSchema(),
+          Layer.empty,
+          { query: "subscription { tick { count } }" },
+          new Headers(),
+          {
+            onConnect: () => {
+              if (mode === "throw") throw new Error("Unauthorized")
+              return Effect.fail(new Error("Unauthorized"))
+            },
+          }
+        ).pipe(Stream.runCollect)
+      )
+
+      expect(events.map((event) => event.event)).toEqual(["error", "complete"])
+      expect(JSON.parse(events[0].data)).toEqual({
+        errors: [{ message: "Unauthorized", extensions: { code: "CONNECTION_REJECTED" } }],
+      })
+    })
+
+    it("isolates and releases each subscription when its layer is already ambient", async () => {
+      const Resource = Context.Service<{ readonly id: number }>("sse/SubscriptionResource")
+      const Mirror = Context.Service<number>("sse/SubscriptionMirror")
+      let acquired = 0
+      const released: number[] = []
+      const observed: Array<{ id: number; mirror: number }> = []
+      const resource = Layer.effect(
+        Resource,
+        Effect.acquireRelease(
+          Effect.sync(() => ({ id: ++acquired })),
+          ({ id }) => Effect.sync(() => released.push(id))
+        )
+      )
+      const layer = Layer.merge(
+        resource,
+        Layer.effect(
+          Mirror,
+          Effect.map(Resource, ({ id }) => id)
+        ).pipe(Layer.provide(resource))
+      )
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+        .subscription("instance", {
+          type: S.Int,
+          subscribe: () => Effect.map(Resource, ({ id }) => Stream.succeed(id)),
+        })
+        .buildSchema()
+      const events = await Effect.runPromise(
+        Effect.gen(function* () {
+          expect((yield* Resource).id).toBe(1)
+          const subscriptions: SSEEvent[][] = []
+          for (let subscription = 0; subscription < 2; subscription++) {
+            subscriptions.push(
+              yield* makeSSESubscriptionStream(
+                schema,
+                layer,
+                { query: "subscription { instance }" },
+                new Headers(),
+                {
+                  onSubscribe: () =>
+                    Effect.gen(function* () {
+                      observed.push({ id: (yield* Resource).id, mirror: yield* Mirror })
+                    }),
+                }
+              ).pipe(Stream.runCollect)
+            )
+            expect(released).toEqual(subscription === 0 ? [2] : [2, 3])
+          }
+          expect((yield* Resource).id).toBe(1)
+          return subscriptions
+        }).pipe(Effect.provide(layer))
+      )
+
+      expect(events).toEqual([
+        [formatNextEvent({ data: { instance: 2 } }), formatCompleteEvent()],
+        [formatNextEvent({ data: { instance: 3 } }), formatCompleteEvent()],
+      ])
+      expect(observed).toEqual([
+        { id: 2, mirror: 2 },
+        { id: 3, mirror: 3 },
+      ])
+      expect(acquired).toBe(3)
+      expect(released).toEqual([2, 3, 1])
+    })
+
+    it("preserves ambient annotations and spans across hooks and detached subscription effects", async () => {
+      const Setting = Context.Service<string>("sse/AnnotationSetting")
+      const observations: Array<{
+        phase: string
+        connectionId: unknown
+        span: string
+        setting: string
+      }> = []
+      const observe = (phase: string) =>
+        Effect.gen(function* () {
+          observations.push({
+            phase,
+            connectionId: (yield* References.CurrentLogAnnotations).connectionId,
+            span: (yield* Effect.currentSpan.pipe(Effect.orDie)).name,
+            setting: yield* Setting,
+          })
+        })
+      const layer = Layer.effect(
+        Setting,
+        observe("layer").pipe(Effect.as("explicit"), Effect.provideService(Setting, "building"))
+      )
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+        .subscription("setting", {
+          type: S.String,
+          subscribe: () =>
+            observe("subscribe").pipe(
+              Effect.andThen(Setting),
+              Effect.map((setting) => Stream.succeed(setting))
+            ),
+        })
+        .buildSchema()
+      const events = await Effect.runPromise(
+        makeSSESubscriptionStream(
+          schema,
+          layer,
+          { query: "subscription { setting }" },
+          new Headers(),
+          {
+            onConnect: () => observe("connect").pipe(Effect.as({})),
+            onSubscribe: (ctx) =>
+              observe("hook").pipe(
+                Effect.andThen(
+                  Effect.promise(() => Effect.runPromiseWith(ctx.services)(observe("detached")))
+                )
+              ),
+            onComplete: () => observe("complete"),
+          }
+        ).pipe(
+          Stream.runCollect,
+          Effect.provideService(Setting, "ambient"),
+          Effect.annotateLogs("connectionId", "sse-connection"),
+          Effect.withSpan("sse-connection")
+        )
+      )
+
+      expect(events).toEqual([
+        formatNextEvent({ data: { setting: "explicit" } }),
+        formatCompleteEvent(),
+      ])
+      expect(observations).toEqual(
+        ["layer", "connect", "hook", "detached", "subscribe", "complete"].map((phase) => ({
+          phase,
+          connectionId: "sse-connection",
+          span: "sse-connection",
+          setting: phase === "layer" ? "building" : "explicit",
+        }))
+      )
+    })
+
+    it.each(["bigint", "circular"])(
+      "frames %s serialization errors and finalizes resources",
+      async (mode) => {
+        const lifecycle: string[] = []
+        const Resource = Context.Service<string>("sse/SerializationResource")
+        const layer = Layer.effect(
+          Resource,
+          Effect.acquireRelease(Effect.succeed("open"), () =>
+            Effect.sync(() => lifecycle.push("release"))
+          )
+        )
+        const circular: { self?: unknown } = {}
+        circular.self = circular
+        const value = mode === "bigint" ? 1n : circular
+        const scalar = new GraphQLScalarType({
+          name: "Unserializable",
+          serialize: (input) => input,
+        })
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: { hello: { type: GraphQLString } },
+          }),
+          subscription: new GraphQLObjectType({
+            name: "Subscription",
+            fields: {
+              value: {
+                type: scalar,
+                subscribe: async function* () {
+                  try {
+                    yield { value }
+                    yield { value: "must not be emitted" }
+                  } finally {
+                    lifecycle.push("iterator")
+                  }
+                },
+              },
+            },
+          }),
+        })
+        const events = await Effect.runPromise(
+          makeSSESubscriptionStream(
+            schema,
+            layer,
+            { query: "subscription { value }" },
+            new Headers(),
+            {
+              onComplete: () =>
+                Effect.map(Resource, (resource) => {
+                  lifecycle.push(`complete:${resource}`)
+                }),
+            }
+          ).pipe(Stream.runCollect)
+        )
+
+        expect(events.map((event) => event.event)).toEqual(["error", "complete"])
+        expect(JSON.parse(events[0].data)).toEqual({
+          errors: [
+            {
+              message: expect.any(String),
+              extensions: { code: "SUBSCRIPTION_ERROR" },
+            },
+          ],
+        })
+        expect(lifecycle).toEqual(["iterator", "complete:open", "release"])
+      }
+    )
   })
 
   describe("makeGraphQLSSEHandler", () => {
@@ -632,9 +858,165 @@ describe("sse-adapter.ts", () => {
       // The iterator's return() method should be called when the stream is cancelled
       expect(iteratorCleanedUp).toBe(true)
     })
+
+    it.each(["completion", "cancellation"])(
+      "finalizes hooks before services on %s",
+      async (mode) => {
+        const lifecycle: string[] = []
+        let open = false
+        let releases = 0
+        const Resource = Context.Service<{ readonly isOpen: () => boolean }>("sse/Resource")
+        const layer = Layer.effect(
+          Resource,
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              open = true
+              return { isOpen: () => open }
+            }),
+            () =>
+              Effect.sync(() => {
+                open = false
+                releases++
+                lifecycle.push("release")
+              })
+          )
+        )
+        const schema = GraphQLSchemaBuilder.empty
+          .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+          .subscription("open", {
+            type: S.Boolean,
+            subscribe: () =>
+              Effect.succeed(
+                Stream.fromEffect(Effect.map(Resource, (resource) => resource.isOpen()))
+              ),
+          })
+          .buildSchema()
+        let hookOpen = false
+        const stream = makeSSESubscriptionStream(
+          schema,
+          layer,
+          { query: "subscription { open }" },
+          new Headers(),
+          {
+            onComplete: () => {
+              lifecycle.push("construct")
+              return Effect.map(Resource, (resource) => {
+                lifecycle.push("effect")
+                hookOpen = resource.isOpen()
+              })
+            },
+          }
+        )
+
+        const observed = stream.pipe(
+          Stream.tap((event) => Effect.sync(() => lifecycle.push(event.event)))
+        )
+        const events = await Effect.runPromise(
+          (mode === "cancellation" ? observed.pipe(Stream.take(1)) : observed).pipe(
+            Stream.runCollect
+          )
+        )
+
+        expect(events).toEqual(
+          mode === "cancellation"
+            ? [formatNextEvent({ data: { open: true } })]
+            : [formatNextEvent({ data: { open: true } }), formatCompleteEvent()]
+        )
+        expect(lifecycle).toEqual(
+          mode === "cancellation"
+            ? ["next", "construct", "effect", "release"]
+            : ["next", "complete", "construct", "effect", "release"]
+        )
+        expect(hookOpen).toBe(true)
+        expect(open).toBe(false)
+        expect(releases).toBe(1)
+      }
+    )
   })
 
   describe("Integration with GraphQLSchemaBuilder", () => {
+    it("isolates once-decoded args across operations sharing services and finalizes both streams", async () => {
+      let defaults = 0
+      let transforms = 0
+      const finalized: number[] = []
+      const completed: string[] = []
+      const firstStarted = Effect.runSync(Deferred.make<void>())
+      const emit = Effect.runSync(Deferred.make<void>())
+      const Shared = Context.Service<{ readonly prefix: string }>("sse/SharedSubscription")
+      const shared = { prefix: "shared" }
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value + 10
+            }),
+            encode: SchemaGetter.transform((value) => value - 10),
+          }),
+          S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+        ),
+      })
+      const schema = GraphQLSchemaBuilder.empty
+        .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+        .subscription("token", {
+          type: S.String,
+          args,
+          subscribe: ({ token }) =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(token === 11 ? firstStarted : emit, undefined)
+              return Stream.fromEffect(Deferred.await(emit).pipe(Effect.as("first"))).pipe(
+                Stream.concat(Stream.make("second")),
+                Stream.concat(token === 12 ? Stream.never : Stream.empty),
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    finalized.push(token)
+                  })
+                )
+              )
+            }),
+          resolve: (event, { token }) =>
+            Effect.map(Shared, ({ prefix }) => `${prefix}:${token}:${event}`),
+        })
+        .buildSchema()
+      const tokenField = schema.getSubscriptionType()!.getFields().token
+      const resolveToken = tokenField.resolve!
+      tokenField.resolve = async (source, args, context, info) =>
+        `${context.user.name}:${await resolveToken(source, args, context, info)}`
+      const handler = makeGraphQLSSEHandler(schema, Layer.succeed(Shared, shared), {
+        onConnect: () => Effect.succeed({ user: { name: "alice" }, services: "metadata" }),
+        onComplete: () =>
+          Effect.map(Shared, ({ prefix }) => {
+            completed.push(prefix)
+          }),
+      })
+      const request = { query: "subscription { token }" }
+      const headers = new Headers()
+      const [first, second] = await Effect.runPromise(
+        Effect.gen(function* () {
+          const first = yield* Effect.forkChild(Stream.runCollect(handler(request, headers)))
+          yield* Deferred.await(firstStarted)
+          const second = yield* Effect.forkChild(
+            handler(request, headers).pipe(Stream.take(2), Stream.runCollect)
+          )
+          return [Array.from(yield* Fiber.join(first)), Array.from(yield* Fiber.join(second))]
+        }).pipe(Effect.timeout("2 seconds"))
+      )
+
+      expect(first).toEqual([
+        formatNextEvent({ data: { token: "alice:shared:11:first" } }),
+        formatNextEvent({ data: { token: "alice:shared:11:second" } }),
+        formatCompleteEvent(),
+      ])
+      expect(second).toEqual([
+        formatNextEvent({ data: { token: "alice:shared:12:first" } }),
+        formatNextEvent({ data: { token: "alice:shared:12:second" } }),
+      ])
+      expect(defaults).toBe(2)
+      expect(transforms).toBe(2)
+      expect(finalized.sort()).toEqual([11, 12])
+      expect(completed).toEqual(["shared", "shared"])
+    })
+
     it("should work with builder-created schemas", async () => {
       const Tick = S.Struct({
         count: S.Number,

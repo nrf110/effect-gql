@@ -1,12 +1,22 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Stream, Runtime, Option } from "effect"
+import { Context, Deferred, Effect, Stream, Option } from "effect"
 import * as S from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 import {
   GraphQLObjectType,
+  GraphQLInterfaceType,
   GraphQLEnumType,
   GraphQLInputObjectType,
   GraphQLString,
+  GraphQLSchema,
+  defaultFieldResolver,
+  graphql,
+  parse,
+  subscribe,
   isNonNullType,
+  type GraphQLResolveInfo,
+  type GraphQLFieldConfig,
+  type ExecutionResult,
 } from "graphql"
 import {
   buildField,
@@ -14,7 +24,11 @@ import {
   buildSubscriptionField,
   FieldBuilderContext,
 } from "../../../src/builder/field-builders"
-import type { GraphQLEffectContext } from "../../../src/builder/types"
+import type { GraphQLEffectContext, MiddlewareContext } from "../../../src/builder/types"
+import { GraphQLSchemaBuilder, makeSubscriptionContext } from "../../../src/builder"
+
+// Minimal metadata for tests that invoke subscription field configs directly.
+const subscriptionInfo = {} as GraphQLResolveInfo
 
 // Helper to create a minimal field builder context
 const createFieldBuilderContext = (): FieldBuilderContext => ({
@@ -33,11 +47,944 @@ const createFieldBuilderContext = (): FieldBuilderContext => ({
 })
 
 // Simple test context for effects with no requirements
-const createSimpleContext = (): GraphQLEffectContext<never> => ({
-  runtime: Runtime.defaultRuntime,
-})
+const createSimpleContext = (): GraphQLEffectContext<never> =>
+  makeSubscriptionContext({ services: Context.empty() })
 
 describe("field-builders.ts", () => {
+  describe("decoded GraphQL arguments", () => {
+    const DecodeOffset = Context.Service<number>("field-builders/DecodeOffset")
+    const argsSchema = S.Struct({
+      amount: S.NumberFromString.pipe(
+        S.check(S.isFinite()),
+        S.decodeTo(S.Number, {
+          decode: SchemaGetter.transformEffect((amount) =>
+            Effect.map(DecodeOffset, (offset) => amount + offset)
+          ),
+          encode: SchemaGetter.transform((amount) => amount),
+        }),
+        S.withDecodingDefault(Effect.succeed("20"))
+      ),
+      label: S.optional(S.String),
+    })
+    const contextValue = { services: Context.make(DecodeOffset, 1) }
+
+    it.each(["query", "mutation", "object"] as const)(
+      "decodes explicit and omitted %s arguments before callbacks and middleware",
+      async (kind) => {
+        const ctx = createFieldBuilderContext()
+        const observed: unknown[] = []
+        const order: string[] = []
+        ctx.directiveRegistrations.set("trace", {
+          name: "trace",
+          locations: ["FIELD_DEFINITION"],
+          apply: () => (effect) =>
+            Effect.suspend(() => {
+              order.push("directive")
+              return effect
+            }),
+        })
+        ctx.middlewares = [
+          {
+            name: "trace",
+            apply: (effect, context) => {
+              observed.push(context.args)
+              return Effect.suspend(() => {
+                order.push("middleware")
+                return effect
+              })
+            },
+          },
+        ]
+        let calls = 0
+        const resolve = (args: S.Schema.Type<typeof argsSchema>) => {
+          calls++
+          return Effect.sync(() => {
+            order.push("resolver")
+            return args.amount + args.amount
+          })
+        }
+        const registration = {
+          type: S.Number,
+          args: argsSchema,
+          directives: [{ name: "trace" }],
+          resolve,
+        }
+        const field =
+          kind === "object"
+            ? buildObjectField(
+                {
+                  ...registration,
+                  resolve: (_parent: unknown, args: S.Schema.Type<typeof argsSchema>) =>
+                    resolve(args),
+                },
+                ctx
+              )
+            : buildField(registration, ctx)
+        const fields = { doubled: field }
+        const query = new GraphQLObjectType({
+          name: "Query",
+          fields:
+            kind === "object"
+              ? {
+                  item: {
+                    type: new GraphQLObjectType({ name: "Item", fields }),
+                    resolve: () => ({}),
+                  },
+                }
+              : kind === "mutation"
+                ? { ready: { type: GraphQLString, resolve: () => "ready" } }
+                : fields,
+        })
+        const schema = new GraphQLSchema({
+          query,
+          mutation:
+            kind === "mutation" ? new GraphQLObjectType({ name: "Mutation", fields }) : undefined,
+        })
+        const operation = (argumentsText: string) =>
+          kind === "object"
+            ? `{ item { doubled${argumentsText} } }`
+            : `${kind} { doubled${argumentsText} }`
+
+        for (const argumentsText of ['(amount: "20")', ""]) {
+          const result = await graphql({ schema, source: operation(argumentsText), contextValue })
+          expect(result.errors).toBeUndefined()
+          expect(result.data).toEqual(
+            kind === "object" ? { item: { doubled: 42 } } : { doubled: 42 }
+          )
+        }
+        expect(calls).toBe(2)
+        expect(observed).toEqual([{ amount: 21 }, { amount: 21 }])
+        expect(order).toEqual([
+          "middleware",
+          "directive",
+          "resolver",
+          "middleware",
+          "directive",
+          "resolver",
+        ])
+
+        const invalid = await graphql({
+          schema,
+          source: operation('(amount: "not-a-number")'),
+          contextValue,
+        })
+        expect(invalid.errors?.[0].path).toEqual(
+          kind === "object" ? ["item", "doubled"] : ["doubled"]
+        )
+        expect(calls).toBe(2)
+        expect(observed).toEqual([{ amount: 21 }, { amount: 21 }])
+      }
+    )
+
+    it("decodes transformations on the entire argument object", async () => {
+      const wholeArgs = S.Struct({ amount: S.NumberFromString }).pipe(
+        S.decodeTo(S.Struct({ total: S.Number }), {
+          decode: SchemaGetter.transform(({ amount }) => ({ total: amount + amount })),
+          encode: SchemaGetter.transform(({ total }) => ({ amount: total / 2 })),
+        })
+      )
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            doubled: buildField(
+              {
+                type: S.Number,
+                args: wholeArgs,
+                resolve: ({ total }: S.Schema.Type<typeof wholeArgs>) => Effect.succeed(total),
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+
+      const result = await graphql({
+        schema,
+        source: '{ doubled(amount: "21") }',
+        contextValue: createSimpleContext(),
+      })
+
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ doubled: 42 })
+    })
+
+    it("restores only hidden literal tags in root, nested, array, class, and recursive inputs", async () => {
+      const Child = S.TaggedStruct("Child", { amount: S.NumberFromString })
+      class Entry extends S.TaggedClass<Entry>()("Entry", { amount: S.NumberFromString }) {}
+      interface Node {
+        readonly _tag: "Node"
+        readonly amount: number
+        readonly children: readonly Node[]
+      }
+      interface EncodedNode {
+        readonly _tag: "Node"
+        readonly amount: string
+        readonly children: readonly EncodedNode[]
+      }
+      const Node: S.Codec<Node, EncodedNode> = S.TaggedStruct("Node", {
+        amount: S.NumberFromString,
+        children: S.Array(S.suspend(() => Node)),
+      })
+      const taggedArgs = S.TaggedStruct("Arguments", {
+        amount: S.NumberFromString,
+        child: Child,
+        projected: S.toEncoded(Child),
+        items: S.Array(Child),
+        entry: Entry,
+        node: Node,
+        label: S.optional(S.String),
+      })
+      let receivedClass = false
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args: taggedArgs,
+                resolve: (args: S.Schema.Type<typeof taggedArgs>) => {
+                  receivedClass = args.entry instanceof Entry
+                  return Effect.succeed(JSON.stringify(args))
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      const result = await graphql({
+        schema,
+        source: `{
+          inspect(
+            amount: "1"
+            child: { amount: "2" }
+            projected: { amount: "3" }
+            items: [{ amount: "4" }]
+            entry: { amount: "5" }
+            node: { amount: "6", children: [{ amount: "7", children: [] }] }
+          )
+        }`,
+        contextValue: createSimpleContext(),
+      })
+
+      expect(result.errors).toBeUndefined()
+      expect(receivedClass).toBe(true)
+      expect(JSON.parse(String(result.data?.inspect))).toEqual({
+        _tag: "Arguments",
+        amount: 1,
+        child: { _tag: "Child", amount: 2 },
+        projected: { _tag: "Child", amount: "3" },
+        items: [{ _tag: "Child", amount: 4 }],
+        entry: { _tag: "Entry", amount: 5 },
+        node: {
+          _tag: "Node",
+          amount: 6,
+          children: [{ _tag: "Node", amount: 7, children: [] }],
+        },
+      })
+    })
+
+    it.each([
+      { repeated: 0, tails: 1 },
+      { repeated: 2, tails: 1 },
+      { repeated: 0, tails: 2 },
+      { repeated: 2, tails: 2 },
+    ])(
+      "restores fixed, repeated, and $tails trailing tuple tags with $repeated repeated elements",
+      async ({ repeated, tails }) => {
+        const Head = S.TaggedStruct("Head", { value: S.String })
+        const Item = S.TaggedStruct("Item", { value: S.String })
+        const Tail = S.TaggedStruct("Tail", { value: S.String })
+        const End = S.TaggedStruct("End", { value: S.String })
+        const args = S.Struct({
+          items: S.TupleWithRest(S.Tuple([Head]), tails === 1 ? [Item, Tail] : [Item, Tail, End]),
+        })
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: {
+              inspect: buildField(
+                {
+                  type: S.String,
+                  args,
+                  resolve: (args: S.Schema.Type<typeof args>) =>
+                    Effect.succeed(JSON.stringify(args.items)),
+                },
+                createFieldBuilderContext()
+              ),
+            },
+          }),
+        })
+        const expected = [
+          { _tag: "Head", value: "head" },
+          ...Array.from({ length: repeated }, (_, index) => ({
+            _tag: "Item",
+            value: `item${index}`,
+          })),
+          { _tag: "Tail", value: "tail" },
+          ...(tails === 2 ? [{ _tag: "End", value: "end" }] : []),
+        ]
+        const result = await graphql({
+          schema,
+          source: `{ inspect(items: [${expected
+            .map(({ value }) => `{ value: "${value}" }`)
+            .join(", ")}]) }`,
+          contextValue: createSimpleContext(),
+        })
+
+        expect(result.errors).toBeUndefined()
+        expect(JSON.parse(String(result.data?.inspect))).toEqual(expected)
+      }
+    )
+
+    it("restores Options and transformed tags inside trailing tuple elements", async () => {
+      const Item = S.TaggedStruct("Item", { value: S.Option(S.String) })
+      const Tail = S.Struct({
+        _tag: S.Literal("wire").pipe(
+          S.decodeTo(S.Literal("Domain"), {
+            decode: SchemaGetter.transform(() => "Domain" as const),
+            encode: SchemaGetter.transform(() => "wire" as const),
+          })
+        ),
+        value: S.Option(S.String),
+      })
+      const End = S.TaggedStruct("End", { value: S.Option(S.String) })
+      const args = S.Struct({
+        items: S.TupleWithRest(S.Tuple([Item]), [Item, Tail, End]),
+      })
+      let received: S.Schema.Type<typeof args> | undefined
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args,
+                resolve: (args: S.Schema.Type<typeof args>) => {
+                  received = args
+                  return Effect.succeed("decoded")
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      const result = await graphql({
+        schema,
+        source: `{
+          inspect(items: [
+            { value: "head" }, { value: null }, { value: "tail" }, { value: null }
+          ])
+        }`,
+        contextValue: createSimpleContext(),
+      })
+
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ inspect: "decoded" })
+      expect(received).toEqual({
+        items: [
+          { _tag: "Item", value: Option.some("head") },
+          { _tag: "Item", value: Option.none() },
+          { _tag: "Domain", value: Option.some("tail") },
+          { _tag: "End", value: Option.none() },
+        ],
+      })
+    })
+
+    it("rejects missing trailing tuple elements and invalid tail values before resolving", async () => {
+      const Item = S.TaggedStruct("Item", { value: S.String })
+      const Tail = S.TaggedStruct("Tail", {
+        value: S.String.pipe(S.check(S.isMinLength(2))),
+      })
+      const End = S.TaggedStruct("End", { value: S.String })
+      const args = S.Struct({
+        items: S.TupleWithRest(S.Tuple([Item]), [Item, Tail, End]),
+      })
+      let resolutions = 0
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args,
+                resolve: () => {
+                  resolutions++
+                  return Effect.succeed("invalid")
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+
+      for (const items of [
+        "[]",
+        '[{ value: "head" }]',
+        '[{ value: "head" }, { value: "tail" }]',
+        '[{ value: "head" }, { value: "x" }, { value: "end" }]',
+      ]) {
+        const result = await graphql({
+          schema,
+          source: `{ inspect(items: ${items}) }`,
+          contextValue: createSimpleContext(),
+        })
+
+        expect(result.errors).toHaveLength(1)
+        expect(result.errors?.[0].path).toEqual(["inspect"])
+        expect(result.errors?.[0].message).toContain("items")
+      }
+      expect(resolutions).toBe(0)
+    })
+
+    it("restores encoded literal tags before decoding transformed discriminators", async () => {
+      const Input = S.Struct({
+        _tag: S.Literal("wire").pipe(
+          S.decodeTo(S.Literal("Domain"), {
+            decode: SchemaGetter.transform(() => "Domain" as const),
+            encode: SchemaGetter.transform(() => "wire" as const),
+          })
+        ),
+        value: S.String,
+      })
+      const args = S.Struct({
+        ...Input.fields,
+        child: Input,
+        items: S.Array(Input),
+      })
+      let received: S.Schema.Type<typeof args> | undefined
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args,
+                resolve: (decoded: S.Schema.Type<typeof args>) => {
+                  received = decoded
+                  return Effect.succeed(decoded.value)
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+
+      const result = await graphql({
+        schema,
+        source: '{ inspect(value: "root", child: { value: "child" }, items: [{ value: "item" }]) }',
+        contextValue: createSimpleContext(),
+      })
+
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ inspect: "root" })
+      expect(received).toEqual({
+        _tag: "Domain",
+        value: "root",
+        child: { _tag: "Domain", value: "child" },
+        items: [{ _tag: "Domain", value: "item" }],
+      })
+    })
+
+    it("normalizes nullable Option inputs without bypassing codecs, defaults, or validation", async () => {
+      const value = argsSchema.fields.amount
+      const options = S.Struct({
+        value: S.Option(value),
+        optional: S.optionalKey(S.Option(S.String)),
+        fallback: S.Option(S.String).pipe(
+          S.withDecodingDefault(Effect.succeed(Option.some("fallback")))
+        ),
+        nullable: S.OptionFromNullOr(S.NumberFromString),
+      })
+      const observed: S.Schema.Type<typeof options>[] = []
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args: options,
+                resolve: (args: S.Schema.Type<typeof options>) => {
+                  observed.push(args)
+                  return Effect.succeed(
+                    JSON.stringify({
+                      value: Option.getOrNull(args.value),
+                      optionalPresent: Object.hasOwn(args, "optional"),
+                      fallback: Option.getOrNull(args.fallback),
+                      nullable: Option.getOrNull(args.nullable),
+                    })
+                  )
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      for (const [argumentsText, expected] of [
+        ['(value: "20", nullable: "7")', { value: 21, nullable: 7 }],
+        ["(value: null, nullable: null)", { value: null, nullable: null }],
+        ["", { value: null, nullable: null }],
+      ] as const) {
+        const result = await graphql({
+          schema,
+          source: `{ inspect${argumentsText} }`,
+          contextValue,
+        })
+        expect(result.errors).toBeUndefined()
+        expect(JSON.parse(String(result.data?.inspect))).toEqual({
+          ...expected,
+          optionalPresent: false,
+          fallback: "fallback",
+        })
+      }
+      const invalid = await graphql({
+        schema,
+        source: '{ inspect(value: "invalid", nullable: null) }',
+        contextValue,
+      })
+      expect(invalid.errors?.[0].path).toEqual(["inspect"])
+      expect(observed).toHaveLength(3)
+    })
+
+    it("distinguishes omitted optional Options, explicit null, and present values", async () => {
+      const args = S.Struct({
+        value: S.optional(S.Option(S.String)),
+        nullable: S.optional(S.NullOr(S.String)),
+        nullableOption: S.optional(S.NullOr(S.Option(S.String))),
+      })
+      const observed: S.Schema.Type<typeof args>[] = []
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args,
+                resolve: (args: S.Schema.Type<typeof args>) => {
+                  observed.push(args)
+                  return Effect.succeed("accepted")
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      for (const argumentsText of [
+        "",
+        "(value: null, nullable: null, nullableOption: null)",
+        '(value: "present", nullable: "present", nullableOption: "present")',
+      ]) {
+        expect(
+          await graphql({
+            schema,
+            source: `{ inspect${argumentsText} }`,
+            contextValue: createSimpleContext(),
+          })
+        ).toEqual({ data: { inspect: "accepted" } })
+      }
+      expect(observed).toEqual([
+        {},
+        { value: Option.none(), nullable: null, nullableOption: null },
+        {
+          value: Option.some("present"),
+          nullable: "present",
+          nullableOption: Option.some("present"),
+        },
+      ])
+    })
+
+    it("normalizes optional Options in computed field arguments and nested input objects", async () => {
+      const args = S.Struct({
+        value: S.optional(S.Option(S.String)),
+        input: S.Struct({
+          number: S.optional(S.Option(S.NumberFromString)),
+          children: S.Array(
+            S.Struct({
+              value: S.optional(S.Option(S.String)),
+            })
+          ),
+        }),
+      })
+      let observed: S.Schema.Type<typeof args> | undefined
+      const item = new GraphQLObjectType({
+        name: "Item",
+        fields: {
+          inspect: buildObjectField(
+            {
+              type: S.String,
+              args,
+              resolve: (_parent: unknown, args: S.Schema.Type<typeof args>) => {
+                observed = args
+                return Effect.succeed("accepted")
+              },
+            },
+            createFieldBuilderContext()
+          ),
+        },
+      })
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: { item: { type: item, resolve: () => ({}) } },
+        }),
+      })
+      expect(
+        await graphql({
+          schema,
+          source: `{
+            item {
+              inspect(
+                value: null
+                input: { number: "7", children: [{}, { value: null }, { value: "child" }] }
+              )
+            }
+          }`,
+          contextValue: createSimpleContext(),
+        })
+      ).toEqual({ data: { item: { inspect: "accepted" } } })
+      expect(observed).toEqual({
+        value: Option.none(),
+        input: {
+          number: Option.some(7),
+          children: [{}, { value: Option.none() }, { value: Option.some("child") }],
+        },
+      })
+    })
+
+    it("passes explicit null optional Options to subscription setup and event resolution as None", async () => {
+      const args = S.Struct({ value: S.optional(S.Option(S.String)) })
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: { ready: { type: GraphQLString, resolve: () => "ready" } },
+        }),
+        subscription: new GraphQLObjectType({
+          name: "Subscription",
+          fields: {
+            event: buildSubscriptionField(
+              {
+                type: S.String,
+                args,
+                subscribe: (args: S.Schema.Type<typeof args>) =>
+                  Effect.succeed(
+                    Stream.make(
+                      args.value === undefined
+                        ? "omitted"
+                        : Option.match(args.value, {
+                            onNone: () => "setup:none",
+                            onSome: (value) => `setup:${value}`,
+                          })
+                    )
+                  ),
+                resolve: (value: string, args: S.Schema.Type<typeof args>) =>
+                  Effect.succeed(
+                    `${value}:${
+                      args.value === undefined
+                        ? "omitted"
+                        : Option.isNone(args.value)
+                          ? "resolve:none"
+                          : "resolve:some"
+                    }`
+                  ),
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      const result = await subscribe({
+        schema,
+        document: parse("subscription { event(value: null) }"),
+        contextValue: createSimpleContext(),
+      })
+      if (!(Symbol.asyncIterator in result)) {
+        throw new Error(`Subscription failed: ${JSON.stringify(result)}`)
+      }
+      const iterator = result[Symbol.asyncIterator]()
+      try {
+        expect(await iterator.next()).toEqual({
+          done: false,
+          value: { data: { event: "setup:none:resolve:none" } },
+        })
+      } finally {
+        await iterator.return?.()
+      }
+    })
+
+    it("normalizes Option values recursively inside tagged, class, list, and recursive inputs", async () => {
+      const Child = S.TaggedStruct("OptionChild", { value: S.Option(S.NumberFromString) })
+      class Entry extends S.TaggedClass<Entry>()("OptionEntry", {
+        child: S.Option(Child),
+      }) {}
+      interface Node {
+        readonly value: Option.Option<number>
+        readonly next: Option.Option<Node>
+      }
+      interface EncodedNode {
+        readonly value: Option.Option<string>
+        readonly next: Option.Option<EncodedNode>
+      }
+      const Node: S.Codec<Node, EncodedNode> = S.Struct({
+        value: S.Option(S.NumberFromString),
+        next: S.Option(S.suspend(() => Node)),
+      }).annotate({ identifier: "OptionNode" })
+      const options = S.Struct({
+        entry: Entry,
+        children: S.Array(S.Option(Child)),
+        node: Node,
+        nullable: S.OptionFromNullOr(Child),
+      })
+      let receivedClass = false
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args: options,
+                resolve: (args: S.Schema.Type<typeof options>) => {
+                  receivedClass = args.entry instanceof Entry
+                  return Effect.succeed(JSON.stringify(args))
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      const result = await graphql({
+        schema,
+        source: `{
+          inspect(
+            entry: { child: { value: "1" } }
+            children: [{ value: "2" }, null, {}]
+            node: { value: "3", next: { value: null } }
+            nullable: { value: "4" }
+          )
+        }`,
+        contextValue: createSimpleContext(),
+      })
+      expect(result.errors).toBeUndefined()
+      expect(receivedClass).toBe(true)
+      expect(JSON.parse(String(result.data?.inspect))).toMatchObject({
+        entry: {
+          _tag: "OptionEntry",
+          child: {
+            _tag: "Some",
+            value: {
+              _tag: "OptionChild",
+              value: { _tag: "Some", value: 1 },
+            },
+          },
+        },
+        children: [
+          { _tag: "Some", value: { _tag: "OptionChild", value: { _tag: "Some", value: 2 } } },
+          { _tag: "None" },
+          { _tag: "Some", value: { _tag: "OptionChild", value: { _tag: "None" } } },
+        ],
+        node: {
+          value: { _tag: "Some", value: 3 },
+          next: { _tag: "Some", value: { value: { _tag: "None" }, next: { _tag: "None" } } },
+        },
+        nullable: {
+          _tag: "Some",
+          value: {
+            _tag: "OptionChild",
+            value: { _tag: "Some", value: 4 },
+          },
+        },
+      })
+    })
+
+    it("decodes subscription defaults and transforms once with isolated concurrent operation args", async () => {
+      let defaults = 0
+      let transforms = 0
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value
+            }),
+            encode: SchemaGetter.transform((value) => value),
+          }),
+          S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+        ),
+      })
+      const subscribed: S.Schema.Type<typeof args>[] = []
+      const resolved: S.Schema.Type<typeof args>[] = []
+      const middleware: unknown[] = []
+      const parents: unknown[] = []
+      const closed: number[] = []
+      const ctx = createFieldBuilderContext()
+      ctx.middlewares = [
+        {
+          name: "capture",
+          apply: (effect, context) => {
+            middleware.push(context.args)
+            parents.push(context.parent)
+            return effect
+          },
+        },
+      ]
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: { ready: { type: GraphQLString, resolve: () => "ready" } },
+        }),
+        subscription: new GraphQLObjectType({
+          name: "Subscription",
+          fields: {
+            event: buildSubscriptionField(
+              {
+                type: S.Option(S.String),
+                args,
+                subscribe: (args: S.Schema.Type<typeof args>) => {
+                  subscribed.push(args)
+                  return Effect.succeed(
+                    Stream.make("first", "second").pipe(
+                      Stream.ensuring(
+                        Effect.sync(() => {
+                          closed.push(args.token)
+                        })
+                      )
+                    )
+                  )
+                },
+                resolve: (value: string, args: S.Schema.Type<typeof args>) => {
+                  resolved.push(args)
+                  return Effect.succeed(Option.some(`${value}:${args.token}`))
+                },
+              },
+              ctx
+            ),
+          },
+        }),
+      })
+      const document = parse("subscription { event }")
+      const { services } = createSimpleContext()
+      const [first, second] = await Promise.all([
+        subscribe({ schema, document, contextValue: makeSubscriptionContext({ services }) }),
+        subscribe({ schema, document, contextValue: makeSubscriptionContext({ services }) }),
+      ])
+      if (!(Symbol.asyncIterator in first) || !(Symbol.asyncIterator in second)) {
+        throw new Error("Subscriptions failed")
+      }
+      const a = first[Symbol.asyncIterator]()
+      const b = second[Symbol.asyncIterator]()
+      expect(await a.next()).toEqual({ done: false, value: { data: { event: "first:1" } } })
+      expect(await b.next()).toEqual({ done: false, value: { data: { event: "first:2" } } })
+      expect(await a.next()).toEqual({ done: false, value: { data: { event: "second:1" } } })
+      expect(await b.next()).toEqual({ done: false, value: { data: { event: "second:2" } } })
+      await a.return?.()
+      await b.return?.()
+      expect(defaults).toBe(2)
+      expect(transforms).toBe(2)
+      expect(resolved).toEqual([subscribed[0], subscribed[1], subscribed[0], subscribed[1]])
+      expect(resolved[0]).toBe(subscribed[0])
+      expect(resolved[1]).toBe(subscribed[1])
+      expect(resolved[2]).toBe(subscribed[0])
+      expect(resolved[3]).toBe(subscribed[1])
+      expect(subscribed[0]).not.toBe(subscribed[1])
+      expect(middleware).toEqual([
+        subscribed[0],
+        subscribed[1],
+        subscribed[0],
+        subscribed[1],
+        subscribed[0],
+        subscribed[1],
+      ])
+      expect(middleware[2]).toBe(subscribed[0])
+      expect(parents.slice(2)).toEqual(["first", "first", "second", "second"])
+      expect(closed.sort()).toEqual([1, 2])
+    })
+
+    it("decodes subscription subscribe and event resolve arguments with request services", async () => {
+      const ctx = createFieldBuilderContext()
+      const observed: unknown[] = []
+      ctx.middlewares = [
+        {
+          name: "capture",
+          apply: (effect, context) => {
+            observed.push(context.args)
+            return effect
+          },
+        },
+      ]
+      let subscribeCalls = 0
+      let resolveCalls = 0
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: { ready: { type: GraphQLString, resolve: () => "ready" } },
+        }),
+        subscription: new GraphQLObjectType({
+          name: "Subscription",
+          fields: {
+            doubled: buildSubscriptionField(
+              {
+                type: S.Number,
+                args: argsSchema,
+                subscribe: (args: S.Schema.Type<typeof argsSchema>) => {
+                  subscribeCalls++
+                  return Effect.succeed(Stream.make(args.amount + args.amount))
+                },
+                resolve: (value: number, args: S.Schema.Type<typeof argsSchema>) => {
+                  resolveCalls++
+                  return Effect.succeed(value + args.amount + args.amount)
+                },
+              },
+              ctx
+            ),
+          },
+        }),
+      })
+
+      for (const argumentsText of ['(amount: "20")', ""]) {
+        const result = await subscribe({
+          schema,
+          document: parse(`subscription { doubled${argumentsText} }`),
+          contextValue: makeSubscriptionContext({ services: contextValue.services }),
+        })
+        if (!(Symbol.asyncIterator in result)) {
+          throw new Error(`Subscription failed: ${JSON.stringify(result)}`)
+        }
+        const iterator = result[Symbol.asyncIterator]()
+        const event = await iterator.next()
+        expect(event.value).toEqual({ data: { doubled: 84 } })
+        expect(await iterator.next()).toEqual({ value: undefined, done: true })
+      }
+      expect(subscribeCalls).toBe(2)
+      expect(resolveCalls).toBe(2)
+      expect(observed).toEqual(Array.from({ length: 4 }, () => ({ amount: 21 })))
+
+      const invalid = await subscribe({
+        schema,
+        document: parse('subscription { doubled(amount: "not-a-number") }'),
+        contextValue: makeSubscriptionContext({ services: contextValue.services }),
+      })
+      if (Symbol.asyncIterator in invalid) {
+        throw new Error("Invalid arguments unexpectedly started a subscription")
+      }
+      expect(invalid.errors?.[0].path).toEqual(["doubled"])
+      expect(subscribeCalls).toBe(2)
+      expect(resolveCalls).toBe(2)
+    })
+  })
+
   // ==========================================================================
   // buildField - Basic
   // ==========================================================================
@@ -426,25 +1373,6 @@ describe("field-builders.ts", () => {
   // buildSubscriptionField - Subscribe
   // ==========================================================================
   describe("buildSubscriptionField - Subscribe", () => {
-    it("should return AsyncIterator from subscribe", async () => {
-      const ctx = createFieldBuilderContext()
-      const config = buildSubscriptionField(
-        {
-          type: S.String,
-          subscribe: () => Effect.succeed(Stream.make("a", "b", "c")),
-        },
-        ctx
-      )
-
-      const testContext = createSimpleContext()
-      const iterator = await config.subscribe!(null, {}, testContext, {} as any)
-
-      expect(iterator).toBeDefined()
-      const typedIterator = iterator as AsyncIterator<string>
-
-      expect(typeof typedIterator.next).toBe("function")
-    })
-
     it("should yield values from stream", async () => {
       const ctx = createFieldBuilderContext()
       const config = buildSubscriptionField(
@@ -456,7 +1384,8 @@ describe("field-builders.ts", () => {
       )
 
       const testContext = createSimpleContext()
-      const iterator = await config.subscribe!(null, {}, testContext, {} as any)
+      const iterable = await config.subscribe!(null, {}, testContext, subscriptionInfo)
+      const iterator = (iterable as AsyncIterable<string>)[Symbol.asyncIterator]()
 
       const result1 = await (iterator as AsyncIterator<string>).next()
       expect(result1.done).toBe(false)
@@ -481,11 +1410,457 @@ describe("field-builders.ts", () => {
       )
 
       const testContext = createSimpleContext()
-      const iterator = await config.subscribe!(null, {}, testContext, {} as any)
-      const typedIterator = iterator as AsyncIterator<string>
+      const iterable = await config.subscribe!(null, {}, testContext, subscriptionInfo)
+      const typedIterator = (iterable as AsyncIterable<string>)[Symbol.asyncIterator]()
 
       const result = await typedIterator.next()
       expect(result.done).toBe(true)
+    })
+  })
+
+  describe("native subscription context ownership", () => {
+    const makeSchema = (field: GraphQLFieldConfig<unknown, GraphQLEffectContext<never>>) =>
+      new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: { ready: { type: GraphQLString, resolve: () => "ready" } },
+        }),
+        subscription: new GraphQLObjectType({
+          name: "Subscription",
+          fields: { event: field },
+        }),
+      })
+
+    const expectInitialError = (
+      result: AsyncIterable<ExecutionResult> | ExecutionResult,
+      code: string
+    ) => {
+      if (Symbol.asyncIterator in result) {
+        throw new Error("Invalid context unexpectedly started a subscription")
+      }
+      expect(result.data).toBeUndefined()
+      expect(result.errors).toHaveLength(1)
+      expect(result.errors?.[0]).toMatchObject({
+        path: ["event"],
+        extensions: { code },
+      })
+    }
+
+    it("rejects unregistered lookalikes before decoding while preserving fresh factory operations", async () => {
+      const Subscriber = Context.Service<{ prefix: string }>("field-builders/Subscriber")
+      const service = { prefix: "subscriber" }
+      const metadata = { label: "shared" }
+      const input = { services: Context.make(Subscriber, service), metadata }
+      const firstContext = Object.freeze(makeSubscriptionContext(input))
+      const secondContext = Object.freeze(makeSubscriptionContext(input))
+      let defaults = 0
+      let transforms = 0
+      let setups = 0
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value
+            }),
+            encode: SchemaGetter.transform((value) => value),
+          }),
+          S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+        ),
+      })
+      const subscribed: S.Schema.Type<typeof args>[] = []
+      const resolved: S.Schema.Type<typeof args>[] = []
+      const schema = makeSchema(
+        buildSubscriptionField(
+          {
+            type: S.String,
+            args,
+            subscribe: (operationArgs: S.Schema.Type<typeof args>) => {
+              setups++
+              subscribed.push(operationArgs)
+              return Effect.succeed(Stream.make("raw"))
+            },
+            resolve: (_value: string, operationArgs: S.Schema.Type<typeof args>) => {
+              resolved.push(operationArgs)
+              return Effect.succeed(String(operationArgs.token))
+            },
+          },
+          createFieldBuilderContext()
+        )
+      )
+      const field = schema.getSubscriptionType()!.getFields().event
+      const originalResolve = field.resolve!
+      const observedContexts: unknown[] = []
+      field.resolve = async (value, fieldArgs, context, info) => {
+        observedContexts.push(context)
+        expect(context.services).toBe(input.services)
+        expect(context.metadata).toBe(metadata)
+        const subscriber = Effect.runSync(Effect.provide(Subscriber, context.services))
+        expect(subscriber).toBe(service)
+        const token = await originalResolve(value, fieldArgs, context, info)
+        return `${subscriber.prefix}:${context.metadata.label}:${token}`
+      }
+      const document = parse("subscription { event }")
+      for (const contextValue of [{ services: input.services }, { ...firstContext }, input]) {
+        expectInitialError(
+          await subscribe({ schema, document, contextValue }),
+          "SUBSCRIPTION_CONTEXT_REQUIRED"
+        )
+        expect(defaults).toBe(0)
+        expect(transforms).toBe(0)
+        expect(setups).toBe(0)
+      }
+
+      const sources = await Promise.all(
+        [firstContext, secondContext].map((contextValue) =>
+          subscribe({ schema, document, contextValue })
+        )
+      )
+      const iterators = sources.map((source) => {
+        if (!(Symbol.asyncIterator in source)) throw new Error("Factory context failed")
+        return source[Symbol.asyncIterator]()
+      })
+      try {
+        expectInitialError(
+          await subscribe({ schema, document, contextValue: { ...firstContext } }),
+          "SUBSCRIPTION_CONTEXT_REQUIRED"
+        )
+        expect(defaults).toBe(2)
+        expect(transforms).toBe(2)
+        expect(setups).toBe(2)
+        expect(await iterators[0].next()).toEqual({
+          done: false,
+          value: { data: { event: "subscriber:shared:1" } },
+        })
+        expect(await iterators[1].next()).toEqual({
+          done: false,
+          value: { data: { event: "subscriber:shared:2" } },
+        })
+        expect(observedContexts[0]).toBe(firstContext)
+        expect(observedContexts[1]).toBe(secondContext)
+        expect(resolved[0]).toBe(subscribed[0])
+        expect(resolved[1]).toBe(subscribed[1])
+        expect(subscribed[0]).not.toBe(subscribed[1])
+      } finally {
+        for (const iterator of iterators) await iterator.return?.()
+      }
+    })
+
+    it("rejects a resolver wrapper's context copy without losing the operation's decoded args", async () => {
+      let defaults = 0
+      let transforms = 0
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value + 10
+            }),
+            encode: SchemaGetter.transform((value) => value - 10),
+          }),
+          S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+        ),
+      })
+      const resolved: S.Schema.Type<typeof args>[] = []
+      let subscribed: S.Schema.Type<typeof args> | undefined
+      const schema = makeSchema(
+        buildSubscriptionField(
+          {
+            type: S.Number,
+            args,
+            subscribe: (operationArgs: S.Schema.Type<typeof args>) => {
+              subscribed = operationArgs
+              return Effect.succeed(Stream.make(10, 20))
+            },
+            resolve: (value: number, operationArgs: S.Schema.Type<typeof args>) => {
+              resolved.push(operationArgs)
+              return Effect.succeed(value + operationArgs.token)
+            },
+          },
+          createFieldBuilderContext()
+        )
+      )
+      const field = schema.getSubscriptionType()!.getFields().event
+      const originalResolve = field.resolve!
+      const source = await subscribe({
+        schema,
+        document: parse("subscription { event }"),
+        contextValue: Object.freeze(makeSubscriptionContext({ services: Context.empty() })),
+      })
+      if (!(Symbol.asyncIterator in source)) throw new Error("Factory context failed")
+      const iterator = source[Symbol.asyncIterator]()
+      field.resolve = (value, fieldArgs, context, info) =>
+        originalResolve(value, fieldArgs, { ...context }, info)
+      try {
+        const rejected = await iterator.next()
+        expect(rejected.done).toBe(false)
+        expect(rejected.value.errors?.[0]).toMatchObject({
+          path: ["event"],
+          extensions: { code: "SUBSCRIPTION_CONTEXT_REQUIRED" },
+        })
+        expect(resolved).toEqual([])
+        field.resolve = originalResolve
+        expect(await iterator.next()).toEqual({
+          done: false,
+          value: { data: { event: 31 } },
+        })
+        expect(defaults).toBe(1)
+        expect(transforms).toBe(1)
+        expect(resolved[0]).toBe(subscribed)
+      } finally {
+        field.resolve = originalResolve
+        await iterator.return?.()
+      }
+    })
+
+    it("rejects a concurrent duplicate before repeating argument decoding or source setup", async () => {
+      let defaults = 0
+      let transforms = 0
+      let setups = 0
+      let releaseDecode!: () => void
+      let enteredDecode!: () => void
+      const decodeGate = new Promise<void>((resolve) => {
+        releaseDecode = resolve
+      })
+      const decoding = new Promise<void>((resolve) => {
+        enteredDecode = resolve
+      })
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value
+            }),
+            encode: SchemaGetter.transform((value) => value),
+          }),
+          S.withDecodingDefault(
+            Effect.promise(async () => {
+              const token = ++defaults
+              if (token === 1) {
+                enteredDecode()
+                await decodeGate
+              }
+              return String(token)
+            })
+          )
+        ),
+      })
+      const subscribed: S.Schema.Type<typeof args>[] = []
+      const resolved: S.Schema.Type<typeof args>[] = []
+      const schema = makeSchema(
+        buildSubscriptionField(
+          {
+            type: S.Number,
+            args,
+            subscribe: (operationArgs: S.Schema.Type<typeof args>) => {
+              setups++
+              subscribed.push(operationArgs)
+              return Effect.succeed(Stream.make(10))
+            },
+            resolve: (value: number, operationArgs: S.Schema.Type<typeof args>) => {
+              resolved.push(operationArgs)
+              return Effect.succeed(value + operationArgs.token)
+            },
+          },
+          createFieldBuilderContext()
+        )
+      )
+      const contextValue = Object.freeze(makeSubscriptionContext({ services: Context.empty() }))
+      const request = { schema, document: parse("subscription { event }"), contextValue }
+      const firstPending = subscribe(request)
+      await decoding
+      try {
+        expectInitialError(await subscribe(request), "SUBSCRIPTION_CONTEXT_REUSED")
+        expect(defaults).toBe(1)
+        expect(transforms).toBe(0)
+        expect(setups).toBe(0)
+      } finally {
+        releaseDecode()
+      }
+      const first = await firstPending
+      const fresh = await subscribe({
+        ...request,
+        contextValue: Object.freeze(makeSubscriptionContext({ services: contextValue.services })),
+      })
+      if (!(Symbol.asyncIterator in first) || !(Symbol.asyncIterator in fresh)) {
+        throw new Error("Fresh subscription contexts failed")
+      }
+      const a = first[Symbol.asyncIterator]()
+      const b = fresh[Symbol.asyncIterator]()
+      try {
+        expect(await a.next()).toEqual({ done: false, value: { data: { event: 11 } } })
+        expect(await b.next()).toEqual({ done: false, value: { data: { event: 12 } } })
+        expect(defaults).toBe(2)
+        expect(transforms).toBe(2)
+        expect(setups).toBe(2)
+        expect(resolved[0]).toBe(subscribed[0])
+        expect(resolved[1]).toBe(subscribed[1])
+        expect(subscribed[0]).not.toBe(subscribed[1])
+      } finally {
+        await a.return?.()
+        await b.return?.()
+      }
+    })
+
+    it("keeps no-args default-resolver contexts consumed after completion and cancellation", async () => {
+      let setups = 0
+      const schema = makeSchema(
+        buildSubscriptionField(
+          {
+            type: S.String,
+            subscribe: () => {
+              setups++
+              return Effect.succeed(Stream.make("raw"))
+            },
+          },
+          createFieldBuilderContext()
+        )
+      )
+      const { services } = createSimpleContext()
+      const document = parse("subscription { event }")
+      const completedContext = Object.freeze(makeSubscriptionContext({ services }))
+      const cancelledContext = Object.freeze(makeSubscriptionContext({ services }))
+      const start = (contextValue: GraphQLEffectContext<never>) =>
+        subscribe({ schema, document, contextValue })
+
+      const completed = await start(completedContext)
+      if (!(Symbol.asyncIterator in completed)) throw new Error("Subscription failed")
+      const completedIterator = completed[Symbol.asyncIterator]()
+      expect(await completedIterator.next()).toEqual({
+        done: false,
+        value: { data: { event: "raw" } },
+      })
+      expect(await completedIterator.next()).toEqual({ done: true, value: undefined })
+      expectInitialError(await start(completedContext), "SUBSCRIPTION_CONTEXT_REUSED")
+
+      const cancelled = await start(cancelledContext)
+      if (!(Symbol.asyncIterator in cancelled)) throw new Error("Subscription failed")
+      const cancelledIterator = cancelled[Symbol.asyncIterator]()
+      expect(await cancelledIterator.next()).toEqual({
+        done: false,
+        value: { data: { event: "raw" } },
+      })
+      await cancelledIterator.return?.()
+      expectInitialError(await start(cancelledContext), "SUBSCRIPTION_CONTEXT_REUSED")
+      expect(setups).toBe(2)
+
+      const fresh = await start(makeSubscriptionContext({ services }))
+      if (!(Symbol.asyncIterator in fresh)) throw new Error("Fresh context failed")
+      const freshIterator = fresh[Symbol.asyncIterator]()
+      expect(await freshIterator.next()).toEqual({
+        done: false,
+        value: { data: { event: "raw" } },
+      })
+      await freshIterator.return?.()
+      expect(setups).toBe(3)
+    })
+
+    it("keeps contexts consumed when argument decoding or source setup fails", async () => {
+      let defaults = 0
+      let transforms = 0
+      let setups = 0
+      const args = S.Struct({
+        token: S.NumberFromString.pipe(
+          S.check(S.isFinite()),
+          S.decodeTo(S.Number, {
+            decode: SchemaGetter.transform((value) => {
+              transforms++
+              return value
+            }),
+            encode: SchemaGetter.transform((value) => value),
+          }),
+          S.withDecodingDefault(
+            Effect.sync(() => {
+              defaults++
+              return "invalid"
+            })
+          )
+        ),
+      })
+      const schema = makeSchema(
+        buildSubscriptionField(
+          {
+            type: S.Number,
+            args,
+            subscribe: (operationArgs: S.Schema.Type<typeof args>) => {
+              setups++
+              return setups === 1
+                ? Effect.fail(new Error("Source setup failed"))
+                : Effect.succeed(Stream.make(operationArgs.token))
+            },
+          },
+          createFieldBuilderContext()
+        )
+      )
+      const { services } = createSimpleContext()
+      const decodeContext = Object.freeze(makeSubscriptionContext({ services }))
+      const setupContext = Object.freeze(makeSubscriptionContext({ services }))
+      const omitted = parse("subscription { event }")
+      const explicit = parse('subscription { event(token: "7") }')
+      const invalid = await subscribe({ schema, document: omitted, contextValue: decodeContext })
+      if (Symbol.asyncIterator in invalid) throw new Error("Invalid arguments were accepted")
+      expect(invalid.errors?.[0].path).toEqual(["event"])
+      expectInitialError(
+        await subscribe({ schema, document: explicit, contextValue: decodeContext }),
+        "SUBSCRIPTION_CONTEXT_REUSED"
+      )
+      expect(defaults).toBe(1)
+      expect(transforms).toBe(0)
+      expect(setups).toBe(0)
+
+      const failed = await subscribe({ schema, document: explicit, contextValue: setupContext })
+      if (Symbol.asyncIterator in failed) throw new Error("Failed source setup was accepted")
+      expect(failed.errors?.[0].message).toContain("Source setup failed")
+      expectInitialError(
+        await subscribe({ schema, document: explicit, contextValue: setupContext }),
+        "SUBSCRIPTION_CONTEXT_REUSED"
+      )
+      expect(transforms).toBe(1)
+      expect(setups).toBe(1)
+
+      const fresh = await subscribe({
+        schema,
+        document: explicit,
+        contextValue: makeSubscriptionContext({ services }),
+      })
+      if (!(Symbol.asyncIterator in fresh)) throw new Error("Fresh context failed")
+      const iterator = fresh[Symbol.asyncIterator]()
+      expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 7 } } })
+      await iterator.return?.()
+      expect(defaults).toBe(1)
+      expect(transforms).toBe(2)
+      expect(setups).toBe(2)
+    })
+
+    it("returns actionable initial errors for missing, primitive, or invalid Effect contexts", async () => {
+      let setups = 0
+      const schema = makeSchema(
+        buildSubscriptionField(
+          {
+            type: S.String,
+            subscribe: () => {
+              setups++
+              return Effect.succeed(Stream.make("raw"))
+            },
+          },
+          createFieldBuilderContext()
+        )
+      )
+      const document = parse("subscription { event }")
+      for (const contextValue of [undefined, "not-an-object", { services: {} }]) {
+        expectInitialError(
+          await subscribe({ schema, document, contextValue }),
+          "SUBSCRIPTION_CONTEXT_REQUIRED"
+        )
+      }
+      expect(setups).toBe(0)
+      const fresh = await subscribe({ schema, document, contextValue: createSimpleContext() })
+      if (!(Symbol.asyncIterator in fresh)) throw new Error("Valid Effect context failed")
+      const iterator = fresh[Symbol.asyncIterator]()
+      expect(await iterator.next()).toEqual({ done: false, value: { data: { event: "raw" } } })
+      await iterator.return?.()
+      expect(setups).toBe(1)
     })
   })
 
@@ -508,45 +1883,514 @@ describe("field-builders.ts", () => {
       expect(result).toBe("payload")
     })
 
-    it("should transform values with custom resolve", async () => {
-      const ctx = createFieldBuilderContext()
-      const config = buildSubscriptionField(
-        {
-          type: S.String,
-          subscribe: () => Effect.succeed(Stream.make("hello")),
-          resolve: (value: string) => Effect.succeed(value.toUpperCase()),
-        },
-        ctx
-      )
+    it.each([false, true])(
+      "resolves subscription events with arguments enabled: %s",
+      async (withArgs) => {
+        const field = buildSubscriptionField(
+          {
+            type: S.String,
+            args: withArgs ? S.Struct({ suffix: S.String }) : undefined,
+            subscribe: () => Effect.succeed(Stream.make("hello")),
+            resolve: (value: string, args: { suffix?: string }) =>
+              Effect.succeed(`${value.toUpperCase()}${args.suffix ?? ""}`),
+          },
+          createFieldBuilderContext()
+        )
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: { ready: { type: GraphQLString, resolve: () => "ready" } },
+          }),
+          subscription: new GraphQLObjectType({
+            name: "Subscription",
+            fields: { event: field },
+          }),
+        })
+        const result = await subscribe({
+          schema,
+          document: parse(`subscription { event${withArgs ? '(suffix: "!")' : ""} }`),
+          contextValue: createSimpleContext(),
+        })
+        if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+        const iterator = result[Symbol.asyncIterator]()
+        expect(await iterator.next()).toEqual({
+          done: false,
+          value: { data: { event: withArgs ? "HELLO!" : "HELLO" } },
+        })
+        await iterator.return?.()
+      }
+    )
 
-      const testContext = createSimpleContext()
-      const result = await config.resolve!("hello", {}, testContext, {} as any)
-      expect(result).toBe("HELLO")
-    })
+    it.each([
+      { payload: Object.freeze({ id: "event-1" }), id: "event-1", rootId: "event-1" },
+      { payload: "primitive-event", id: "resolved", rootId: "primitive-event" },
+      { payload: null, id: "resolved", rootId: "null" },
+    ])(
+      "exposes the original $payload root to middleware match and apply",
+      async ({ payload, id, rootId }) => {
+        const ctx = createFieldBuilderContext()
+        const matched: GraphQLResolveInfo[] = []
+        const applied: GraphQLResolveInfo[] = []
+        ctx.middlewares = [
+          {
+            name: "rootPayload",
+            match: (info) => {
+              // Subscription setup has no emitted root value yet.
+              if (info.rootValue === undefined) return false
+              matched.push(info)
+              return info.rootValue === payload
+            },
+            apply: <A, E, R>(effect: Effect.Effect<A, E, R>, context: MiddlewareContext) => {
+              applied.push(context.info)
+              return context.info.fieldName === "rootId"
+                ? Effect.map(
+                    effect,
+                    () => String(context.info.rootValue?.id ?? context.info.rootValue) as A
+                  )
+                : effect
+            },
+          },
+        ]
+        const Event = S.Struct({ id: S.String })
+        const eventType = new GraphQLObjectType({
+          name: "Event",
+          fields: () => ({
+            id: { type: GraphQLString },
+            rootId: buildObjectField(
+              { type: S.String, resolve: () => Effect.succeed("unmatched") },
+              ctx
+            ),
+          }),
+        })
+        ctx.types.set("Event", { name: "Event", schema: Event })
+        ctx.typeRegistry.set("Event", eventType)
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: { ready: { type: GraphQLString, resolve: () => "ready" } },
+          }),
+          subscription: new GraphQLObjectType({
+            name: "Subscription",
+            fields: {
+              event: buildSubscriptionField(
+                {
+                  type: Event,
+                  subscribe: () => Effect.succeed(Stream.make(payload)),
+                  resolve: (value: typeof payload) =>
+                    Effect.succeed(
+                      typeof value === "object" && value !== null ? value : { id: "resolved" }
+                    ),
+                },
+                ctx
+              ),
+            },
+          }),
+        })
+        const result = await subscribe({
+          schema,
+          document: parse("subscription { event { id rootId } }"),
+          contextValue: createSimpleContext(),
+        })
+        if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+        const iterator = result[Symbol.asyncIterator]()
+        try {
+          expect(await iterator.next()).toEqual({
+            done: false,
+            value: { data: { event: { id, rootId } } },
+          })
+          expect(matched.map((info) => info.fieldName)).toEqual(["event", "rootId"])
+          expect(applied.map((info) => info.fieldName)).toEqual(["event", "rootId"])
+          for (const info of [...matched, ...applied]) {
+            expect(info.rootValue).toBe(payload)
+          }
+        } finally {
+          await iterator.return?.()
+        }
+      }
+    )
 
-    it("should pass args to custom resolve", async () => {
-      const ctx = createFieldBuilderContext()
-      const config = buildSubscriptionField(
-        {
-          type: S.String,
-          args: S.Struct({ suffix: S.String }),
-          subscribe: () => Effect.succeed(Stream.make("value")),
-          resolve: (value: string, args: { suffix: string }) =>
-            Effect.succeed(`${value}${args.suffix}`),
-        },
-        ctx
-      )
-
-      const testContext = createSimpleContext()
-      const result = await config.resolve!("value", { suffix: "!" }, testContext, {} as any)
-      expect(result).toBe("value!")
-    })
+    it.each(["frozen", "primitive", "null", "undefined"] as const)(
+      "preserves native %s roots across concurrent asynchronously wrapped event resolvers",
+      async (kind) => {
+        const roots: string[] = []
+        const recordRoot = (surface: string, info: GraphQLResolveInfo) => {
+          expect(info.rootValue).toBe(payload)
+          roots.push(surface)
+        }
+        const rootDefault = (_args: unknown, _context: unknown, info: GraphQLResolveInfo) => {
+          recordRoot("sourceFunction", info)
+          return rootId
+        }
+        const payload =
+          kind === "frozen"
+            ? Object.freeze({ id: "event-1", rootDefault })
+            : kind === "primitive"
+              ? "primitive-event"
+              : kind === "null"
+                ? null
+                : undefined
+        const rootId = kind === "frozen" ? "event-1" : String(payload)
+        let defaults = 0
+        let transforms = 0
+        let closed = 0
+        const args = S.Struct({
+          token: S.NumberFromString.pipe(
+            S.decodeTo(S.Number, {
+              decode: SchemaGetter.transform((value) => {
+                transforms++
+                return value
+              }),
+              encode: SchemaGetter.transform((value) => value),
+            }),
+            S.withDecodingDefault(Effect.sync(() => String(++defaults)))
+          ),
+        })
+        const subscribed: S.Schema.Type<typeof args>[] = []
+        const resolved: S.Schema.Type<typeof args>[] = []
+        const ctx = createFieldBuilderContext()
+        const Event = S.Struct({ id: S.String })
+        const eventInterface = new GraphQLInterfaceType({
+          name: "EventInterface",
+          fields: {
+            id: { type: GraphQLString },
+            token: { type: GraphQLString },
+            rootNative: { type: GraphQLString },
+            rootDefault: { type: GraphQLString },
+            rootCustom: { type: GraphQLString },
+          },
+          resolveType: (_value, _context, info) => {
+            recordRoot("resolveType", info)
+            return "Event"
+          },
+        })
+        const eventType = new GraphQLObjectType({
+          name: "Event",
+          interfaces: [eventInterface],
+          fields: {
+            id: { type: GraphQLString },
+            token: { type: GraphQLString },
+            rootNative: {
+              type: GraphQLString,
+              resolve: (_parent, _args, _context, info) => {
+                recordRoot("nativeResolve", info)
+                return rootId
+              },
+            },
+            rootDefault: { type: GraphQLString },
+            rootCustom: { type: GraphQLString },
+          },
+          isTypeOf: (_value, _context, info) => {
+            recordRoot("isTypeOf", info)
+            return true
+          },
+        })
+        ctx.types.set("Event", { name: "Event", schema: Event })
+        ctx.typeRegistry.set("Event", eventType)
+        const field = buildSubscriptionField(
+          {
+            type: Event,
+            args,
+            subscribe: (operationArgs: S.Schema.Type<typeof args>) => {
+              subscribed.push(operationArgs)
+              return Effect.succeed(
+                Stream.make(payload, payload).pipe(
+                  Stream.ensuring(
+                    Effect.sync(() => {
+                      closed++
+                    })
+                  )
+                )
+              )
+            },
+            resolve: (_value: typeof payload, operationArgs: S.Schema.Type<typeof args>) => {
+              expect(_value).toBe(payload)
+              resolved.push(operationArgs)
+              return Effect.succeed({ id: rootId, token: operationArgs.token, rootDefault })
+            },
+          },
+          ctx
+        )
+        const schema = new GraphQLSchema({
+          types: [eventType],
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: { ready: { type: GraphQLString } },
+          }),
+          subscription: new GraphQLObjectType({
+            name: "Subscription",
+            fields: { event: { ...field, type: eventInterface } },
+          }),
+        })
+        const actualField = schema.getSubscriptionType()!.getFields().event
+        const originalResolve = actualField.resolve!
+        const releases: (() => void)[] = []
+        const gates = [
+          new Promise<void>((resolve) => {
+            releases[0] = resolve
+          }),
+          new Promise<void>((resolve) => {
+            releases[1] = resolve
+          }),
+        ]
+        let allEntered!: () => void
+        const ready = new Promise<void>((resolve) => {
+          allEntered = resolve
+        })
+        let entered = 0
+        const request = {
+          schema,
+          document: Object.freeze(
+            parse("subscription { event { id token rootNative rootDefault rootCustom } }")
+          ),
+          variableValues: Object.freeze({}),
+          fieldResolver: (
+            parent: unknown,
+            fieldArgs: Record<string, unknown>,
+            context: unknown,
+            info: GraphQLResolveInfo
+          ) => {
+            recordRoot("fieldResolver", info)
+            return info.fieldName === "rootCustom"
+              ? rootId
+              : defaultFieldResolver(parent, fieldArgs, context, info)
+          },
+        }
+        const { services } = createSimpleContext()
+        const sources = await Promise.all([
+          subscribe({
+            ...request,
+            contextValue: Object.freeze(makeSubscriptionContext({ services })),
+          }),
+          subscribe({
+            ...request,
+            contextValue: Object.freeze(makeSubscriptionContext({ services })),
+          }),
+        ])
+        const iterators = sources.map((source) => {
+          if (!(Symbol.asyncIterator in source)) throw new Error("Subscription failed")
+          return source[Symbol.asyncIterator]()
+        })
+        actualField.resolve = async (value, fieldArgs, context, info) => {
+          recordRoot("asyncRootWrapper", info)
+          const index = entered++
+          if (entered === 2) allEntered()
+          await gates[index]
+          return originalResolve(value, fieldArgs, context, info)
+        }
+        try {
+          const pending = iterators.map((iterator) => iterator.next())
+          await ready
+          releases[1]()
+          const second = await pending[1]
+          releases[0]()
+          const first = await pending[0]
+          for (const [event, token] of [
+            [first, "1"],
+            [second, "2"],
+          ] as const) {
+            expect(event).toEqual({
+              done: false,
+              value: {
+                data: {
+                  event: {
+                    id: rootId,
+                    token,
+                    rootNative: rootId,
+                    rootDefault: rootId,
+                    rootCustom: rootId,
+                  },
+                },
+              },
+            })
+          }
+          expect(defaults).toBe(2)
+          expect(transforms).toBe(2)
+          expect(subscribed[0]).not.toBe(subscribed[1])
+          expect(resolved[0]).toBe(subscribed[1])
+          expect(resolved[1]).toBe(subscribed[0])
+          for (const surface of [
+            "nativeResolve",
+            "sourceFunction",
+            "fieldResolver",
+            "resolveType",
+            "isTypeOf",
+            "asyncRootWrapper",
+          ]) {
+            expect(roots.filter((root) => root === surface)).toHaveLength(
+              surface === "fieldResolver" ? 8 : 2
+            )
+          }
+        } finally {
+          releases.forEach((release) => release())
+          for (const iterator of iterators) await iterator.return?.()
+        }
+        expect(closed).toBe(2)
+      }
+    )
   })
 
   // ==========================================================================
   // buildSubscriptionField - Iterator cleanup
   // ==========================================================================
   describe("buildSubscriptionField - Iterator cleanup", () => {
+    it("serializes overlapping native GraphQL pulls without duplicating stream state", async () => {
+      let active = 0
+      let maximumActive = 0
+      const schema = GraphQLSchemaBuilder.empty
+        .query("ready", { type: S.String, resolve: () => Effect.succeed("ready") })
+        .subscription("event", {
+          type: S.Number,
+          subscribe: () =>
+            Effect.succeed(
+              Stream.unfold(0, (value) =>
+                Effect.promise(async () => {
+                  active++
+                  maximumActive = Math.max(maximumActive, active)
+                  await Promise.resolve()
+                  active--
+                  return [value, value + 1] as const
+                })
+              )
+            ),
+        })
+        .buildSchema()
+      const result = await subscribe({
+        schema,
+        document: parse("subscription { event }"),
+        contextValue: createSimpleContext(),
+      })
+      if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+      const iterator = result[Symbol.asyncIterator]()
+      try {
+        expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 0 } } })
+        expect(await Promise.all([iterator.next(), iterator.next()])).toEqual([
+          { done: false, value: { data: { event: 1 } } },
+          { done: false, value: { data: { event: 2 } } },
+        ])
+        expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 3 } } })
+        expect(maximumActive).toBe(1)
+      } finally {
+        await iterator.return?.()
+      }
+    })
+
+    it("interrupts an active pull immediately and closes queued pulls exactly once", async () => {
+      const entered = Effect.runSync(Deferred.make<void>())
+      let pulls = 0
+      let closed = 0
+      const schema = GraphQLSchemaBuilder.empty
+        .query("ready", { type: S.String, resolve: () => Effect.succeed("ready") })
+        .subscription("event", {
+          type: S.Number,
+          subscribe: () =>
+            Effect.succeed(
+              Stream.unfold(0, (value) =>
+                Effect.gen(function* () {
+                  pulls++
+                  if (value === 0) return [value, value + 1] as const
+                  yield* Deferred.succeed(entered, undefined)
+                  return yield* Effect.never
+                })
+              ).pipe(
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    closed++
+                  })
+                )
+              )
+            ),
+        })
+        .buildSchema()
+      const result = await subscribe({
+        schema,
+        document: parse("subscription { event }"),
+        contextValue: createSimpleContext(),
+      })
+      if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+      const iterator = result[Symbol.asyncIterator]()
+      expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 0 } } })
+      const active = iterator.next()
+      const queued = iterator.next()
+      await Effect.runPromise(Deferred.await(entered))
+      const ending = iterator.return!()
+      const repeated = iterator.return!()
+      expect(await ending).toEqual({ done: true, value: undefined })
+      expect(await repeated).toEqual({ done: true, value: undefined })
+      expect(await active).toEqual({ done: true, value: undefined })
+      expect(await queued).toEqual({ done: true, value: undefined })
+      expect(await iterator.next()).toEqual({ done: true, value: undefined })
+      expect(pulls).toBe(2)
+      expect(closed).toBe(1)
+    })
+
+    it("preserves a source failure while closing subsequent queued reads", async () => {
+      const failure = new Error("subscription source failed")
+      let closed = 0
+      const schema = GraphQLSchemaBuilder.empty
+        .query("ready", { type: S.String, resolve: () => Effect.succeed("ready") })
+        .subscription("event", {
+          type: S.Number,
+          subscribe: () =>
+            Effect.succeed(
+              Stream.make(0).pipe(
+                Stream.concat(Stream.fail(failure)),
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    closed++
+                  })
+                )
+              )
+            ),
+        })
+        .buildSchema()
+      const result = await subscribe({
+        schema,
+        document: parse("subscription { event }"),
+        contextValue: createSimpleContext(),
+      })
+      if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+      const iterator = result[Symbol.asyncIterator]()
+      expect(await iterator.next()).toEqual({ done: false, value: { data: { event: 0 } } })
+      const [failed, queued] = await Promise.allSettled([iterator.next(), iterator.next()])
+      expect(failed.status).toBe("rejected")
+      if (failed.status === "rejected") expect(failed.reason).toBe(failure)
+      expect(queued).toEqual({ status: "fulfilled", value: { done: true, value: undefined } })
+      await iterator.return?.()
+      expect(closed).toBe(1)
+    })
+
+    it.each(["before next", "before queued pull"] as const)(
+      "does not acquire a stream when returned %s",
+      async (transition) => {
+        let acquired = 0
+        const schema = GraphQLSchemaBuilder.empty
+          .query("ready", { type: S.String, resolve: () => Effect.succeed("ready") })
+          .subscription("event", {
+            type: S.Number,
+            subscribe: () =>
+              Effect.succeed(
+                Stream.suspend(() => {
+                  acquired++
+                  return Stream.make(1)
+                })
+              ),
+          })
+          .buildSchema()
+        const result = await subscribe({
+          schema,
+          document: parse("subscription { event }"),
+          contextValue: createSimpleContext(),
+        })
+        if (!(Symbol.asyncIterator in result)) throw new Error("Subscription failed")
+        const iterator = result[Symbol.asyncIterator]()
+        const first = transition === "before queued pull" ? iterator.next() : undefined
+        await iterator.return!()
+        if (first) expect(await first).toEqual({ done: true, value: undefined })
+        expect(await iterator.next()).toEqual({ done: true, value: undefined })
+        expect(acquired).toBe(0)
+      }
+    )
+
     it("should handle return() for early termination", async () => {
       const ctx = createFieldBuilderContext()
       const config = buildSubscriptionField(
@@ -558,8 +2402,8 @@ describe("field-builders.ts", () => {
       )
 
       const testContext = createSimpleContext()
-      const iterator = await config.subscribe!(null, {}, testContext, {} as any)
-      const typedIterator = iterator as AsyncIterator<string>
+      const iterable = await config.subscribe!(null, {}, testContext, subscriptionInfo)
+      const typedIterator = (iterable as AsyncIterable<string>)[Symbol.asyncIterator]()
 
       // Get first value
       await typedIterator.next()
@@ -979,7 +2823,7 @@ describe("field-builders.ts", () => {
         {
           name: "fallbackMiddleware",
           apply: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-            Effect.catchAll(effect, () => Effect.succeed("fallback" as unknown as A)),
+            Effect.catch(effect, () => Effect.succeed("fallback" as unknown as A)),
         },
       ]
 

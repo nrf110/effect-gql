@@ -1,6 +1,7 @@
 import { Effect, Layer, Stream } from "effect"
+import type { Cause } from "effect"
 import * as S from "effect/Schema"
-import { HttpApp } from "@effect/platform"
+import { HttpRouter } from "effect/http"
 import {
   GraphQLSchemaBuilder,
   makeGraphQLRouter,
@@ -113,7 +114,7 @@ export const createTestSchema = () => {
 export const startTestServer = async (port: number = 0) => {
   const schema = createTestSchema()
   const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
-  const { handler } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -164,13 +165,15 @@ export const startTestServer = async (port: number = 0) => {
       const addr = server.address() as { port: number }
       resolve({
         port: addr.port,
-        stop: () =>
-          new Promise<void>((res, rej) => {
+        stop: async () => {
+          await dispose()
+          return new Promise<void>((res, rej) => {
             server.close((err) => {
               if (err) rej(err)
               else res()
             })
-          }),
+          })
+        },
       })
     })
   })
@@ -210,7 +213,7 @@ export const getGraphiQL = async (port: number): Promise<{ status: number; body:
  */
 const toEffectWebSocket = (ws: WebSocket): EffectWebSocket => {
   const messagesEffect = Effect.gen(function* () {
-    const queue = yield* Queue.unbounded<string>()
+    const queue = yield* Queue.make<string, Cause.Done>()
     const closed = yield* Deferred.make<CloseEvent, WebSocketError>()
 
     ws.on("message", (data) => {
@@ -224,7 +227,7 @@ const toEffectWebSocket = (ws: WebSocket): EffectWebSocket => {
 
     ws.on("close", (code, reason) => {
       Effect.runPromise(
-        Queue.shutdown(queue).pipe(
+        Queue.end(queue).pipe(
           Effect.andThen(Deferred.succeed(closed, { code, reason: reason.toString() }))
         )
       ).catch(() => {})
@@ -234,15 +237,13 @@ const toEffectWebSocket = (ws: WebSocket): EffectWebSocket => {
   })
 
   const messages: Stream.Stream<string, WebSocketError> = Stream.unwrap(
-    messagesEffect.pipe(
-      Effect.map(({ queue }) => Stream.fromQueue(queue).pipe(Stream.catchAll(() => Stream.empty)))
-    )
+    messagesEffect.pipe(Effect.map(({ queue }) => Stream.fromQueue(queue)))
   )
 
   return {
     protocol: ws.protocol || "graphql-transport-ws",
     send: (data: string) =>
-      Effect.async<void, WebSocketError>((resume) => {
+      Effect.callback<void, WebSocketError>((resume) => {
         ws.send(data, (error) => {
           if (error) {
             resume(Effect.fail(new WebSocketError({ cause: error })))
@@ -256,7 +257,7 @@ const toEffectWebSocket = (ws: WebSocket): EffectWebSocket => {
         ws.close(code ?? 1000, reason ?? "")
       }),
     messages,
-    closed: Effect.async<CloseEvent, WebSocketError>((resume) => {
+    closed: Effect.callback<CloseEvent, WebSocketError>((resume) => {
       if (ws.readyState === WebSocket.CLOSED) {
         resume(Effect.succeed({ code: 1000, reason: "" }))
         return
@@ -288,7 +289,7 @@ const toEffectWebSocket = (ws: WebSocket): EffectWebSocket => {
 export const startTestServerWithWS = async (port: number = 0) => {
   const schema = createTestSchema()
   const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
-  const { handler } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -374,6 +375,7 @@ export const startTestServerWithWS = async (port: number = 0) => {
             client.close(1001, "Server shutting down")
           }
           wss.close()
+          await dispose()
           return new Promise<void>((res, rej) => {
             server.close((err) => {
               if (err) rej(err)

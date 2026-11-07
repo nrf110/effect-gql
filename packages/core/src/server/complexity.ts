@@ -15,6 +15,7 @@ import {
   Kind,
   parse,
 } from "graphql"
+import { numberFromConfig } from "./config-number"
 
 // ============================================================================
 // Errors
@@ -623,7 +624,6 @@ export const validateComplexity = (
 // ============================================================================
 // Environment Configuration
 // ============================================================================
-
 /**
  * Effect Config for loading complexity configuration from environment variables.
  *
@@ -635,11 +635,11 @@ export const validateComplexity = (
  * - GRAPHQL_DEFAULT_FIELD_COMPLEXITY: Default field complexity (default: 1)
  */
 export const ComplexityConfigFromEnv: Config.Config<ComplexityConfig> = Config.all({
-  maxDepth: Config.number("GRAPHQL_MAX_DEPTH").pipe(Config.option),
-  maxComplexity: Config.number("GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
-  maxAliases: Config.number("GRAPHQL_MAX_ALIASES").pipe(Config.option),
-  maxFields: Config.number("GRAPHQL_MAX_FIELDS").pipe(Config.option),
-  defaultFieldComplexity: Config.number("GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
+  maxDepth: Config.schema(numberFromConfig, "GRAPHQL_MAX_DEPTH").pipe(Config.option),
+  maxComplexity: Config.schema(numberFromConfig, "GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
+  maxAliases: Config.schema(numberFromConfig, "GRAPHQL_MAX_ALIASES").pipe(Config.option),
+  maxFields: Config.schema(numberFromConfig, "GRAPHQL_MAX_FIELDS").pipe(Config.option),
+  defaultFieldComplexity: Config.schema(numberFromConfig, "GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
     Config.withDefault(1)
   ),
 }).pipe(

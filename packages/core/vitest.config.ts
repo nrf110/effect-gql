@@ -6,6 +6,10 @@ export default defineConfig({
     environment: "node",
     include: ["test/**/*.test.ts"],
     exclude: ["node_modules", "dist"],
+    server: {
+      // Keep graphql-ws and builder schemas on the same GraphQL module instance.
+      deps: { inline: ["graphql-ws"] },
+    },
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html", "lcov"],

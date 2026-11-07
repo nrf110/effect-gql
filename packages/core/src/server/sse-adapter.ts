@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream } from "effect"
+import { Context, Effect, Layer, Stream } from "effect"
 import {
   GraphQLSchema,
   parse,
@@ -10,7 +10,7 @@ import {
   type DocumentNode,
   type OperationDefinitionNode,
 } from "graphql"
-import type { GraphQLEffectContext } from "../builder/types"
+import { makeSubscriptionContext } from "../subscription-context"
 import {
   SSEError,
   type GraphQLSSEOptions,
@@ -64,28 +64,37 @@ export const makeSSESubscriptionStream = <R>(
 ): Stream.Stream<SSEEvent, SSEError> => {
   const complexityConfig = options?.complexity
   const fieldComplexities: FieldComplexityMap = options?.fieldComplexities ?? new Map()
+  const onComplete = options?.onComplete
 
   return Stream.unwrap(
     Effect.gen(function* () {
-      // Create a runtime from the layer
-      const runtime = yield* Effect.provide(Effect.runtime<R>(), layer)
+      // Keep the service layer alive until the subscription stream is finalized.
+      const ambient = yield* Effect.context<never>()
+      const memoMap = yield* Layer.makeMemoMap
+      const scope = yield* Effect.scope
+      const services = Context.merge(ambient, yield* Layer.buildWithMemoMap(layer, memoMap, scope))
 
       // Run onConnect hook if provided
       let connectionContext: Record<string, unknown> = {}
       if (options?.onConnect) {
-        try {
-          connectionContext = yield* Effect.provide(options.onConnect(request, headers), layer)
-        } catch {
-          // Connection rejected
-          return Stream.make(
-            formatErrorEvent([
-              new GraphQLError("Subscription connection rejected", {
+        const connected = yield* Effect.try({
+          try: () => options.onConnect!(request, headers),
+          catch: (error) => error,
+        }).pipe(
+          Effect.flatMap((effect) => effect),
+          Effect.provide(services),
+          Effect.match({
+            onFailure: (error) =>
+              new GraphQLError(error instanceof Error ? error.message : String(error), {
                 extensions: { code: "CONNECTION_REJECTED" },
               }),
-            ]),
-            formatCompleteEvent()
-          )
+            onSuccess: (value) => value,
+          })
+        )
+        if (connected instanceof GraphQLError) {
+          return Stream.make(formatErrorEvent([connected]), formatCompleteEvent())
         }
+        connectionContext = connected
       }
 
       // Parse the query
@@ -141,7 +150,7 @@ export const makeSSESubscriptionStream = <R>(
           complexityConfig
         ).pipe(
           Effect.map(() => null),
-          Effect.catchAll((error) => {
+          Effect.catch((error) => {
             if (error._tag === "ComplexityLimitExceededError") {
               return Effect.succeed(
                 new GraphQLError(error.message, {
@@ -168,23 +177,23 @@ export const makeSSESubscriptionStream = <R>(
 
       // Build the context for the subscription
       const ctx: SSEConnectionContext<R> = {
-        runtime,
+        services,
         request,
         connectionContext,
       }
 
       // Call onSubscribe hook if provided
       if (options?.onSubscribe) {
-        yield* Effect.provide(options.onSubscribe(ctx), layer).pipe(
-          Effect.catchAll(() => Effect.void)
+        yield* Effect.provide(options.onSubscribe(ctx), services).pipe(
+          Effect.catch(() => Effect.void)
         )
       }
 
       // Execute the subscription
-      const graphqlContext: GraphQLEffectContext<R> & Record<string, unknown> = {
-        runtime,
+      const graphqlContext = makeSubscriptionContext({
         ...connectionContext,
-      }
+        services,
+      })
 
       const subscriptionResult = yield* Effect.tryPromise({
         try: () =>
@@ -209,67 +218,33 @@ export const makeSSESubscriptionStream = <R>(
         return Stream.make(formatNextEvent(result), formatCompleteEvent())
       }
 
-      // Create a stream from the async iterator
-      const asyncIterator = subscriptionResult[Symbol.asyncIterator]()
-
-      const eventStream = Stream.async<SSEEvent, SSEError>((emit) => {
-        let done = false
-
-        const iterate = async () => {
-          try {
-            while (!done) {
-              const result = await asyncIterator.next()
-              if (result.done) {
-                emit.end()
-                break
-              }
-              emit.single(formatNextEvent(result.value))
-            }
-          } catch (error) {
-            if (!done) {
-              emit.single(
-                formatErrorEvent([
-                  error instanceof GraphQLError
-                    ? error
-                    : new GraphQLError(
-                        error instanceof Error ? error.message : "Subscription error",
-                        { extensions: { code: "SUBSCRIPTION_ERROR" } }
-                      ),
-                ])
-              )
-              emit.end()
-            }
-          }
-        }
-
-        iterate()
-
-        // Return cleanup function
-        return Effect.sync(() => {
-          done = true
-          asyncIterator.return?.()
-        })
-      })
-
-      // Add complete event at the end and handle cleanup
-      return eventStream.pipe(
-        Stream.onDone(() =>
-          Effect.gen(function* () {
-            yield* Effect.sync(() => {})
-          }).pipe(Effect.asVoid)
+      return Stream.fromAsyncIterable(subscriptionResult, (error) => error).pipe(
+        Stream.mapEffect((result) =>
+          Effect.try({ try: () => formatNextEvent(result), catch: (error) => error })
+        ),
+        Stream.catch((error) =>
+          Stream.make(
+            formatErrorEvent([
+              error instanceof GraphQLError
+                ? error
+                : new GraphQLError(error instanceof Error ? error.message : "Subscription error", {
+                    extensions: { code: "SUBSCRIPTION_ERROR" },
+                  }),
+            ])
+          )
         ),
         Stream.concat(Stream.make(formatCompleteEvent())),
-        Stream.onDone(() => {
-          if (options?.onComplete) {
-            return Effect.provide(options.onComplete(ctx), layer).pipe(
-              Effect.catchAll(() => Effect.void)
-            )
-          }
-          return Effect.void
-        })
+        Stream.ensuring(
+          onComplete
+            ? Effect.provide(
+                Effect.suspend(() => onComplete(ctx)),
+                services
+              ).pipe(Effect.catch(() => Effect.void))
+            : Effect.void
+        )
       )
     }).pipe(
-      Effect.catchAll((error) =>
+      Effect.catch((error) =>
         Effect.succeed(
           Stream.make(
             formatErrorEvent([

@@ -7,19 +7,42 @@ import {
   ExecutionResult,
   GraphQLError,
 } from "graphql"
-import type { DirectiveApplication, MiddlewareContext, CacheHint } from "./types"
-import type { ExecutionArgs } from "../extensions"
+import type {
+  DirectiveApplication,
+  MiddlewareContext,
+  CacheHint,
+  ObjectFieldRegistration,
+  ObjectFieldsServices,
+} from "./types"
+import type { ExecutionArgs, ExtensionsService } from "../extensions"
 import { GraphQLSchemaBuilder } from "./schema-builder"
 import type { FieldComplexity } from "../server/complexity"
+
+declare const operationServices: unique symbol
+
+// Generic function return types erase their input requirements to unknown.
+// Optional type-only metadata preserves the added services without runtime fields.
+export interface SchemaOperation<R> {
+  <RIn>(builder: GraphQLSchemaBuilder<RIn>): GraphQLSchemaBuilder<RIn | R>
+  readonly [operationServices]?: R
+}
+
+type OperationServices<Operation> = Operation extends SchemaOperation<infer R> ? R : never
 
 /**
  * Add an object type to the schema builder (pipe-able)
  * Name is optional if schema is TaggedStruct, TaggedClass, or Schema.Class
  */
 export const objectType =
-  <A, R2 = never>(config: {
+  <
+    A,
+    Fields extends Record<
+      string,
+      ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>
+    > = {},
+  >(config: {
     name?: string
-    schema: S.Schema<A, any, any>
+    schema: S.Schema<A>
     description?: string
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
@@ -28,20 +51,13 @@ export const objectType =
      * Can be overridden by field-level cacheControl.
      */
     cacheControl?: CacheHint
-    fields?: Record<
-      string,
-      {
-        type: S.Schema<any, any, any>
-        args?: S.Schema<any, any, any>
-        description?: string
-        directives?: readonly DirectiveApplication[]
-        complexity?: FieldComplexity
-        cacheControl?: CacheHint
-        resolve: (parent: A, args: any) => Effect.Effect<any, any, any>
-      }
-    >
-  }) =>
-  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
+    // Infer the whole map union while retaining contextual resolver parent types.
+    fields?:
+      | Fields
+      | (NoInfer<Fields> &
+          Record<string, ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>>)
+  }): SchemaOperation<ObjectFieldsServices<Fields>> =>
+  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | ObjectFieldsServices<Fields>> =>
     builder.objectType(config)
 
 /**
@@ -51,10 +67,10 @@ export const objectType =
 export const interfaceType =
   (config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     resolveType?: (value: any) => string
     directives?: readonly DirectiveApplication[]
-  }) =>
+  }): SchemaOperation<never> =>
   <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R> =>
     builder.interfaceType(config)
 
@@ -67,7 +83,7 @@ export const enumType =
     values: readonly string[]
     description?: string
     directives?: readonly DirectiveApplication[]
-  }) =>
+  }): SchemaOperation<never> =>
   <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R> =>
     builder.enumType(config)
 
@@ -80,7 +96,7 @@ export const unionType =
     types: readonly string[]
     resolveType?: (value: any) => string
     directives?: readonly DirectiveApplication[]
-  }) =>
+  }): SchemaOperation<never> =>
   <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R> =>
     builder.unionType(config)
 
@@ -91,10 +107,10 @@ export const unionType =
 export const inputType =
   (config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     description?: string
     directives?: readonly DirectiveApplication[]
-  }) =>
+  }): SchemaOperation<never> =>
   <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R> =>
     builder.inputType(config)
 
@@ -113,11 +129,11 @@ export const directive =
     name: string
     description?: string
     locations: readonly DirectiveLocation[]
-    args?: S.Schema<Args, any, any>
+    args?: S.Schema<Args>
     apply?: (
       args: Args
     ) => <A, E, R3>(effect: Effect.Effect<A, E, R3>) => Effect.Effect<A, E, R2 | R3>
-  }) =>
+  }): SchemaOperation<R2> =>
   <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
     builder.directive(config)
 
@@ -163,7 +179,7 @@ export const middleware =
       effect: Effect.Effect<A, E, R3>,
       context: MiddlewareContext
     ) => Effect.Effect<A, E, R2 | R3>
-  }) =>
+  }): SchemaOperation<R2> =>
   <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
     builder.middleware(config)
 
@@ -208,45 +224,45 @@ export const extension =
     ) => Effect.Effect<void, never, R2>
     onExecuteStart?: (args: ExecutionArgs) => Effect.Effect<void, never, R2>
     onExecuteEnd?: (result: ExecutionResult) => Effect.Effect<void, never, R2>
-  }) =>
-  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
+  }): SchemaOperation<Exclude<R2, ExtensionsService>> =>
+  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | Exclude<R2, ExtensionsService>> =>
     builder.extension(config)
 
 /**
  * Add a query field to the schema builder (pipe-able)
  */
 export const query =
-  <A, E, R2, Args = void>(
+  <A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       complexity?: FieldComplexity
       cacheControl?: CacheHint
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
-  ) =>
-  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
+  ): SchemaOperation<R2 | RArgs> =>
+  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2 | RArgs> =>
     builder.query(name, config)
 
 /**
  * Add a mutation field to the schema builder (pipe-able)
  */
 export const mutation =
-  <A, E, R2, Args = void>(
+  <A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       complexity?: FieldComplexity
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
-  ) =>
-  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
+  ): SchemaOperation<R2 | RArgs> =>
+  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2 | RArgs> =>
     builder.mutation(name, config)
 
 /**
@@ -268,11 +284,11 @@ export const mutation =
  * ```
  */
 export const subscription =
-  <A, E, R2, Args = void>(
+  <A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       complexity?: FieldComplexity
@@ -280,34 +296,407 @@ export const subscription =
       subscribe: (args: Args) => Effect.Effect<Stream.Stream<A, E, R2>, E, R2>
       resolve?: (value: A, args: Args) => Effect.Effect<A, E, R2>
     }
-  ) =>
-  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
+  ): SchemaOperation<R2 | RArgs> =>
+  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2 | RArgs> =>
     builder.subscription(name, config)
 
 /**
  * Add a field to an existing object type (pipe-able)
  */
 export const field =
-  <Parent, A, E, R2, Args = void>(
+  <Parent, A, E, R2, Args = void, RArgs = never>(
     typeName: string,
     fieldName: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       complexity?: FieldComplexity
       cacheControl?: CacheHint
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>
     }
-  ) =>
-  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
+  ): SchemaOperation<R2 | RArgs> =>
+  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2 | RArgs> =>
     builder.field(typeName, fieldName, config)
 
 /**
  * Compose multiple schema operations (helper for arrays)
+ * Concrete inference slots instantiate custom generic callbacks at a service-free
+ * builder. Conditional return-type extraction alone erases them to unknown.
+ * The variadic fallback retains annotated built-in/composed operation arrays.
  */
-export const compose =
-  <R>(...operations: Array<(builder: GraphQLSchemaBuilder<any>) => GraphQLSchemaBuilder<any>>) =>
-  (builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<any> =>
-    operations.reduce((b, op) => op(b), builder)
+export function compose(): SchemaOperation<never>
+export function compose<R1>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>
+): SchemaOperation<R1>
+export function compose<R1, R2>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>
+): SchemaOperation<R1 | R2>
+export function compose<R1, R2, R3>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>
+): SchemaOperation<R1 | R2 | R3>
+export function compose<R1, R2, R3, R4>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>
+): SchemaOperation<R1 | R2 | R3 | R4>
+export function compose<R1, R2, R3, R4, R5>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5>
+export function compose<R1, R2, R3, R4, R5, R6>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6>
+export function compose<R1, R2, R3, R4, R5, R6, R7>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6 | R7>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8, R9>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8, R9, R10>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>,
+  operation12: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R12>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11 | R12>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>,
+  operation12: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R12>,
+  operation13: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R13>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11 | R12 | R13>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>,
+  operation12: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R12>,
+  operation13: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R13>,
+  operation14: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R14>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11 | R12 | R13 | R14>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>,
+  operation12: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R12>,
+  operation13: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R13>,
+  operation14: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R14>,
+  operation15: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R15>
+): SchemaOperation<R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15, R16>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>,
+  operation12: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R12>,
+  operation13: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R13>,
+  operation14: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R14>,
+  operation15: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R15>,
+  operation16: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R16>
+): SchemaOperation<
+  R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15 | R16
+>
+export function compose<R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15, R16, R17>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>,
+  operation12: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R12>,
+  operation13: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R13>,
+  operation14: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R14>,
+  operation15: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R15>,
+  operation16: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R16>,
+  operation17: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R17>
+): SchemaOperation<
+  R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15 | R16 | R17
+>
+export function compose<
+  R1,
+  R2,
+  R3,
+  R4,
+  R5,
+  R6,
+  R7,
+  R8,
+  R9,
+  R10,
+  R11,
+  R12,
+  R13,
+  R14,
+  R15,
+  R16,
+  R17,
+  R18,
+>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>,
+  operation12: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R12>,
+  operation13: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R13>,
+  operation14: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R14>,
+  operation15: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R15>,
+  operation16: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R16>,
+  operation17: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R17>,
+  operation18: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R18>
+): SchemaOperation<
+  R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15 | R16 | R17 | R18
+>
+export function compose<
+  R1,
+  R2,
+  R3,
+  R4,
+  R5,
+  R6,
+  R7,
+  R8,
+  R9,
+  R10,
+  R11,
+  R12,
+  R13,
+  R14,
+  R15,
+  R16,
+  R17,
+  R18,
+  R19,
+>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>,
+  operation12: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R12>,
+  operation13: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R13>,
+  operation14: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R14>,
+  operation15: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R15>,
+  operation16: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R16>,
+  operation17: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R17>,
+  operation18: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R18>,
+  operation19: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R19>
+): SchemaOperation<
+  | R1
+  | R2
+  | R3
+  | R4
+  | R5
+  | R6
+  | R7
+  | R8
+  | R9
+  | R10
+  | R11
+  | R12
+  | R13
+  | R14
+  | R15
+  | R16
+  | R17
+  | R18
+  | R19
+>
+export function compose<
+  R1,
+  R2,
+  R3,
+  R4,
+  R5,
+  R6,
+  R7,
+  R8,
+  R9,
+  R10,
+  R11,
+  R12,
+  R13,
+  R14,
+  R15,
+  R16,
+  R17,
+  R18,
+  R19,
+  R20,
+>(
+  operation1: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R1>,
+  operation2: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R2>,
+  operation3: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R3>,
+  operation4: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R4>,
+  operation5: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R5>,
+  operation6: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R6>,
+  operation7: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R7>,
+  operation8: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R8>,
+  operation9: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R9>,
+  operation10: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R10>,
+  operation11: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R11>,
+  operation12: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R12>,
+  operation13: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R13>,
+  operation14: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R14>,
+  operation15: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R15>,
+  operation16: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R16>,
+  operation17: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R17>,
+  operation18: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R18>,
+  operation19: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R19>,
+  operation20: (builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R20>
+): SchemaOperation<
+  | R1
+  | R2
+  | R3
+  | R4
+  | R5
+  | R6
+  | R7
+  | R8
+  | R9
+  | R10
+  | R11
+  | R12
+  | R13
+  | R14
+  | R15
+  | R16
+  | R17
+  | R18
+  | R19
+  | R20
+>
+export function compose<Operations extends readonly SchemaOperation<any>[]>(
+  ...operations: Operations &
+    (typeof operationServices extends keyof Operations[number] ? unknown : never)
+): SchemaOperation<OperationServices<Operations[number]>>
+export function compose<R>(
+  ...operations: readonly ((builder: GraphQLSchemaBuilder<never>) => GraphQLSchemaBuilder<R>)[]
+): SchemaOperation<R>
+export function compose(
+  ...operations: readonly ((builder: any) => GraphQLSchemaBuilder<any>)[]
+): SchemaOperation<any> {
+  return <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<any> => {
+    let result: GraphQLSchemaBuilder<any> = builder
+    for (const operation of operations) result = operation(result)
+    return result
+  }
+}

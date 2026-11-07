@@ -264,13 +264,13 @@ const UserSchema = S.Struct({
   id: S.String,
   name: S.String,
   email: S.String,
-  role: S.Literal("USER", "ADMIN"),
+  role: S.Literals(["USER", "ADMIN"]),
 })
 
 type User = S.Schema.Type<typeof UserSchema>
 
 // Service
-class UserService extends Context.Tag("UserService")<
+class UserService extends Context.Service<
   UserService,
   {
     findById: (id: string) => Effect.Effect<User | null>
@@ -278,7 +278,7 @@ class UserService extends Context.Tag("UserService")<
     getCurrentUser: () => Effect.Effect<User>
     createUser: (name: string, email: string) => Effect.Effect<User>
   }
->() {}
+>()("UserService") {}
 
 // Build federated schema
 const { schema, sdl } = FederatedSchemaBuilder.empty.pipe(

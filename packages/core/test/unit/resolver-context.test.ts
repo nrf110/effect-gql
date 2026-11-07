@@ -63,12 +63,12 @@ describe("ResolverContext", () => {
 
       const effect = ResolverContext.get(slot)
 
-      const result = await Effect.runPromise(Effect.provide(effect, storeLayer).pipe(Effect.either))
+      const result = await Effect.runPromise(Effect.provide(effect, storeLayer).pipe(Effect.result))
 
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") {
-        expect(result.left).toBeInstanceOf(MissingResolverContextError)
-        expect(result.left.contextName).toBe("Missing")
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure).toBeInstanceOf(MissingResolverContextError)
+        expect(result.failure.contextName).toBe("Missing")
       }
     })
 

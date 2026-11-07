@@ -17,10 +17,9 @@ export interface MockDatabase {
   readonly deleteUser: (id: string) => Effect.Effect<boolean>
 }
 
-export class MockDatabaseService extends Context.Tag("MockDatabase")<
-  MockDatabaseService,
-  MockDatabase
->() {}
+export class MockDatabaseService extends Context.Service<MockDatabaseService, MockDatabase>()(
+  "MockDatabase"
+) {}
 
 /**
  * Create a mock database layer with initial data
@@ -76,7 +75,7 @@ export class AuthError {
   constructor(readonly message: string) {}
 }
 
-export class MockAuthService extends Context.Tag("MockAuth")<MockAuthService, MockAuth>() {}
+export class MockAuthService extends Context.Service<MockAuthService, MockAuth>()("MockAuth") {}
 
 /**
  * Create a mock auth layer with a specific user
@@ -109,7 +108,9 @@ export interface MockLogger {
   readonly clear: () => Effect.Effect<void>
 }
 
-export class MockLoggerService extends Context.Tag("MockLogger")<MockLoggerService, MockLogger>() {}
+export class MockLoggerService extends Context.Service<MockLoggerService, MockLogger>()(
+  "MockLogger"
+) {}
 
 /**
  * Create a mock logger layer that captures logs
@@ -137,10 +138,9 @@ export interface MockPubSub<T> {
   readonly subscribe: (topic: string) => Effect.Effect<Stream.Stream<T>>
 }
 
-export class MockPubSubService extends Context.Tag("MockPubSub")<
-  MockPubSubService,
-  MockPubSub<unknown>
->() {}
+export class MockPubSubService extends Context.Service<MockPubSubService, MockPubSub<unknown>>()(
+  "MockPubSub"
+) {}
 
 /**
  * Create a mock pubsub layer for testing subscriptions

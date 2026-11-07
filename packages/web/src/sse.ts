@@ -116,24 +116,15 @@ export const createSSEHandler = <R>(
     // Get the event stream
     const eventStream = sseHandler(subscriptionRequest, request.headers)
 
-    // Create a ReadableStream from the Effect Stream
-    const readableStream = new ReadableStream({
-      async start(controller) {
-        const encoder = new TextEncoder()
-
-        await Effect.runPromise(
-          Stream.runForEach(eventStream, (event) =>
-            Effect.sync(() => {
-              const message = formatSSEMessage(event)
-              controller.enqueue(encoder.encode(message))
-            })
-          ).pipe(
-            Effect.catchAll((error) => Effect.logWarning("SSE stream error", error)),
-            Effect.ensuring(Effect.sync(() => controller.close()))
-          )
-        )
-      },
-    })
+    // Effect's Web Stream bridge propagates cancellation to the subscription fiber.
+    const encoder = new TextEncoder()
+    const readableStream = eventStream.pipe(
+      Stream.map((event) => encoder.encode(formatSSEMessage(event))),
+      Stream.catch((error) =>
+        Stream.fromEffect(Effect.logWarning("SSE stream error", error)).pipe(Stream.drain)
+      ),
+      (stream) => Stream.toReadableStream(stream)
+    )
 
     return new Response(readableStream, {
       status: 200,

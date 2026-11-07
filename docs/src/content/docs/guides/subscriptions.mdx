@@ -7,6 +7,65 @@ import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
 
 Effect GQL supports real-time subscriptions over two transport protocols: **WebSocket** (graphql-ws) and **Server-Sent Events** (graphql-sse). Both transports use Effect's `Stream` type for subscriptions, providing a natural way to emit values over time.
 
+Both transports retain the ambient Effect context when their connection or
+subscription handler runs. Log annotations and tracing spans remain available
+in lifecycle hooks, resolvers, and Effects run with
+`Effect.runPromiseWith(ctx.services)`. Services supplied by the explicit
+connection/subscription layer take precedence over ambient services.
+
+The explicit service layer is built independently for every WebSocket connection
+and every SSE subscription, even when the same layer already provides services
+to the surrounding Effect. Dependencies shared inside that layer are still
+acquired only once per build. Connection/subscription resources are released
+when that connection closes or that subscription completes or is cancelled;
+ambient services retain their surrounding scope.
+
+A WebSocket connection runs accepted operations concurrently. An open
+subscription does not block other subscriptions, queries, or ping/pong messages.
+A client `complete` message cancels only the operation with that ID. Clients
+must wait for `connection_ack` before sending operations; an operation received
+before initialization is acknowledged closes the connection with code `4401`
+(`Unauthorized`), including an operation queued immediately after `connection_init`.
+This includes an asynchronous `connection_ack` send that has started but has not
+completed: operations are rejected with `4401` until that send completes.
+
+Clients may reuse an ID after sending `complete` or receiving a server `complete`
+or `error` message. If the previous operation's setup, completion hook, or
+terminal send is still running, the replacement waits for that operation's
+message callback to exit before starting. An `error` is terminal: no subsequent
+`complete` frame from that operation is sent, even if its completion hook still
+runs. Other IDs and ping/pong messages remain concurrent.
+Cancelling a waiting replacement skips its setup;
+closing the connection skips all waiting replacements. Late iterator cleanup
+remains tracked independently, so it cannot outlive connection-scoped services.
+
+A protocol close request immediately suppresses further dispatch and sends,
+before the peer acknowledges the WebSocket close handshake. Deferred
+replacements cannot start during that window. Connection-scoped services remain
+alive until the transport closes and tracked cleanup finishes.
+
+WebSocket shutdown discards queued messages and interrupts pending `onConnect`
+and `onSubscribe` Effects on transport closure, protocol close, or handler
+interruption. Their finalizers finish before connection-scoped services are
+released. Cleanup hooks (`onDisconnect`, `onComplete`, and `onError`) remain
+awaited with those services available.
+
+Shutdown also awaits active subscription source finalizers and cleanup of any
+late-created iterator, including closure during the setup/registration handoff.
+Native GraphQL asynchronous setup that is already running may still finish
+during shutdown; its iterator is closed without delivering further events.
+Cleanup values yielded by `return()` are drained until the iterator finishes,
+so code after a generator's cleanup yield also runs before services are released.
+
+The Node `createGraphQLWSServer().close()` and Express
+`attachWebSocket().close()` promises wait for connection handlers to finish,
+including asynchronous connection-layer finalizers after the transport closes.
+
+If a WebSocket connection's service layer fails to initialize, the upgraded
+socket closes with code `1011` and the generic reason `Internal server error`.
+Partially acquired resources are released, and acquisition error details are
+not sent to clients.
+
 ## Overview
 
 GraphQL subscriptions enable clients to receive live updates when data changes:
@@ -84,6 +143,46 @@ subscription("messagesInChannel", {
   })
 })
 ```
+
+### Native GraphQL subscriptions
+
+Effect GQL schemas support calling `subscribe()` from `graphql` directly. **Call `makeSubscriptionContext()` for every operation**, including retries and calls made after another subscription completes. The built-in WebSocket and SSE transports already call this factory per operation, not per connection; no client protocol changes are needed.
+
+The factory and opaque `SubscriptionContext` type are exported from `@effect-gql/core`, `@effect-gql/core/builder`, and `@effect-gql/core/server`. Factory contexts are recognized across these entrypoints in both ESM and CommonJS.
+
+With an already-built `schema` and acquired Effect `services`:
+
+```typescript
+import { makeSubscriptionContext } from "@effect-gql/core"
+import { parse, subscribe } from "graphql"
+
+// The document and services can be shared.
+const document = parse("subscription { messageAdded { id content } }")
+
+function startSubscription() {
+  return subscribe({
+    schema,
+    document,
+    // Create inside the function, not once per WebSocket connection.
+    contextValue: makeSubscriptionContext({ services }),
+  })
+}
+```
+
+The factory returns a new, registered shallow context wrapper on every call, even when you pass the same input object. The input itself is not registered. Plain `{ services }` objects and spread copies of a factory-created context are rejected; pass the actual returned object. You may freeze that returned object with `Object.freeze(makeSubscriptionContext({ services }))`.
+
+Additional properties can be supplied with `makeSubscriptionContext({ services, user })`. Services and extra property values are referenced, not copied or rebuilt, so creating a fresh operation wrapper is cheap. It does not change service-layer lifetimes or replace proper scoping of request-specific services. In the built-in transports, `services` is reserved: connection metadata cannot replace the framework's Effect context.
+
+Subscription setup synchronously claims the registered context once, before decoding arguments or opening the source stream. That identity remains used for its entire lifetime: reuse returns an initial GraphQL error with `extensions.code: "SUBSCRIPTION_CONTEXT_REUSED"`, even after cancellation, completion, or failed setup. A missing, invalid, ordinary, or copied context returns `"SUBSCRIPTION_CONTEXT_REQUIRED"` with guidance to call `makeSubscriptionContext({ services, ...extraProperties })`. Check the initial result for `errors` before treating it as an async iterable.
+
+Arguments are decoded once and retained for all of that operation's events. The iterator yields original payloads, so native resolvers receive the real payload in `info.rootValue`. Async resolver wrappers may delay or reorder execution, but must forward the same context object; replacing it loses the operation identity and produces `"SUBSCRIPTION_CONTEXT_REQUIRED"` when the custom event resolver looks up its arguments.
+
+Overlapping iterator `next()` calls are serialized at the source, so stateful
+streams do not duplicate events under concurrent reads. Cancellation is not
+queued behind pending reads: `return()` interrupts the active pull and completes
+waiting reads without starting another pull.
+
+The framework keeps operation metadata under weak context keys. It does not allocate a metadata wrapper for every event, correlate events by payload value, mutate the context or schema field, or depend on graphql-js's iterator-to-resolver timing. Keep normal subscription cancellation and resource cleanup in place; weak references are not a substitute for finalizers.
 
 ---
 
@@ -173,6 +272,14 @@ httpServer.listen(4000)
 ```
   </TabItem>
 </Tabs>
+
+When managing servers manually, retain and await the adapter's `close()` during
+shutdown so connection-scoped Effect services finish releasing. Both
+`createGraphQLWSServer` and `createBunWSHandlers` expose this method. For Express,
+also retain the middleware returned by `toMiddleware` and await its `dispose()`.
+The Node and Bun `serve` helpers manage these lifecycles automatically.
+The Node helper closes WebSocket connections before awaiting HTTP shutdown, so
+an active WebSocket does not prevent SIGTERM cleanup.
 
 ### WebSocket Lifecycle Hooks
 
@@ -323,6 +430,17 @@ export default {
 
 ### SSE Lifecycle Hooks
 
+The SSE `onComplete` callback is constructed and its Effect runs only when the
+subscription stream finalizes, including cancellation. Request-scoped services
+remain available to the hook and are released afterward.
+
+Reject a connection by returning `Effect.fail(...)` or throwing from the
+`onConnect` callback. Both send an `error` event with the `CONNECTION_REJECTED`
+code, followed by `complete`. If a subscription result cannot be serialized
+(for example, a custom scalar returns a BigInt or circular object), the stream
+sends `SUBSCRIPTION_ERROR` followed by `complete`, closes its iterator, and runs
+`onComplete` before releasing request-scoped services.
+
 ```typescript
 const sseHandler = createSSEHandler(schema, Layer.empty, {
   // Called before subscription starts (for auth)
@@ -443,10 +561,10 @@ A typical subscription setup requires a pub/sub system. Here's a simple in-memor
 ```typescript
 import { Context, Effect, Layer, Stream, PubSub } from "effect"
 
-class PubSubService extends Context.Tag("PubSubService")<PubSubService, {
+class PubSubService extends Context.Service<PubSubService, {
   publish: <A>(topic: string, message: A) => Effect.Effect<void>
   subscribe: <A>(topic: string) => Stream.Stream<A>
-}>() {}
+}>()("PubSubService") {}
 
 const makePubSubService = Effect.gen(function* () {
   const topics = new Map<string, PubSub.PubSub<any>>()

@@ -55,6 +55,18 @@ serve(router, serviceLayer, { port: 4000 })
   </TabItem>
 </Tabs>
 
+Resolvers and lifecycle extension hooks retain the current HTTP request and
+middleware-provided services alongside the router's service layer. These services
+remain available for both full-query registration and hash-only requests; the
+router's layer takes precedence if it provides the same service.
+
+Each executing request builds a fresh instance of the resolver layer, including
+hash-only requests. Reusing the same layer in the surrounding HTTP application
+does not share resolver caches or authentication state between requests.
+Dependencies remain memoized within a request, and scoped resources are released
+after execution and lifecycle hooks, including error responses. Application-owned
+instances remain alive until the application itself is disposed.
+
 ## How It Works
 
 ### APQ Protocol
@@ -228,11 +240,11 @@ PERSISTED_QUERIES_VALIDATE_HASH=true
 Load with Effect Config:
 
 ```typescript
-import { Config, Effect } from "effect"
+import { Effect } from "effect"
 import { PersistedQueriesConfigFromEnv } from "@effect-gql/persisted-queries"
 
 const program = Effect.gen(function* () {
-  const config = yield* Config.unwrap(PersistedQueriesConfigFromEnv)
+  const config = yield* PersistedQueriesConfigFromEnv
   // config.mode, config.enableGet, config.validateHash
 })
 ```
@@ -347,10 +359,10 @@ const UserSchema = S.Struct({
 })
 
 // Service
-class UserService extends Context.Tag("UserService")<
+class UserService extends Context.Service<
   UserService,
   { getAll: () => Effect.Effect<S.Schema.Type<typeof UserSchema>[]> }
->() {}
+>()("UserService") {}
 
 // Build schema
 const schema = GraphQLSchemaBuilder.empty

@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Layer } from "effect"
-import { HttpApp } from "@effect/platform"
+import { Context, Effect, Layer } from "effect"
+import { HttpRouter, HttpServerRequest } from "effect/http"
+import {
+  ExtensionsService,
+  type GraphQLEffectContext,
+  type GraphQLExtension,
+} from "@effect-gql/core"
 import { GraphQLSchema, GraphQLObjectType, GraphQLString, GraphQLNonNull } from "graphql"
 import { makePersistedQueriesRouter, makeSafelistStore, computeHash } from "../../src"
 
@@ -32,7 +37,7 @@ const executePost = async (
   body: Record<string, unknown>,
   path = "/graphql"
 ) => {
-  const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
   try {
     const response = await handler(
       new Request(`http://localhost${path}`, {
@@ -56,7 +61,7 @@ const executeGet = async (
   params: Record<string, string>,
   path = "/graphql"
 ) => {
-  const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
   try {
     const url = new URL(`http://localhost${path}`)
     for (const [key, value] of Object.entries(params)) {
@@ -100,6 +105,236 @@ describe("makePersistedQueriesRouter", () => {
 
       expect(result.body.data).toEqual({ echo: "test message" })
     })
+  })
+
+  it("isolates authenticated APQ requests from an already-built resolver layer", async () => {
+    const Resource = Context.Service<{
+      readonly id: number
+      readonly cache: Map<string, string>
+      readonly isOpen: () => boolean
+    }>("persisted-query-test/IsolatedResource")
+    const acquired: number[] = []
+    const released: number[] = []
+    const resources: Array<Context.Service.Shape<typeof Resource>> = []
+    const layer = Layer.effect(
+      Resource,
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const id = acquired.length + 1
+          acquired.push(id)
+          let open = true
+          const resource = {
+            id,
+            cache: new Map<string, string>(),
+            isOpen: () => open,
+            close: () => {
+              open = false
+            },
+          }
+          resources.push(resource)
+          return resource
+        }),
+        (resource) =>
+          Effect.sync(() => {
+            resource.close()
+            released.push(resource.id)
+          })
+      )
+    )
+    const hookViewers: string[] = []
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          viewer: {
+            type: GraphQLString,
+            resolve: (
+              _parent: unknown,
+              _args: unknown,
+              context: GraphQLEffectContext<
+                Context.Service.Identifier<typeof Resource> | HttpServerRequest.HttpServerRequest
+              >
+            ) =>
+              Effect.runPromiseWith(context.services)(
+                Effect.gen(function* () {
+                  const resource = yield* Resource
+                  const request = yield* HttpServerRequest.HttpServerRequest
+                  const name = request.headers.authorization
+                  if (!resource.cache.has("viewer")) resource.cache.set("viewer", name)
+                  return `${resource.id}:${resource.cache.get("viewer")}:${name}:${resource.isOpen()}`
+                })
+              ),
+          },
+          fail: {
+            type: GraphQLString,
+            resolve: () => {
+              throw new Error("denied")
+            },
+          },
+        },
+      }),
+    })
+    const router = makePersistedQueriesRouter(schema, layer, {
+      extensions: [
+        {
+          name: "request-layer",
+          onExecuteEnd: () =>
+            Effect.gen(function* () {
+              const resource = yield* Resource
+              const request = yield* HttpServerRequest.HttpServerRequest
+              hookViewers.push(
+                `${resource.id}:${request.headers.authorization}:${resource.isOpen()}`
+              )
+            }),
+        },
+      ],
+    }).pipe(Layer.provideMerge(layer))
+    const { handler, dispose } = HttpRouter.toWebHandler(router)
+    const query = "{ viewer }"
+    const hash = await Effect.runPromise(computeHash(query))
+    const extensions = { persistedQuery: { version: 1, sha256Hash: hash } }
+    try {
+      const alice = await handler(
+        new Request("http://localhost/graphql", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Alice" },
+          body: JSON.stringify({ query, extensions }),
+        })
+      )
+      expect(alice.status).toBe(200)
+      expect(await alice.json()).toEqual({ data: { viewer: "2:Alice:Alice:true" } })
+      expect(released).toEqual([2])
+      expect(resources[0].isOpen()).toBe(true)
+      const url = new URL("http://localhost/graphql")
+      url.searchParams.set("extensions", JSON.stringify(extensions))
+      const bob = await handler(new Request(url, { headers: { authorization: "Bob" } }))
+      expect(bob.status).toBe(200)
+      expect(await bob.json()).toEqual({ data: { viewer: "3:Bob:Bob:true" } })
+      expect(released).toEqual([2, 3])
+      expect(hookViewers).toEqual(["2:Alice:true", "3:Bob:true"])
+      for (const [source, message] of [
+        ["{ fail }", "denied"],
+        ["{ missing }", "Cannot query field"],
+      ]) {
+        const response = await handler(
+          new Request("http://localhost/graphql", {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: "Bob" },
+            body: JSON.stringify({ query: source }),
+          })
+        )
+        expect((await response.json()).errors[0].message).toContain(message)
+      }
+      expect(acquired).toEqual([1, 2, 3, 4, 5])
+      expect(released).toEqual([2, 3, 4, 5])
+      expect(resources[0].isOpen()).toBe(true)
+      expect(resources[0].cache.size).toBe(0)
+    } finally {
+      await dispose()
+    }
+    expect(released).toEqual([2, 3, 4, 5, 1])
+  })
+
+  it("preserves request and middleware services in hooks and resolvers across APQ requests", async () => {
+    class RequestIdentity extends Context.Service<RequestIdentity, { readonly id: string }>()(
+      "persisted-query-test/RequestIdentity"
+    ) {}
+    class ResolverService extends Context.Service<ResolverService, { readonly prefix: string }>()(
+      "persisted-query-test/ResolverService"
+    ) {}
+
+    const recordPhase = (phase: string) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const identity = yield* RequestIdentity
+        const service = yield* ResolverService
+        const extensions = yield* ExtensionsService
+        yield* extensions.set(phase, [request.headers["x-request-id"], identity.id, service.prefix])
+      })
+    const extension: GraphQLExtension<
+      HttpServerRequest.HttpServerRequest | RequestIdentity | ResolverService | ExtensionsService
+    > = {
+      name: "request-services",
+      onParse: () => recordPhase("parse"),
+      onValidate: () => recordPhase("validate"),
+      onExecuteStart: () => recordPhase("start"),
+      onExecuteEnd: () => recordPhase("end"),
+    }
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          requestId: {
+            type: GraphQLString,
+            resolve: (
+              _parent: unknown,
+              _args: unknown,
+              context: GraphQLEffectContext<
+                HttpServerRequest.HttpServerRequest | RequestIdentity | ResolverService
+              >
+            ) =>
+              Effect.runPromiseWith(context.services)(
+                Effect.gen(function* () {
+                  const request = yield* HttpServerRequest.HttpServerRequest
+                  const identity = yield* RequestIdentity
+                  const service = yield* ResolverService
+                  return `${service.prefix}:${request.headers["x-request-id"]}:${identity.id}`
+                })
+              ),
+          },
+        },
+      }),
+    })
+    const router = makePersistedQueriesRouter(
+      schema,
+      Layer.succeed(ResolverService, { prefix: "resolver" }),
+      { extensions: [extension] }
+    )
+    const middleware = HttpRouter.middleware(
+      (effect) =>
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest
+          return yield* Effect.provideService(effect, RequestIdentity, {
+            id: `middleware-${request.headers["x-request-id"]}`,
+          })
+        }),
+      { global: true }
+    )
+    const { handler, dispose } = HttpRouter.toWebHandler(Layer.merge(router, middleware))
+    const query = "{ requestId }"
+    const hash = await Effect.runPromise(computeHash(query))
+    const extensions = { persistedQuery: { version: 1, sha256Hash: hash } }
+
+    try {
+      for (const [method, id] of [
+        ["POST", "first"],
+        ["GET", "second"],
+      ] as const) {
+        const url = new URL("http://localhost/graphql")
+        if (method === "GET") {
+          url.searchParams.set("extensions", JSON.stringify(extensions))
+        }
+        const response = await handler(
+          new Request(url, {
+            method,
+            headers: { "content-type": "application/json", "x-request-id": id },
+            body: method === "POST" ? JSON.stringify({ query, extensions }) : undefined,
+          })
+        )
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+          data: { requestId: `resolver:${id}:middleware-${id}` },
+          extensions: Object.fromEntries(
+            ["parse", "validate", "start", "end"].map((phase) => [
+              phase,
+              [id, `middleware-${id}`, "resolver"],
+            ])
+          ),
+        })
+      }
+    } finally {
+      await dispose()
+    }
   })
 
   describe("APQ mode", () => {
@@ -371,7 +606,7 @@ describe("makePersistedQueriesRouter", () => {
         graphiql: { path: "/graphiql" },
       })
 
-      const { handler, dispose } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+      const { handler, dispose } = HttpRouter.toWebHandler(router)
       try {
         const response = await handler(new Request("http://localhost/graphiql", { method: "GET" }))
         const html = await response.text()

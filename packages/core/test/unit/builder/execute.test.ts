@@ -9,7 +9,7 @@ interface TestService {
   getValue: () => string
 }
 
-const TestService = Context.GenericTag<TestService>("TestService")
+const TestService = Context.Service<TestService>("TestService")
 
 const testLayer = Layer.succeed(TestService, {
   getValue: () => "from-service",
@@ -87,34 +87,118 @@ describe("execute.ts", () => {
       expect(result.data).toEqual({ serviceValue: "from-service" })
     })
 
-    it("should use fresh layer per request", async () => {
-      let callCount = 0
-      const countingLayer = Layer.succeed(TestService, {
-        getValue: () => {
-          callCount++
-          return `call-${callCount}`
-        },
-      })
-
+    it("isolates request caches from the same ambient layer and releases only request resources", async () => {
+      const Identity = Context.Service<{ readonly name: string }>("execute/Identity")
+      const Resource = Context.Service<{
+        readonly id: number
+        readonly cache: Map<string, string>
+        readonly isOpen: () => boolean
+      }>("execute/IsolatedResource")
+      const acquired: number[] = []
+      const released: number[] = []
+      const layer = Layer.effect(
+        Resource,
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            const id = acquired.length + 1
+            acquired.push(id)
+            let open = true
+            return {
+              id,
+              cache: new Map<string, string>(),
+              isOpen: () => open,
+              close: () => {
+                open = false
+              },
+            }
+          }),
+          (resource) =>
+            Effect.sync(() => {
+              resource.close()
+              released.push(resource.id)
+            })
+        )
+      )
       const schema = GraphQLSchemaBuilder.empty
-        .query("value", {
+        .query("viewer", {
           type: S.String,
           resolve: () =>
             Effect.gen(function* () {
-              const service = yield* TestService
-              return service.getValue()
+              const resource = yield* Resource
+              const identity = yield* Identity
+              if (!resource.cache.has("viewer")) resource.cache.set("viewer", identity.name)
+              return `${resource.id}:${resource.cache.get("viewer")}:${identity.name}:${resource.isOpen()}`
+            }),
+        })
+        .query("fail", { type: S.String, resolve: () => Effect.fail(new Error("denied")) })
+        .buildSchema()
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const outer = yield* Resource
+          expect(outer.id).toBe(1)
+          for (const [name, id] of [
+            ["Alice", 2],
+            ["Bob", 3],
+          ] as const) {
+            const result = yield* execute(
+              schema,
+              layer
+            )("{ viewer }").pipe(Effect.provideService(Identity, { name }))
+            expect(result.errors).toBeUndefined()
+            expect(result.data).toEqual({ viewer: `${id}:${name}:${name}:true` })
+            expect(released).toEqual(id === 2 ? [2] : [2, 3])
+            expect(outer.isOpen()).toBe(true)
+          }
+          const failed = yield* execute(schema, layer)("{ fail }")
+          expect(failed.errors?.[0].message).toContain("denied")
+          const invalid = yield* execute(schema, layer)("{ missing }")
+          expect(invalid.errors?.[0].message).toContain("Cannot query field")
+          expect(acquired).toEqual([1, 2, 3, 4, 5])
+          expect(released).toEqual([2, 3, 4, 5])
+          expect(outer.isOpen()).toBe(true)
+          expect(outer.cache.size).toBe(0)
+        }).pipe(Effect.provide(layer))
+      )
+      expect(released).toEqual([2, 3, 4, 5, 1])
+    })
+
+    it("keeps scoped services alive until asynchronous resolvers finish", async () => {
+      let open = false
+      let releases = 0
+      const Resource = Context.Service<{ readonly isOpen: () => boolean }>("execute/Resource")
+      const layer = Layer.effect(
+        Resource,
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            open = true
+            return { isOpen: () => open }
+          }),
+          () =>
+            Effect.sync(() => {
+              open = false
+              releases++
+            })
+        )
+      )
+      const schema = GraphQLSchemaBuilder.empty
+        .query("open", {
+          type: S.Boolean,
+          resolve: () =>
+            Effect.gen(function* () {
+              const resource = yield* Resource
+              yield* Effect.sleep("1 millis")
+              return resource.isOpen()
             }),
         })
         .buildSchema()
 
-      // Reset counter
-      callCount = 0
+      const result = await Effect.runPromise(execute(schema, layer)("{ open }"))
 
-      const result1 = await Effect.runPromise(execute(schema, countingLayer)(`query { value }`))
-      const result2 = await Effect.runPromise(execute(schema, countingLayer)(`query { value }`))
-
-      expect(result1.data).toEqual({ value: "call-1" })
-      expect(result2.data).toEqual({ value: "call-2" })
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ open: true })
+      expect(open).toBe(false)
+      expect(releases).toBe(1)
     })
   })
 

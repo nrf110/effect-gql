@@ -147,10 +147,10 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
   /**
    * The Effect service tag for this loader registry
    */
-  readonly Service: Context.Tag<LoaderInstances<Defs>, LoaderInstances<Defs>>
+  readonly Service: Context.Service<LoaderInstances<Defs>, LoaderInstances<Defs>>
 
   constructor(readonly definitions: Defs) {
-    this.Service = Context.GenericTag<LoaderInstances<Defs>>(
+    this.Service = Context.Service<LoaderInstances<Defs>>(
       `DataLoaders(${Object.keys(definitions).join(", ")})`
     )
   }

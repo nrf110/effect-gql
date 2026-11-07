@@ -102,7 +102,7 @@ subscription("newMessage", {
   subscribe: () =>
     Effect.gen(function* () {
       const queue = yield* PubSub.subscribe(messagePubSub)
-      return Stream.fromQueue(queue)
+      return Stream.fromSubscription(queue)
     }),
 })
 ```
@@ -119,7 +119,7 @@ subscription("messagesByAuthor", {
   subscribe: ({ author }) =>
     Effect.gen(function* () {
       const queue = yield* PubSub.subscribe(messagePubSub)
-      return Stream.fromQueue(queue).pipe(
+      return Stream.fromSubscription(queue).pipe(
         Stream.filter((msg) => msg.author === author)
       )
     }),
@@ -155,7 +155,7 @@ WebSocket subscriptions require the `ws` package. It's included as a peer depend
 ```typescript
 import { Effect, Stream, Layer, Duration, PubSub, Schedule } from "effect"
 import * as S from "effect/Schema"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import {
   GraphQLSchemaBuilder,
   query,
@@ -224,7 +224,7 @@ const schema = GraphQLSchemaBuilder.empty
       subscribe: () =>
         Effect.gen(function* () {
           const queue = yield* PubSub.subscribe(messagePubSub)
-          return Stream.fromQueue(queue)
+          return Stream.fromSubscription(queue)
         }),
     }),
   )
@@ -236,9 +236,9 @@ const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
   graphiql: { path: "/graphiql", endpoint: "/graphql" },
 })
 
-const app = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const app = Layer.mergeAll(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 serve(app, Layer.empty, {

@@ -1,4 +1,4 @@
-import { Data, Effect, Runtime, Stream } from "effect"
+import { Context, Data, Effect, Stream } from "effect"
 import type { ExecutionResult } from "graphql"
 import type { ComplexityConfig, FieldComplexityMap } from "./complexity"
 
@@ -81,10 +81,10 @@ export interface SSESubscriptionRequest {
  */
 export interface SSEConnectionContext<R> {
   /**
-   * The Effect runtime for this connection.
-   * Use this to run Effects within the connection scope.
+   * Effect services available for the lifetime of this subscription.
+   * Use Effect.runPromiseWith(services) to run Effects in the connection scope.
    */
-  readonly runtime: Runtime.Runtime<R>
+  readonly services: Context.Context<R>
 
   /**
    * The original subscription request.

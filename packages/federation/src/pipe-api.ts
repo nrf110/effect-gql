@@ -36,52 +36,52 @@ export const entity =
  * Add a query field
  */
 export const query =
-  <A, E, R, Args = void>(
+  <A, E, R, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R>
     }
   ) =>
-  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2 | RArgs> =>
     builder.query(name, config)
 
 /**
  * Add a mutation field
  */
 export const mutation =
-  <A, E, R, Args = void>(
+  <A, E, R, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R>
     }
   ) =>
-  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2 | RArgs> =>
     builder.mutation(name, config)
 
 /**
  * Add a subscription field
  */
 export const subscription =
-  <A, E, R, Args = void>(
+  <A, E, R, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R>, E, R>
       resolve?: (value: A, args: Args) => Effect.Effect<A, E, R>
     }
   ) =>
-  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2 | RArgs> =>
     builder.subscription(name, config)
 
 // ============================================================================
@@ -94,7 +94,7 @@ export const subscription =
 export const objectType =
   <A>(config: {
     name?: string
-    schema: S.Schema<A, any, any>
+    schema: S.Schema<A>
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
   }) =>
@@ -107,7 +107,7 @@ export const objectType =
 export const interfaceType =
   (config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     resolveType?: (value: any) => string
     directives?: readonly DirectiveApplication[]
   }) =>
@@ -146,7 +146,7 @@ export const unionType =
 export const inputType =
   (config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     description?: string
     directives?: readonly DirectiveApplication[]
   }) =>
@@ -157,18 +157,18 @@ export const inputType =
  * Add a computed/relational field to an object type
  */
 export const field =
-  <Parent, A, E, R, Args = void>(
+  <Parent, A, E, R, Args = void, RArgs = never>(
     typeName: string,
     fieldName: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
     }
   ) =>
-  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2> =>
+  <R2>(builder: FederatedSchemaBuilder<R2>): FederatedSchemaBuilder<R | R2 | RArgs> =>
     builder.field(typeName, fieldName, config)
 
 // ============================================================================
@@ -179,10 +179,10 @@ export const field =
  * Create a field configuration with @external directive
  */
 export const externalField = <A>(config: {
-  type: S.Schema<A, any, any>
+  type: S.Schema<A>
   description?: string
 }): {
-  type: S.Schema<A, any, any>
+  type: S.Schema<A>
   description?: string
   directives: readonly DirectiveApplication[]
   resolve: (parent: any) => Effect.Effect<A, never, never>
@@ -197,12 +197,12 @@ export const externalField = <A>(config: {
  * Create a field configuration with @requires directive
  */
 export const requiresField = <A, E, R, Parent = any>(config: {
-  type: S.Schema<A, any, any>
+  type: S.Schema<A>
   fields: string
   description?: string
   resolve: (parent: Parent) => Effect.Effect<A, E, R>
 }): {
-  type: S.Schema<A, any, any>
+  type: S.Schema<A>
   description?: string
   directives: readonly DirectiveApplication[]
   resolve: (parent: Parent) => Effect.Effect<A, E, R>
@@ -217,12 +217,12 @@ export const requiresField = <A, E, R, Parent = any>(config: {
  * Create a field configuration with @provides directive
  */
 export const providesField = <A, E, R, Parent = any>(config: {
-  type: S.Schema<A, any, any>
+  type: S.Schema<A>
   fields: string
   description?: string
   resolve: (parent: Parent) => Effect.Effect<A, E, R>
 }): {
-  type: S.Schema<A, any, any>
+  type: S.Schema<A>
   description?: string
   directives: readonly DirectiveApplication[]
   resolve: (parent: Parent) => Effect.Effect<A, E, R>
@@ -237,13 +237,13 @@ export const providesField = <A, E, R, Parent = any>(config: {
  * Create a field configuration with @override directive
  */
 export const overrideField = <A, E, R, Parent = any>(config: {
-  type: S.Schema<A, any, any>
+  type: S.Schema<A>
   from: string
   label?: string
   description?: string
   resolve: (parent: Parent) => Effect.Effect<A, E, R>
 }): {
-  type: S.Schema<A, any, any>
+  type: S.Schema<A>
   description?: string
   directives: readonly DirectiveApplication[]
   resolve: (parent: Parent) => Effect.Effect<A, E, R>

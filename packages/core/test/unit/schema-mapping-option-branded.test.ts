@@ -20,7 +20,7 @@ const unwrapNonNull = (type: any): any => (isNonNullType(type) ? type.ofType : t
 // =============================================================================
 describe("toGraphQLType - Branded Types", () => {
   it("should map branded string to GraphQLString", () => {
-    const NonEmptyString = S.String.pipe(S.minLength(1))
+    const NonEmptyString = S.String.check(S.isMinLength(1))
     const BrandedId = NonEmptyString.pipe(S.brand("UserId"))
 
     const result = toGraphQLType(BrandedId)
@@ -28,7 +28,7 @@ describe("toGraphQLType - Branded Types", () => {
   })
 
   it("should map branded int to GraphQLInt", () => {
-    const PositiveInt = S.Int.pipe(S.positive())
+    const PositiveInt = S.Int.check(S.isGreaterThan(0))
     const BrandedAge = PositiveInt.pipe(S.brand("Age"))
 
     const result = toGraphQLType(BrandedAge)
@@ -36,7 +36,7 @@ describe("toGraphQLType - Branded Types", () => {
   })
 
   it("should map branded number to GraphQLFloat", () => {
-    const PositiveNumber = S.Number.pipe(S.positive())
+    const PositiveNumber = S.Number.check(S.isGreaterThan(0))
     const BrandedPrice = PositiveNumber.pipe(S.brand("Price"))
 
     const result = toGraphQLType(BrandedPrice)
@@ -45,8 +45,8 @@ describe("toGraphQLType - Branded Types", () => {
 
   it("should map nested branded types correctly", () => {
     // Multiple brands/refinements stacked
-    const NonEmptyString = S.String.pipe(S.minLength(1))
-    const MaxLength = NonEmptyString.pipe(S.maxLength(100))
+    const NonEmptyString = S.String.check(S.isMinLength(1))
+    const MaxLength = NonEmptyString.check(S.isMaxLength(100))
     const BrandedName = MaxLength.pipe(S.brand("Name"))
 
     const result = toGraphQLType(BrandedName)
@@ -54,7 +54,7 @@ describe("toGraphQLType - Branded Types", () => {
   })
 
   it("should handle branded types in struct fields", () => {
-    const UserId = S.String.pipe(S.minLength(1), S.brand("UserId"))
+    const UserId = S.String.check(S.isMinLength(1)).pipe(S.brand("UserId"))
     const UserSchema = S.Struct({
       id: UserId,
       name: S.String,
@@ -71,14 +71,14 @@ describe("toGraphQLType - Branded Types", () => {
 
 describe("toGraphQLInputType - Branded Types", () => {
   it("should map branded string input to GraphQLString", () => {
-    const Email = S.String.pipe(S.pattern(/@/), S.brand("Email"))
+    const Email = S.String.check(S.isPattern(/@/)).pipe(S.brand("Email"))
 
     const result = toGraphQLInputType(Email)
     expect(result).toBe(GraphQLString)
   })
 
   it("should handle branded types in input struct fields", () => {
-    const UserId = S.String.pipe(S.minLength(1), S.brand("UserId"))
+    const UserId = S.String.check(S.isMinLength(1)).pipe(S.brand("UserId"))
     const InputSchema = S.Struct({
       userId: UserId,
     })
@@ -95,14 +95,6 @@ describe("toGraphQLInputType - Branded Types", () => {
 // Option Types
 // =============================================================================
 describe("toGraphQLType - Option Types", () => {
-  /**
-   * S.OptionFromNullOr creates a Transformation:
-   *   from: Union(T, Literal(null))  - the encoded/JSON form
-   *   to: Declaration(Option)        - the Effect Option type
-   *
-   * The type mapping should recognize Option transformations and map to the
-   * nullable inner type (e.g., String for Option<String>).
-   */
   it("should map S.OptionFromNullOr(String) to nullable GraphQLString", () => {
     const OptionalString = S.OptionFromNullOr(S.String)
     const result = toGraphQLType(OptionalString)
@@ -157,10 +149,6 @@ describe("toGraphQLType - Option Types", () => {
 })
 
 describe("toGraphQLType - S.NullOr vs S.optional comparison", () => {
-  /**
-   * S.optional creates a PropertySignatureDeclaration (not a schema AST)
-   * It's meant for struct field definitions, not standalone types.
-   */
   it("S.optional is for struct fields, not standalone types", () => {
     const SchemaWithOptional = S.Struct({
       name: S.optional(S.String),
@@ -181,34 +169,22 @@ describe("toGraphQLType - S.NullOr vs S.optional comparison", () => {
     const NullableString = S.NullOr(S.String)
     const result = toGraphQLType(NullableString)
 
-    // CURRENT BEHAVIOR: Union handler uses first type (String)
     expect(result).toBe(GraphQLString)
-
-    // This actually works correctly for the type mapping!
-    // The Union of [String, Literal(null)] -> uses first type -> String
-    // And since it's not wrapped in NonNull, it's nullable
   })
 
   it("should handle S.NullOr with Int", () => {
     const NullableInt = S.NullOr(S.Int)
     const result = toGraphQLType(NullableInt)
 
-    // CURRENT BEHAVIOR: Union uses first type
-    // But S.Int becomes a Refinement, and Union contains Refinement + Literal
-    // The first type in Union is the Refinement (Int)
     expect(result).toBe(GraphQLInt)
   })
 })
 
-describe("toGraphQLInputType - Option Types (current behavior)", () => {
-  it("should handle S.OptionFromNullOr for input - documents current fallback", () => {
+describe("toGraphQLInputType - Option Types", () => {
+  it("should expose nullable string input for OptionFromNullOr", () => {
     const OptionalString = S.OptionFromNullOr(S.String)
     const result = toGraphQLInputType(OptionalString)
 
-    // For input types, toGraphQLInputType uses ast.from (the encoded side)
-    // from is Union(String, Literal(null))
-    // Union handler uses first type -> String
-    // This actually works correctly for input!
     expect(result).toBe(GraphQLString)
   })
 
@@ -216,8 +192,6 @@ describe("toGraphQLInputType - Option Types (current behavior)", () => {
     const OptionalInt = S.OptionFromNullOr(S.Int)
     const result = toGraphQLInputType(OptionalInt)
 
-    // from side is Union(Int, Literal(null))
-    // First type is Int (Refinement)
     expect(result).toBe(GraphQLInt)
   })
 })
@@ -227,8 +201,8 @@ describe("toGraphQLInputType - Option Types (current behavior)", () => {
 // =============================================================================
 describe("toGraphQLObjectType - Branded and Option fields", () => {
   it("should handle object with branded fields", () => {
-    const UserId = S.String.pipe(S.minLength(1), S.brand("UserId"))
-    const OrganizationId = S.String.pipe(S.minLength(1), S.brand("OrganizationId"))
+    const UserId = S.String.check(S.isMinLength(1)).pipe(S.brand("UserId"))
+    const OrganizationId = S.String.check(S.isMinLength(1)).pipe(S.brand("OrganizationId"))
 
     const UserSchema = S.Struct({
       id: UserId,
@@ -251,7 +225,7 @@ describe("toGraphQLObjectType - Branded and Option fields", () => {
   })
 
   it("should handle object with optional branded fields", () => {
-    const Email = S.String.pipe(S.pattern(/@/), S.brand("Email"))
+    const Email = S.String.check(S.isPattern(/@/)).pipe(S.brand("Email"))
 
     const UserSchema = S.Struct({
       id: S.String,
@@ -266,21 +240,12 @@ describe("toGraphQLObjectType - Branded and Option fields", () => {
     expect(fields.email.type).toBe(GraphQLString)
   })
 
-  /**
-   * S.optionalWith creates a Transformation wrapper around the struct.
-   * toGraphQLObjectType now handles this by recursing through Transformations
-   * to find the TypeLiteral.
-   */
-  it("should handle S.optionalWith for nullable fields", () => {
+  it("should handle optional nullable fields", () => {
     const UserSchema = S.Struct({
       id: S.String,
-      deactivatedAt: S.optionalWith(S.DateFromSelf, { nullable: true }),
+      deactivatedAt: S.optional(S.NullOr(S.Date)),
     })
 
-    // S.optionalWith wraps the struct in a Transformation
-    expect(UserSchema.ast._tag).toBe("Transformation")
-
-    // toGraphQLObjectType now handles this
     const result = toGraphQLObjectType("User", UserSchema)
     const fields = result.getFields()
 
@@ -297,19 +262,8 @@ describe("toGraphQLObjectType - Branded and Option fields", () => {
 // Schema.Class with Branded types (like your OrganizationActor example)
 // =============================================================================
 describe("Schema.Class with Branded and Optional fields", () => {
-  /**
-   * Schema.Class creates a complex AST structure:
-   *   Transformation {
-   *     from: TypeLiteral (encoded form)
-   *     to: Declaration (class instance)
-   *   }
-   *
-   * The Declaration's typeParameters[0] contains the actual TypeLiteral
-   * with property signatures. toGraphQLType now handles Declaration nodes
-   * by extracting the TypeLiteral from typeParameters[0].
-   */
   it("should handle Schema.Class with branded ID field", () => {
-    const NonEmptyString = S.String.pipe(S.minLength(1))
+    const NonEmptyString = S.String.check(S.isMinLength(1))
     const OrganizationId = NonEmptyString.pipe(S.brand("OrganizationId"))
 
     class Organization extends S.Class<Organization>("Organization")({
@@ -330,17 +284,13 @@ describe("Schema.Class with Branded and Optional fields", () => {
     expect(unwrapNonNull(fields.name.type)).toBe(GraphQLString)
   })
 
-  /**
-   * Schema.Class with optionalWith creates nested Transformations,
-   * which are now properly handled by recursing through them.
-   */
-  it("should handle Schema.Class with optionalWith nullable fields", () => {
+  it("should handle Schema.Class with optional nullable fields", () => {
     class OrganizationActor extends S.Class<OrganizationActor>("OrganizationActor")({
       id: S.String,
       name: S.String,
-      createdAt: S.DateFromSelf,
-      updatedAt: S.DateFromSelf,
-      deactivatedAt: S.optionalWith(S.DateFromSelf, { nullable: true }),
+      createdAt: S.Date,
+      updatedAt: S.Date,
+      deactivatedAt: S.optional(S.NullOr(S.Date)),
     }) {}
 
     const result = toGraphQLType(OrganizationActor)

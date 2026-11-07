@@ -5,7 +5,7 @@ description: Run your GraphQL server on Node.js, Bun, Express, or any platform
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Effect GraphQL provides platform-specific packages for running your GraphQL server. Each package integrates seamlessly with `@effect/platform` and provides consistent APIs across different runtimes.
+Effect GraphQL provides platform-specific packages for running your GraphQL server. Each package integrates seamlessly with `effect/http` and provides consistent APIs across different runtimes.
 
 ## Available Packages
 
@@ -47,7 +47,7 @@ serve(router, Layer.empty, {
 
 ### The Router
 
-The `HttpRouter` from `@effect/platform` is the central abstraction for HTTP handling. Effect GraphQL provides two ways to create a GraphQL router:
+The `HttpRouter` from `effect/http` is the central abstraction for HTTP handling. Effect GraphQL provides two ways to create a GraphQL router:
 
 #### Using `toRouter` (Recommended)
 
@@ -173,12 +173,15 @@ serve(router, serviceLayer, {
   </TabItem>
   <TabItem label="Custom HTTP Server">
 ```typescript
-import { HttpApp } from "@effect/platform"
+import { HttpRouter } from "effect/http"
+import { Layer } from "effect"
 import { createServer } from "node:http"
 import { createGraphQLWSServer } from "@effect-gql/node"
 
 const schema = builder.buildSchema()
-const { handler } = HttpApp.toWebHandlerLayer(router, serviceLayer)
+const { handler, dispose } = HttpRouter.toWebHandler(
+  router.pipe(Layer.provideMerge(serviceLayer))
+)
 
 const httpServer = createServer(async (req, res) => {
   // Handle HTTP requests with Effect router
@@ -224,6 +227,69 @@ app.use("/graphql", graphqlMiddleware(schema, serviceLayer))
 app.listen(4000)
 ```
 
+For route-layer composition, `toMiddleware(routes, serviceLayer)` creates an
+Express request handler with a `dispose(): Promise<void>` method. Retain the
+handler and call `await middleware.dispose()` during server shutdown to release
+its scoped Effect services.
+
+Request bodies do not require an Express body parser: unparsed uploads stream
+directly to the Effect handler. When a parser is mounted first, the default
+serialization depends on the parsed value:
+
+- Strings are JSON-encoded for `application/json` and `application/*+json`
+  requests, so a parsed `"123"` remains a string rather than becoming a number.
+  Strings with other content types are forwarded unchanged.
+- Raw-parser `Buffer` bodies are always forwarded unchanged.
+- Other parsed values are JSON-encoded.
+
+The content type cannot identify which parser produced a string: both
+`express.json` and `express.text` accept custom media types or predicates. Set
+the third argument's `bodyEncoding` option when the default string handling
+does not match your parser:
+
+```typescript
+import { toMiddleware, type ToMiddlewareOptions } from "@effect-gql/express"
+
+// A JSON parser can consume a non-JSON media type (or use a type predicate).
+app.use(express.json({ strict: false, type: "application/csp-report" }))
+const options: ToMiddlewareOptions = { bodyEncoding: "json" }
+const middleware = toMiddleware(routes, serviceLayer, options)
+app.use(middleware)
+// Call await middleware.dispose() during server shutdown.
+```
+
+`bodyEncoding: "json"` JSON-encodes already-parsed strings regardless of the
+request's content type, preserving values such as `"hello"` and `"123"`.
+Conversely, use `{ bodyEncoding: "raw" }` when a text parser consumes a JSON
+content type, such as `express.text({ type: "application/json" })`, to forward
+its strings unchanged. Omit the option to retain the content-type-based
+default. This option affects **only already-parsed strings**: Buffers, other
+parsed values, unparsed streaming uploads, and GET/HEAD requests retain their
+existing handling.
+
+For already-parsed bodies, the middleware removes the original `Content-Length`
+because serialization or parser decoding can change the byte length. Effect's
+configured body-size limit still applies to the forwarded body. Unparsed uploads
+retain their original headers and stream without buffering.
+
+If a handler ignores an upload or reads only part of it, the middleware drains
+the remaining request bytes once response processing finishes (or the handler
+cancels the request body). This preserves keep-alive connection reuse without
+destroying the incoming request. Uploads used by streaming responses remain
+readable until the response completes.
+
+Response bodies stream with backpressure rather than being buffered in memory.
+If a body fails before the first bytes are sent, `toMiddleware` forwards the
+error to Express without destroying the response, so an error handler can still
+send an appropriate status and body. After headers have been sent, an error
+handler must delegate with `next(error)` (or close the response) instead of
+attempting a second response. Client disconnects cancel the source stream and
+release its reader.
+
+Conditional GET and HEAD requests retain Express freshness handling. A matching
+`ETag` or `Last-Modified` validator produces a bodyless `304` response. Any unused
+response stream is cancelled and its cleanup is awaited before the response ends.
+
 ### Web Standards (Cloudflare Workers, Deno)
 
 The `@effect-gql/web` package provides a handler for Web standard environments:
@@ -261,15 +327,15 @@ Deno.serve({ port: 4000 }, (request) => handler(request))
 ```typescript
 import { toRouter } from "@effect-gql/core"
 import { toHandler } from "@effect-gql/web"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { Layer } from "effect"
 
 // Compose GraphQL with other routes
 const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
 
-const app = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const app = Layer.mergeAll(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 const { handler } = toHandler(app, serviceLayer)
@@ -282,6 +348,10 @@ export default {
 ```
   </TabItem>
 </Tabs>
+
+`toHandler` also returns `dispose(): Promise<void>`. Retain it and await it when
+your host shuts down the handler to release scoped services. Do not dispose a
+shared handler after each request.
 
 ## Environment Configuration
 
@@ -326,20 +396,21 @@ GRAPHQL_MAX_COMPLEXITY=1000
 The GraphQL router can be composed with other routes:
 
 ```typescript
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { Layer } from "effect"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { toRouter } from "@effect-gql/core"
 
 const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
 
-const app = HttpRouter.empty.pipe(
+const app = Layer.mergeAll(
   // Health check endpoint
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
 
   // Static files
-  HttpRouter.get("/docs/*", serveStaticFiles),
+  HttpRouter.add("GET", "/docs/*", serveStaticFiles),
 
   // GraphQL routes
-  HttpRouter.concat(graphqlRouter)
+  graphqlRouter
 )
 ```
 
@@ -364,31 +435,32 @@ This verifies the entire GraphQL execution pipeline is working. Add the `apollo-
 Use `HttpRouter` to add a health endpoint before the GraphQL router:
 
 ```typescript
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { Effect, Layer } from "effect"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { toRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node" // or @effect-gql/bun
 
 const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
 
-const app = HttpRouter.empty.pipe(
+const app = Layer.mergeAll(
   // Simple health check
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
 
   // Readiness check with service verification
-  HttpRouter.get("/ready",
+  HttpRouter.add("GET", "/ready",
     Effect.gen(function* () {
       const db = yield* Database
       yield* db.ping()
       return yield* HttpServerResponse.json({ status: "ready" })
     }).pipe(
-      Effect.catchAll(() =>
+      Effect.catch(() =>
         HttpServerResponse.json({ status: "not ready" }, { status: 503 })
       )
     )
   ),
 
   // GraphQL routes
-  HttpRouter.concat(graphqlRouter)
+  graphqlRouter
 )
 
 serve(app, serviceLayer, { port: 4000 })
@@ -490,14 +562,16 @@ CORS is HTTP infrastructure that should be configured at the platform level, not
 Use Effect's `HttpMiddleware.cors` for declarative CORS configuration:
 
 ```typescript
-import { HttpMiddleware, HttpRouter } from "@effect/platform"
+import { Layer } from "effect"
+import { HttpMiddleware, HttpRouter } from "effect/http"
 import { toRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node" // or @effect-gql/bun
 
 const graphqlRouter = toRouter(builder, serviceLayer, { graphiql: true })
 
-const app = graphqlRouter.pipe(
-  HttpRouter.use(
+const app = Layer.merge(
+  graphqlRouter,
+  HttpRouter.use((router) => router.addGlobalMiddleware(
     HttpMiddleware.cors({
       allowedOrigins: ["https://myapp.com", "https://studio.apollographql.com"],
       allowedMethods: ["GET", "POST", "OPTIONS"],
@@ -505,7 +579,7 @@ const app = graphqlRouter.pipe(
       allowCredentials: true,
       maxAge: 86400, // 24 hours
     })
-  )
+  ))
 )
 
 serve(app, serviceLayer, { port: 4000 })
@@ -645,9 +719,9 @@ The service layer you provide is used to resolve Effect service dependencies in 
 import { Context, Effect, Layer } from "effect"
 
 // Define a service
-class Database extends Context.Tag("Database")<Database, {
+class Database extends Context.Service<Database, {
   getUsers: () => Effect.Effect<User[]>
-}>() {}
+}>()("Database") {}
 
 // Create the layer
 const DatabaseLive = Layer.succeed(Database, {
@@ -668,6 +742,20 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 // Provide layer when creating router
 const router = toRouter(builder, DatabaseLive, { graphiql: true })
 ```
+
+The adapters also use their supplied layer for router construction and request
+middleware. If these phases need different services, pass their composition
+directly:
+
+```typescript
+serve(routes, Layer.merge(ConstructionLive, RequestLive))
+```
+
+The service union is inferred from the layer, so this has the same requirements
+as first assigning the merged layer to a variable. Node and Bun `serve`, Express
+`toMiddleware`, and Web `toHandler` all check construction, route-local, and global
+middleware dependencies. Extra services are accepted, while missing services
+are rejected.
 
 ## Error Handling
 

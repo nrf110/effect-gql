@@ -11,7 +11,7 @@
  */
 
 import { Effect, Layer } from "effect"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { makeGraphQLRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 
@@ -43,20 +43,17 @@ const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
   },
 })
 
-const router = HttpRouter.empty.pipe(
-  // Handle OPTIONS preflight requests
-  HttpRouter.options(
-    "/graphql",
-    HttpServerResponse.empty().pipe(
-      HttpServerResponse.setStatus(204),
-      HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-      HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type"),
-      Effect.orDie
-    )
-  ),
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const router = Layer.mergeAll(
+  // Handle OPTIONS preflight requests for CORS
+  HttpRouter.add("OPTIONS", "/graphql", HttpServerResponse.empty().pipe(
+    HttpServerResponse.setStatus(204),
+    HttpServerResponse.setHeader("Access-Control-Allow-Origin", "*"),
+    HttpServerResponse.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    HttpServerResponse.setHeader("Access-Control-Allow-Headers", "Content-Type")
+  )),
+  // Health check endpoint
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 // =============================================================================

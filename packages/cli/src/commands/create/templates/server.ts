@@ -15,7 +15,7 @@ const generateNodeServer = (ctx: TemplateContext): string => `/**
 
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { GraphQLSchemaBuilder, query, mutation, makeGraphQLRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 
@@ -106,9 +106,9 @@ const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
   },
 })
 
-const router = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const router = Layer.merge(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" }).pipe(Effect.orDie)),
+  graphqlRouter
 )
 
 // =============================================================================
@@ -137,7 +137,7 @@ const generateBunServer = (ctx: TemplateContext): string => `/**
 
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { GraphQLSchemaBuilder, query, mutation, makeGraphQLRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/bun"
 
@@ -220,9 +220,9 @@ const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
   },
 })
 
-const router = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const router = Layer.merge(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" }).pipe(Effect.orDie)),
+  graphqlRouter
 )
 
 // =============================================================================

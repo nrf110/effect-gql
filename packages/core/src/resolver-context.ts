@@ -64,7 +64,7 @@ export interface ResolverContextStore {
   readonly ref: Ref.Ref<HashMap.HashMap<string, unknown>>
 }
 
-export const ResolverContextStore = Context.GenericTag<ResolverContextStore>(
+export const ResolverContextStore = Context.Service<ResolverContextStore>(
   "effect-gql/ResolverContextStore"
 )
 

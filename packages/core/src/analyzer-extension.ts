@@ -157,7 +157,7 @@ export const createAnalyzerExtension = (
           schema: args.schema,
           fieldComplexities,
         }).pipe(
-          Effect.catchAll((error) =>
+          Effect.catch((error) =>
             Effect.logWarning("Analyzer extension: complexity calculation failed", error).pipe(
               Effect.as(null)
             )

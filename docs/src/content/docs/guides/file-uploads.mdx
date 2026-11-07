@@ -175,7 +175,7 @@ interface UploadUrlOptions {
   expiresIn: number
 }
 
-class StorageService extends Context.Tag("StorageService")<
+class StorageService extends Context.Service<
   StorageService,
   {
     createUploadUrl: (options: UploadUrlOptions) => Effect.Effect<{ url: string; expiresAt: Date }>
@@ -184,7 +184,7 @@ class StorageService extends Context.Tag("StorageService")<
     completeUpload: (fileId: string) => Effect.Effect<FileMetadata>
     cancelUpload: (fileId: string) => Effect.Effect<void>
   }
->() {}
+>()("StorageService") {}
 
 const makeS3StorageService = Effect.gen(function* () {
   const client = new S3Client({ region: process.env.AWS_REGION })

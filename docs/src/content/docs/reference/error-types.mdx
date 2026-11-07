@@ -276,7 +276,7 @@ import { Effect } from "effect"
 
 const resolve = ({ id }) =>
   db.findUser(id).pipe(
-    Effect.catchAll((dbError) =>
+    Effect.catch((dbError) =>
       Effect.fail(
         new GraphQLError({
           message: "Database error",
@@ -331,9 +331,9 @@ When Effect Schema validation fails on input arguments, a `ValidationError` is a
 ```typescript
 mutation("createUser", {
   type: UserSchema,
-  args: {
-    age: S.Number.pipe(S.int(), S.positive())
-  },
+  args: S.Struct({
+    age: S.Int.check(S.isGreaterThan(0))
+  }),
   resolve: ({ age }) => { ... }
 })
 
@@ -399,7 +399,7 @@ new GraphQLError({
 ```typescript
 const resolver = () =>
   internalOperation().pipe(
-    Effect.catchAll((error) =>
+    Effect.catch((error) =>
       Effect.gen(function* () {
         // Log internally
         yield* Logger.error("Internal error", { error })

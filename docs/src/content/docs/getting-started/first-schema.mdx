@@ -22,8 +22,8 @@ import * as S from "effect/Schema"
 const UserSchema = S.Struct({
   id: S.String,
   name: S.String,
-  age: S.Int.pipe(S.positive()),  // Must be positive integer
-  email: S.String.pipe(S.pattern(/@/)),  // Must contain @
+  age: S.Int.check(S.isGreaterThan(0)),  // Must be positive integer
+  email: S.String.check(S.isPattern(/@/)),  // Must contain @
 })
 
 // TypeScript type is inferred
@@ -127,8 +127,8 @@ const builder = GraphQLSchemaBuilder.empty
 .mutation("createUser", {
   type: UserSchema,
   args: S.Struct({
-    name: S.String.pipe(S.minLength(1)),
-    email: S.String.pipe(S.pattern(/@/)),
+    name: S.String.check(S.isMinLength(1)),
+    email: S.String.check(S.isPattern(/@/)),
   }),
   resolve: (args) => Effect.succeed({
     id: generateId(),
