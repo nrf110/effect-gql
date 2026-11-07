@@ -20,6 +20,7 @@ interface WSExtra<R> {
   services: Context.Context<R>
   connectionParams: Record<string, unknown>
   closing: boolean
+  setupAbort: AbortController
   pendingReturns: Set<Promise<unknown>>
 }
 
@@ -44,7 +45,8 @@ const makeOnConnectHandler = <R>(
     const extra = ctx.extra as WSExtra<R>
     try {
       const result = await Effect.runPromiseWith(extra.services)(
-        options.onConnect!(ctx.connectionParams ?? {})
+        options.onConnect!(ctx.connectionParams ?? {}),
+        { signal: extra.setupAbort.signal }
       )
       if (typeof result === "object" && result !== null) {
         Object.assign(extra.connectionParams, result)
@@ -127,7 +129,8 @@ const makeOnSubscribeHandler = <R>(
             operationName: payload.operationName ?? undefined,
             extensions: payload.extensions ?? undefined,
           },
-        })
+        }),
+        { signal: extra.setupAbort.signal }
       )
     }
   }
@@ -182,6 +185,7 @@ const createGraphqlWsSocketAdapter = <R>(
   const services = extra.services
   let messageCallback: ((message: string) => Promise<void>) | null = null
   let acknowledged = false
+  let closeRequested = false
   let pendingAcknowledgment: AbortController | undefined
   interface OperationDispatch {
     cancelled: boolean
@@ -193,9 +197,13 @@ const createGraphqlWsSocketAdapter = <R>(
   const runningOperations = new Map<string, OperationDispatch>()
   const stopDispatching = () => {
     extra.closing = true
+    // Setup belongs to the connection; cleanup hooks still run with live services.
+    extra.setupAbort.abort()
     pendingAcknowledgment?.abort()
   }
   const close = (code?: number, reason?: string) => {
+    if (closeRequested) return
+    closeRequested = true
     stopDispatching()
     Effect.runPromiseWith(services)(socket.close(code, reason)).catch(() => {
       // Ignore close errors
@@ -507,9 +515,13 @@ export const makeGraphQLWSHandler = <R, LE = never>(
                 extra.closing ? stream.return(value) : iterator.next(value),
               return: (value?: unknown) => {
                 if (!returned) {
-                  const pending = Promise.resolve().then(
-                    () => iterator.return?.(value) ?? { done: true as const, value }
-                  )
+                  const pending = Promise.resolve().then(async () => {
+                    let result = (await iterator.return?.(value)) ?? { done: true as const, value }
+                    // A generator may yield inside finally; finish that cleanup
+                    // without delivering its values or replaying a cached yield.
+                    while (!result.done) result = await iterator.next()
+                    return result
+                  })
                   returned = pending
                   extra.pendingReturns.add(pending)
                   const settled = () => {
@@ -557,6 +569,7 @@ export const makeGraphQLWSHandler = <R, LE = never>(
         services,
         connectionParams: {},
         closing: false,
+        setupAbort: new AbortController(),
         pendingReturns: new Set(),
       }
 

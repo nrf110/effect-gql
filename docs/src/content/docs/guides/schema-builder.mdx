@@ -200,6 +200,10 @@ Generic wrappers can name the inferred requirement type with
 Registered type overrides also survive `S.optionalKey`, `S.mutableKey`, and
 combinations of those modifiers, including unencoded primitive schemas with
 computed fields. Optional keys remain nullable without losing the registered type.
+If a base schema and a key-modified schema are explicitly registered under
+different names, each exact registration takes precedence over generated key
+aliases regardless of registration order. Root fields and nested references
+therefore select the same registered type for that schema.
 
 ### Adding Fields Separately
 

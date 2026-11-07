@@ -1440,6 +1440,51 @@ describe("type-registry.ts", () => {
 })
 
 describe("registered unencoded key-context variants", () => {
+  it.each([
+    ["optional", false],
+    ["optional", true],
+    ["mutable", false],
+    ["mutable", true],
+    ["both", false],
+    ["both", true],
+  ] as const)("prefers explicit %s registrations over aliases (%s)", async (modifier, reversed) => {
+    const Token = S.String.annotate({ identifier: "TokenValue" })
+    const KeyToken =
+      modifier === "optional"
+        ? S.optionalKey(Token)
+        : modifier === "mutable"
+          ? S.mutableKey(Token)
+          : S.optionalKey(S.mutableKey(Token))
+    const registrations = [
+      { name: "BaseToken", schema: Token },
+      { name: "KeyToken", schema: KeyToken },
+    ]
+    let builder = GraphQLSchemaBuilder.empty
+    for (const registration of reversed ? registrations.reverse() : registrations) {
+      builder = builder.objectType({
+        ...registration,
+        fields: {
+          kind: { type: S.String, resolve: () => Effect.succeed(registration.name) },
+        },
+      })
+    }
+    const schema = builder
+      .query("direct", { type: KeyToken, resolve: () => Effect.succeed("token") })
+      .query("nested", {
+        type: S.Struct({ base: Token, key: KeyToken }).annotate({ identifier: "TokenPair" }),
+        resolve: () => Effect.succeed({ base: "token", key: "token" }),
+      })
+      .buildSchema()
+    const result = await Effect.runPromise(
+      execute(schema, Layer.empty)("{ direct { kind } nested { base { kind } key { kind } } }")
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({
+      direct: { kind: "KeyToken" },
+      nested: { base: { kind: "BaseToken" }, key: { kind: "KeyToken" } },
+    })
+  })
+
   it.each([false, true])(
     "preserves computed fields, nullability, and distinct primitive registrations (%s)",
     async (reversed) => {

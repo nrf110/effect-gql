@@ -78,8 +78,11 @@ function indexAST(
   // rather than shared encoding links or transformations.
   const optional = S.optionalKey(schema)
   const mutable = S.mutableKey(schema)
-  for (const variant of [optional, mutable, S.mutableKey(optional), S.optionalKey(mutable)])
-    originals.set(getASTIdentity(variant.ast), name)
+  for (const variant of [optional, mutable, S.mutableKey(optional), S.optionalKey(mutable)]) {
+    const identity = getASTIdentity(variant.ast)
+    // An alias must not replace an explicit registration indexed earlier.
+    if (!originals.has(identity)) originals.set(identity, name)
+  }
   const projected = direction === "input" ? AST.toEncoded(schema.ast) : AST.toType(schema.ast)
   let ast = getASTView(projected, direction)
   if (!index.has(getASTIdentity(ast))) index.set(getASTIdentity(ast), name)

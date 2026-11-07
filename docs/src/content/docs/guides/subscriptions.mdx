@@ -44,7 +44,18 @@ before the peer acknowledges the WebSocket close handshake. Deferred
 replacements cannot start during that window. Connection-scoped services remain
 alive until the transport closes and tracked cleanup finishes.
 
-WebSocket shutdown discards queued messages and awaits active subscription source finalizers, in-flight setup and lifecycle hooks, and cleanup of any late-created iterator before releasing connection-scoped services. This includes asynchronous cleanup and closure during the handoff between operation setup and iterator registration. Operations whose setup was already running may finish setup during shutdown, but their iterators are closed without being consumed.
+WebSocket shutdown discards queued messages and interrupts pending `onConnect`
+and `onSubscribe` Effects on transport closure, protocol close, or handler
+interruption. Their finalizers finish before connection-scoped services are
+released. Cleanup hooks (`onDisconnect`, `onComplete`, and `onError`) remain
+awaited with those services available.
+
+Shutdown also awaits active subscription source finalizers and cleanup of any
+late-created iterator, including closure during the setup/registration handoff.
+Native GraphQL asynchronous setup that is already running may still finish
+during shutdown; its iterator is closed without delivering further events.
+Cleanup values yielded by `return()` are drained until the iterator finishes,
+so code after a generator's cleanup yield also runs before services are released.
 
 The Node `createGraphQLWSServer().close()` and Express
 `attachWebSocket().close()` promises wait for connection handlers to finish,
