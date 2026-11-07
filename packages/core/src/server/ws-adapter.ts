@@ -338,7 +338,8 @@ type GraphQLWSRuntime<R> = {
 const runConnectionLifecycle = <R>(
   socket: EffectWebSocket,
   wsRuntime: GraphQLWSRuntime<R>,
-  extra: WSExtra<R>
+  extra: WSExtra<R>,
+  transportClosed: Deferred.Deferred<CloseEvent, WebSocketError>
 ): Effect.Effect<void, never, never> =>
   Effect.gen(function* () {
     // Create message queue for bridging Stream to callback
@@ -364,15 +365,19 @@ const runConnectionLifecycle = <R>(
 
     // Fork fiber to handle socket close
     const closeFiber = yield* Effect.forkChild(
-      socket.closed.pipe(
+      Deferred.await(transportClosed).pipe(
         Effect.tap((event) =>
           stopDispatching.pipe(Effect.andThen(Deferred.succeed(closedDeferred, event)))
         ),
         Effect.catch((error) =>
           stopDispatching.pipe(Effect.andThen(Deferred.fail(closedDeferred, error)))
         )
-      )
+      ),
+      { startImmediately: true }
     )
+
+    // Closure may have arrived after acquisition but before this lifecycle started.
+    if (extra.closing) return
 
     // Open the connection with graphql-ws
     const closedHandler = wsRuntime.server.opened(adapter, extra)
@@ -556,26 +561,48 @@ export const makeGraphQLWSHandler = <R, LE = never>(
   // Return the connection handler
   return (socket: EffectWebSocket): Effect.Effect<void, never, never> =>
     Effect.gen(function* () {
-      const wsServer = yield* Effect.tryPromise({
-        try: () => getOrCreateServer(),
-        catch: (error) => error as Error,
+      // Observe once, before import or acquisition. Keep the result across the
+      // setup/lifecycle handoff, including non-replayable transport effects.
+      const transportClosed = yield* Deferred.make<CloseEvent, WebSocketError>()
+      yield* Effect.forkChild(Deferred.complete(transportClosed, socket.closed), {
+        startImmediately: true,
       })
+      if (yield* Deferred.isDone(transportClosed)) return
 
       const ambient = yield* Effect.context<never>()
-      const memoMap = yield* Layer.makeMemoMap
       const scope = yield* Effect.scope
-      const services = Context.merge(ambient, yield* Layer.buildWithMemoMap(layer, memoMap, scope))
+      const initialized = yield* Effect.raceFirst(
+        Effect.gen(function* () {
+          const wsServer = yield* Effect.tryPromise({
+            // Cancelling this connection only stops waiting for the shared import.
+            try: () => getOrCreateServer(),
+            catch: (error) => error as Error,
+          })
+          const memoMap = yield* Layer.makeMemoMap
+          const services = Context.merge(
+            ambient,
+            yield* Layer.buildWithMemoMap(layer, memoMap, scope)
+          )
+          return { wsServer, services }
+        }),
+        Deferred.await(transportClosed).pipe(
+          Effect.catchCause(() => Effect.void),
+          Effect.as(undefined)
+        )
+      )
+      if (!initialized || (yield* Deferred.isDone(transportClosed))) return
 
       const extra: WSExtra<R> = {
         socket,
-        services,
+        services: initialized.services,
         connectionParams: {},
         closing: false,
         setupAbort: new AbortController(),
         pendingReturns: new Set(),
       }
 
-      yield* runConnectionLifecycle(socket, wsServer, extra)
+      // Only initialization races closure; established cleanup must finish.
+      yield* runConnectionLifecycle(socket, initialized.wsServer, extra, transportClosed)
     }).pipe(
       Effect.catchCause(() =>
         socket.close(1011, "Internal server error").pipe(Effect.catchCause(() => Effect.void))

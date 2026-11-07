@@ -207,6 +207,17 @@ aliases regardless of registration order. Root fields, nested references, and
 registered union member matching retain those distinct names even when the
 schemas share the same structural body.
 
+The same precedence applies when a transforming schema and `S.toType(schema)`
+have separate registrations. An unregistered wrapper such as
+`S.Struct({ value: schema })` retains the original registration's computed fields,
+while `S.toType(wrapper)` uses the projected registration's fields. Both wrappers
+can appear in the same GraphQL schema, in either conversion order. Generated
+object reuse distinguishes their original and projected identities, while harmless
+key modifiers and recursive references still reuse the corresponding object type.
+Equivalent decoded schemas and their projections still share generated named
+types when their reachable output fields resolve identically, so named fragments
+remain valid across both forms.
+
 ### Adding Fields Separately
 
 Use `.field()` to add fields after type registration:

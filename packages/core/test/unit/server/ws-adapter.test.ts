@@ -2792,6 +2792,236 @@ describe("ws-adapter.ts", () => {
       await Effect.runPromise(Fiber.join(fiber))
     })
   })
+  describe("connection initialization cancellation", () => {
+    it.each(["close", "error"] as const)(
+      "interrupts pending layer acquisition on transport %s and joins partial-resource cleanup",
+      async (termination) => {
+        const acquiring = Effect.runSync(Deferred.make<void>())
+        const finishAcquisition = Effect.runSync(Deferred.make<void>())
+        const finalizingAcquisition = Effect.runSync(Deferred.make<void>())
+        const finishAcquisitionCleanup = Effect.runSync(Deferred.make<void>())
+        const finalizingResource = Effect.runSync(Deferred.make<void>())
+        const finishResourceCleanup = Effect.runSync(Deferred.make<void>())
+        const events: string[] = []
+        let released = 0
+        let connected = 0
+        let completed = false
+        const layer = Layer.effectDiscard(
+          Effect.gen(function* () {
+            yield* Effect.acquireRelease(
+              Effect.sync(() => events.push("acquired")),
+              () =>
+                Effect.gen(function* () {
+                  events.push("resource:finalizing")
+                  yield* Deferred.succeed(finalizingResource, undefined)
+                  yield* Deferred.await(finishResourceCleanup)
+                  released++
+                  events.push("resource:released")
+                })
+            )
+            yield* Deferred.succeed(acquiring, undefined)
+            yield* Deferred.await(finishAcquisition).pipe(
+              Effect.ensuring(
+                Effect.gen(function* () {
+                  events.push(`acquisition:finalizing:${released}`)
+                  yield* Deferred.succeed(finalizingAcquisition, undefined)
+                  yield* Deferred.await(finishAcquisitionCleanup)
+                  events.push(`acquisition:finalized:${released}`)
+                })
+              )
+            )
+            events.push("acquisition:completed")
+          })
+        )
+        const mock = createMockSocket()
+        const handler = makeGraphQLWSHandler(createTestSchema(), layer, {
+          onConnect: () => Effect.sync(() => (++connected, true)),
+        })
+        const fiber = Effect.runFork(
+          handler(mock.socket).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                completed = true
+              })
+            )
+          )
+        )
+        try {
+          await Effect.runPromise(Deferred.await(acquiring).pipe(Effect.timeout("2 seconds")))
+          mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+          mock.sendMessage(
+            JSON.stringify({
+              id: "late",
+              type: "subscribe",
+              payload: { query: "{ hello }" },
+            })
+          )
+          if (termination === "close") {
+            mock.closeConnection(1000, "Done")
+          } else {
+            Effect.runSync(
+              Deferred.fail(
+                mock.closedDeferred,
+                new WebSocketError({ cause: new Error("Transport failed") })
+              )
+            )
+          }
+          await Effect.runPromise(
+            Deferred.await(finalizingAcquisition).pipe(Effect.timeout("2 seconds"))
+          )
+          expect(events).toEqual(["acquired", "acquisition:finalizing:0"])
+          expect(completed).toBe(false)
+          expect(released).toBe(0)
+          Effect.runSync(Deferred.succeed(finishAcquisitionCleanup, undefined))
+          await Effect.runPromise(
+            Deferred.await(finalizingResource).pipe(Effect.timeout("2 seconds"))
+          )
+          expect(events).toEqual([
+            "acquired",
+            "acquisition:finalizing:0",
+            "acquisition:finalized:0",
+            "resource:finalizing",
+          ])
+          expect(completed).toBe(false)
+          expect(released).toBe(0)
+          Effect.runSync(Deferred.succeed(finishResourceCleanup, undefined))
+          await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+          expect(released).toBe(1)
+          expect(connected).toBe(0)
+          expect(mock.sentMessages).toEqual([])
+          expect(events).toEqual([
+            "acquired",
+            "acquisition:finalizing:0",
+            "acquisition:finalized:0",
+            "resource:finalizing",
+            "resource:released",
+          ])
+        } finally {
+          Effect.runSync(Deferred.succeed(finishAcquisition, undefined))
+          Effect.runSync(Deferred.succeed(finishAcquisitionCleanup, undefined))
+          Effect.runSync(Deferred.succeed(finishResourceCleanup, undefined))
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.interrupt(fiber))
+        }
+      }
+    )
+
+    it("retains a non-replayable close event at the acquisition/lifecycle handoff", async () => {
+      const mock = createMockSocket()
+      let observeClose!: () => void
+      let observations = 0
+      let listeners = 0
+      let released = 0
+      let connected = 0
+      const socket: EffectWebSocket = {
+        ...mock.socket,
+        closed: Effect.callback<CloseEvent, WebSocketError>((resume) => {
+          observations++
+          listeners++
+          let active = true
+          const cleanup = () => {
+            if (!active) return
+            active = false
+            listeners--
+          }
+          observeClose = () => {
+            cleanup()
+            resume(Effect.succeed({ code: 1000, reason: "Handoff close" }))
+          }
+          return Effect.sync(cleanup)
+        }),
+      }
+      const layer = Layer.effectDiscard(
+        Effect.gen(function* () {
+          yield* Effect.acquireRelease(Effect.void, () =>
+            Effect.sync(() => {
+              released++
+            })
+          )
+          // Emit once, as acquisition returns, with connection_init already queued.
+          observeClose()
+        })
+      )
+      mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+      await Effect.runPromise(
+        makeGraphQLWSHandler(createTestSchema(), layer, {
+          onConnect: () => Effect.sync(() => (++connected, true)),
+        })(socket).pipe(Effect.timeout("2 seconds"))
+      )
+      expect(observations).toBe(1)
+      expect(listeners).toBe(0)
+      expect(released).toBe(1)
+      expect(connected).toBe(0)
+      expect(mock.sentMessages).toEqual([])
+    })
+
+    it("skips initialization for an already-closed socket", async () => {
+      const mock = createMockSocket()
+      let acquired = 0
+      mock.closeConnection(1000, "Already closed")
+      await Effect.runPromise(
+        makeGraphQLWSHandler(
+          createTestSchema(),
+          Layer.effectDiscard(
+            Effect.sync(() => {
+              acquired++
+            })
+          )
+        )(mock.socket).pipe(Effect.timeout("2 seconds"))
+      )
+      expect(acquired).toBe(0)
+      expect(mock.sentMessages).toEqual([])
+    })
+
+    it("keeps the same close observer through a successful connection", async () => {
+      const mock = createMockSocket()
+      const frames = Effect.runSync(Queue.unbounded<string>())
+      let observations = 0
+      let observeClose!: () => void
+      let connected = 0
+      const socket: EffectWebSocket = {
+        ...mock.socket,
+        closed: Effect.callback<CloseEvent, WebSocketError>((resume) => {
+          observations++
+          observeClose = () => resume(Effect.succeed({ code: 1000, reason: "Done" }))
+        }),
+        send: (data) =>
+          mock.socket.send(data).pipe(Effect.andThen(Queue.offer(frames, data)), Effect.asVoid),
+      }
+      const fiber = Effect.runFork(
+        makeGraphQLWSHandler(createTestSchema(), Layer.empty, {
+          onConnect: () => Effect.sync(() => (++connected, true)),
+        })(socket)
+      )
+      const nextFrame = async () =>
+        JSON.parse(await Effect.runPromise(Queue.take(frames).pipe(Effect.timeout("2 seconds"))))
+      try {
+        mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+        expect(await nextFrame()).toEqual({ type: "connection_ack" })
+        mock.sendMessage(
+          JSON.stringify({
+            id: "query",
+            type: "subscribe",
+            payload: { query: "{ hello }" },
+          })
+        )
+        expect(await nextFrame()).toEqual({
+          id: "query",
+          type: "next",
+          payload: { data: { hello: "world" } },
+        })
+        expect(await nextFrame()).toEqual({ id: "query", type: "complete" })
+        observeClose()
+        await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+        expect(observations).toBe(1)
+        expect(connected).toBe(1)
+      } finally {
+        observeClose?.()
+        await Effect.runPromise(Fiber.interrupt(fiber))
+      }
+    })
+  })
+
   describe("ambient connection context", () => {
     it("isolates and releases each connection when its layer is already ambient", async () => {
       const Resource = Context.Service<{ readonly id: number }>("ws/ConnectionResource")

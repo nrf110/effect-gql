@@ -1878,6 +1878,103 @@ describe("exact registration precedence", () => {
   )
 
   it.each([false, true])(
+    "keeps generated wrappers distinct from their projection when projected-first is %s",
+    async (projectedFirst) => {
+      const original = S.String.pipe(
+        S.decodeTo(S.Struct({ id: S.String }), {
+          decode: SchemaGetter.transform((id) => ({ id })),
+          encode: SchemaGetter.transform((value) => value.id),
+        })
+      )
+      const projected = S.toType(original)
+      const wrapper = S.Struct({ value: original })
+      const projectedWrapper = S.toType(wrapper)
+      const ctx = createEmptyContext()
+      for (const registration of [
+        { name: "Original", schema: original },
+        { name: "Projected", schema: projected },
+      ]) {
+        ctx.types.set(registration.name, registration)
+        ctx.typeRegistry.set(
+          registration.name,
+          new GraphQLObjectType({
+            name: registration.name,
+            fields: {
+              [registration.name === "Original" ? "originalOnly" : "projectedOnly"]: {
+                type: GraphQLString,
+                resolve: () => registration.name,
+              },
+            },
+          })
+        )
+      }
+      const wrappers = projectedFirst ? [projectedWrapper, wrapper] : [wrapper, projectedWrapper]
+      const converted = wrappers.map((schema) => toGraphQLTypeWithRegistry(schema, ctx))
+      const [originalType, projectedType] = projectedFirst ? converted.reverse() : converted
+      expect(originalType).not.toBe(projectedType)
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            original: { type: originalType, resolve: () => ({ value: { id: "1" } }) },
+            projected: { type: projectedType, resolve: () => ({ value: { id: "2" } }) },
+          },
+        }),
+      })
+      const result = await graphql({
+        schema,
+        source: "{ original { value { originalOnly } } projected { value { projectedOnly } } }",
+      })
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        original: { value: { originalOnly: "Original" } },
+        projected: { value: { projectedOnly: "Projected" } },
+      })
+    }
+  )
+
+  it("reuses generated recursive objects through unregistered key variants", async () => {
+    interface Node {
+      readonly id: string
+      readonly next?: Node
+    }
+    const NodeSchema: S.Schema<Node> = S.Struct({
+      id: S.String,
+      next: S.optionalKey(S.suspend(() => NodeSchema)),
+    })
+    const ctx = createEmptyContext()
+    const type = toGraphQLTypeWithRegistry(NodeSchema, ctx) as GraphQLObjectType
+    for (const variant of [
+      S.optionalKey(NodeSchema),
+      S.mutableKey(NodeSchema),
+      S.mutableKey(S.optionalKey(NodeSchema)),
+      S.optionalKey(S.mutableKey(NodeSchema)),
+    ]) {
+      expect(toGraphQLTypeWithRegistry(variant, ctx)).toBe(type)
+    }
+    expect(getNamedType(type.getFields().next.type)).toBe(type)
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          node: {
+            type,
+            resolve: () => ({ id: "1", next: { id: "2", next: { id: "3" } } }),
+          },
+        },
+      }),
+    })
+    const result = await graphql({
+      schema,
+      source: "{ node { id next { id next { id } } } }",
+    })
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({
+      node: { id: "1", next: { id: "2", next: { id: "3" } } },
+    })
+  })
+
+  it.each([false, true])(
     "keeps optional-key codecs distinct when their encoded input is shared (%s)",
     async (reversed) => {
       const encoded = S.Struct({ id: S.String })

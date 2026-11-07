@@ -49,6 +49,14 @@ before the peer acknowledges the WebSocket close handshake. Deferred
 replacements cannot start during that window. Connection-scoped services remain
 alive until the transport closes and tracked cleanup finishes.
 
+Transport closure is observed before asynchronous WebSocket initialization starts.
+If the connection closes or errors while its service layer is still acquiring,
+the pending acquisition is interrupted; protocol setup and connection hooks do
+not start afterward. Shutdown waits for acquisition cleanup and any partially
+acquired resources' asynchronous finalizers, without waiting for an interrupted
+acquisition to complete normally. A single close observation is retained through
+the acquisition-to-protocol handoff, so closure is not lost between those phases.
+
 WebSocket shutdown discards queued messages and interrupts pending `onConnect`
 and `onSubscribe` Effects on transport closure, protocol close, or handler
 interruption. Their finalizers finish before connection-scoped services are

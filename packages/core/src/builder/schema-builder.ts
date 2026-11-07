@@ -673,7 +673,7 @@ export class GraphQLSchemaBuilder<out R = never> implements Pipeable.Pipeable {
       enumRegistry,
       unionRegistry: new Map(),
       inputRegistry,
-      convertedOutputTypes: new WeakMap(),
+      convertedOutputObjects: new WeakMap(),
     }
     buildReverseLookups(ctx)
 

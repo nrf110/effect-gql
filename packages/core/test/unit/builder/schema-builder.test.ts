@@ -918,13 +918,14 @@ describe("schema-builder.ts", () => {
 
 describe("schema conversion identity", () => {
   it.each([false, true])(
-    "shares decoded projection identities regardless of registration order (projected first: %s)",
+    "executes shared named fragments on decoded schemas and projections (projected first: %s)",
     async (projectedFirst) => {
       const Child = S.TaggedStruct("Child", { n: S.NumberFromString })
       const Projected = S.toType(Child)
       const first = projectedFirst ? Projected : Child
       const second = projectedFirst ? Child : Projected
       const schema = GraphQLSchemaBuilder.empty
+        .objectType({ name: "Unrelated", schema: S.Struct({ label: S.String }) })
         .query("first", {
           type: first,
           resolve: () => Effect.succeed({ _tag: "Child" as const, n: 2 }),
@@ -940,13 +941,13 @@ describe("schema conversion identity", () => {
         .buildSchema()
 
       expect(validateSchema(schema)).toEqual([])
-      const fields = schema.getQueryType()!.getFields()
-      expect(fields.first.type).toBe(fields.second.type)
-      const wrapper = getNamedType(fields.wrapper.type)
-      if (!(wrapper instanceof GraphQLObjectType)) throw new Error("Expected wrapper")
-      expect(wrapper.getFields().child.type).toBe(fields.first.type)
       const result = await Effect.runPromise(
-        execute(schema, Layer.empty)("{ first { n } second { n } wrapper { child { n } } }")
+        execute(
+          schema,
+          Layer.empty
+        )(
+          "{ first { ...ChildFields } second { ...ChildFields } wrapper { child { ...ChildFields } } } fragment ChildFields on Child { n }"
+        )
       )
       expect(result.errors).toBeUndefined()
       expect(result.data).toEqual({
