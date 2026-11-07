@@ -12,6 +12,7 @@ import {
   GraphQLInt,
   GraphQLSchema,
   graphql,
+  getNamedType,
   isListType,
   isNonNullType,
 } from "graphql"
@@ -504,6 +505,39 @@ describe("type-registry.ts", () => {
 
       expect(result).toBe(inputType)
     })
+
+    it.each(["AInput", "CustomInput"])(
+      "reuses the registered first union member as %s",
+      async (name) => {
+        const A = S.TaggedStruct("A", { id: S.String })
+        const B = S.TaggedStruct("B", { name: S.String })
+        const schema = GraphQLSchemaBuilder.empty
+          .inputType({ name, schema: A })
+          .query("echo", {
+            type: S.String,
+            args: S.Struct({ direct: A, input: S.Union([A, B]) }),
+            resolve: ({ direct, input }) =>
+              Effect.succeed(
+                `${direct._tag}:${direct.id}:${input._tag}:${input._tag === "A" ? input.id : input.name}`
+              ),
+          })
+          .buildSchema()
+        const args = schema.getQueryType()!.getFields().echo.args
+
+        expect(getNamedType(args[0].type)).toBe(schema.getType(name))
+        expect(getNamedType(args[1].type)).toBe(schema.getType(name))
+
+        const result = await Effect.runPromise(
+          execute(schema, Layer.empty)(
+            `query($direct: ${name}!, $input: ${name}!) { echo(direct: $direct, input: $input) }`,
+            { direct: { id: "direct" }, input: { id: "union" } }
+          )
+        )
+
+        expect(result.errors).toBeUndefined()
+        expect(result.data).toEqual({ echo: "A:direct:A:union" })
+      }
+    )
 
     it("should find registered enum for literal union", () => {
       const StatusEnum = new GraphQLEnumType({

@@ -27,7 +27,7 @@ import type {
   MiddlewareContext,
   CacheHint,
 } from "./types"
-import type { GraphQLExtension, ExecutionArgs } from "../extensions"
+import type { GraphQLExtension, ExecutionArgs, ExtensionsService } from "../extensions"
 import type {
   GraphQLResolveInfo,
   DocumentNode,
@@ -291,8 +291,11 @@ export class GraphQLSchemaBuilder<out R = never> implements Pipeable.Pipeable {
      * Can be overridden by field-level cacheControl.
      */
     cacheControl?: CacheHint
-    fields?: Fields &
-      Record<string, ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>>
+    // Infer the whole map union while retaining contextual resolver parent types.
+    fields?:
+      | Fields
+      | (NoInfer<Fields> &
+          Record<string, ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>>)
   }): GraphQLSchemaBuilder<R | ObjectFieldsServices<Fields>> {
     const {
       schema,
@@ -517,7 +520,7 @@ export class GraphQLSchemaBuilder<out R = never> implements Pipeable.Pipeable {
     ) => Effect.Effect<void, never, R2>
     onExecuteStart?: (args: ExecutionArgs) => Effect.Effect<void, never, R2>
     onExecuteEnd?: (result: ExecutionResult) => Effect.Effect<void, never, R2>
-  }): GraphQLSchemaBuilder<R | R2> {
+  }): GraphQLSchemaBuilder<R | Exclude<R2, ExtensionsService>> {
     const newExtensions = [...this.state.extensions, config as GraphQLExtension<R2>]
     return this.with({ ...this.state, extensions: newExtensions })
   }

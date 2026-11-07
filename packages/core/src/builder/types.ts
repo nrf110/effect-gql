@@ -299,22 +299,26 @@ export interface ObjectFieldRegistration<
   resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
 }
 
+type ObjectFieldServices<Field> = Field extends {
+  resolve: (...args: never[]) => Effect.Effect<unknown, unknown, infer R>
+}
+  ?
+      | R
+      | (Field extends { args?: infer Args }
+          ? Args extends S.Decoder<unknown, infer RArgs>
+            ? RArgs
+            : never
+          : never)
+  : never
+
 /**
- * Requirements of each inline field's resolver and optional argument decoder.
+ * Requirements of every possible inline field map, resolver, and argument decoder.
  */
-export type ObjectFieldsServices<Fields> = {
-  [K in keyof Fields]-?: NonNullable<Fields[K]> extends {
-    resolve: (...args: never[]) => Effect.Effect<unknown, unknown, infer R>
-  }
-    ?
-        | R
-        | (NonNullable<Fields[K]> extends { args?: infer Args }
-            ? Args extends S.Decoder<unknown, infer RArgs>
-              ? RArgs
-              : never
-            : never)
-    : never
-}[keyof Fields]
+export type ObjectFieldsServices<Fields> = Fields extends unknown
+  ? {
+      [K in keyof Fields]-?: ObjectFieldServices<NonNullable<Fields[K]>>
+    }[keyof Fields]
+  : never
 
 /**
  * GraphQL context containing the request's Effect services.

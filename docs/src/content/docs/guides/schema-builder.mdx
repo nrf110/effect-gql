@@ -190,6 +190,13 @@ field still contributes its resolver and argument-decoder services when the
 field itself requires them. Pure optional fields remain compatible with
 `Layer.empty`, whether present or omitted.
 
+Reusable union-typed field maps and individual field configurations preserve
+requirements from every branch, including branches with no `args` and maps with
+different field names. The supplied layer must cover every possible branch.
+Generic wrappers can name the inferred requirement type with
+`ObjectFieldsServices<Fields>`, exported from both `@effect-gql/core` and
+`@effect-gql/core/builder`.
+
 ### Adding Fields Separately
 
 Use `.field()` to add fields after type registration:
@@ -333,6 +340,12 @@ builder
     resolve: (args) => Effect.succeed({ id: "1", ...args.input }),
   })
 ```
+
+GraphQL has no input union type. Unless a union exactly matches a registered
+enum, input mapping falls back to its first non-null member. Registered input
+objects retain their registered name and identity through that fallback.
+Tagged inputs omit `_tag` from GraphQL and restore its encoded literal before
+Effect decoding, including when the codec transforms it to a different domain tag.
 
 ## Directives
 

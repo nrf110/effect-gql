@@ -117,6 +117,12 @@ Parse → onParse → Validate → onValidate → onExecuteStart → Execute →
 
 The `ExtensionsService` provides methods to write data to the response extensions:
 
+Execution supplies a fresh `ExtensionsService` to lifecycle hooks for each request.
+Both `.extension(...)` and the pipe-able `extension(...)` exclude this built-in
+hook dependency from the builder's application requirements. Other hook services
+must still be supplied by your service layer. This injection is hook-only:
+resolvers that request `ExtensionsService` still require it from the application.
+
 ### `set(key, value)`
 
 Set a value, overwriting any existing data for that key:
@@ -316,7 +322,7 @@ extension<TracingService>({
 
 ## Using with Router
 
-When using the HTTP router, extensions are automatically extracted from the builder:
+Pass the builder's registered extensions to the HTTP router:
 
 ```typescript
 import { toRouter } from "@effect-gql/core/server"
@@ -326,8 +332,9 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
   query("hello", { ... }),
 )
 
-// Extensions are automatically included
-const router = toRouter(builder, serviceLayer)
+const router = toRouter(builder, serviceLayer, {
+  extensions: builder.getExtensions(),
+})
 ```
 
 Or with `makeGraphQLRouter`:

@@ -12,6 +12,7 @@ export type {
   MiddlewareRegistration,
   SubscriptionFieldRegistration,
   ObjectFieldRegistration,
+  ObjectFieldsServices,
   GraphQLEffectContext,
   SubscriptionContext,
   TypeRegistries,

@@ -92,10 +92,11 @@ function restoreGraphQLInput(original: AST.AST, value: unknown): unknown {
       let restored = record
       for (const field of ast.propertySignatures) {
         const present = Object.hasOwn(record, field.name)
-        if (!present && AST.isOptional(AST.toEncoded(field.type))) continue
+        const encoded = present ? undefined : AST.toEncoded(field.type)
+        if (encoded && AST.isOptional(encoded)) continue
         const item =
-          !present && field.name === "_tag" && field.type._tag === "Literal"
-            ? field.type.literal
+          field.name === "_tag" && encoded?._tag === "Literal"
+            ? encoded.literal
             : restoreGraphQLInput(field.type, record[field.name])
         if (!present && item === undefined) continue
         if (!present || item !== record[field.name]) {

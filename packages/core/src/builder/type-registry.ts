@@ -368,7 +368,11 @@ export function toGraphQLInputTypeWithRegistry(
   )(schema.ast, AST.toEncoded(schema.ast))
 }
 
-type InputConverter = (original: AST.AST, projected: AST.AST) => GraphQLInputType
+type InputConverter = (
+  original: AST.AST,
+  projected: AST.AST,
+  allowEnum?: boolean
+) => GraphQLInputType
 
 function makeInputConverter(
   enumRegistry: Map<string, GraphQLEnumType>,
@@ -376,7 +380,7 @@ function makeInputConverter(
   cache: InputTypeLookupCache
 ): InputConverter {
   const converted = (cache.convertedInputTypes ??= new WeakMap())
-  const convert: InputConverter = (original, projected) => {
+  const convert: InputConverter = (original, projected, allowEnum = true) => {
     // Key codecs can wrap an exact registration before its shared projection.
     let source = original
     while (true) {
@@ -396,7 +400,8 @@ function makeInputConverter(
         original.typeParameters[0],
         projected._tag === "Declaration"
           ? (projected.typeParameters[0] ?? original.typeParameters[0])
-          : projected
+          : projected,
+        allowEnum
       )
     }
     const ast = getASTView(projected, "input")
@@ -404,7 +409,7 @@ function makeInputConverter(
     const encodedName = cache.astToInputName?.get(identity)
     const registeredEncoded = encodedName ? inputRegistry.get(encodedName) : undefined
     if (registeredEncoded) return registeredEncoded
-    const enumType = findEnum(ast, enumRegistry, cache)
+    const enumType = allowEnum ? findEnum(ast, enumRegistry, cache) : undefined
     if (enumType) return enumType
     const cached = converted.get(identity)
     if (cached) return cached
@@ -421,25 +426,30 @@ function makeInputConverter(
         return type
       }
       case "Suspend":
-        return convert(source._tag === "Suspend" ? source.thunk() : ast.thunk(), ast.thunk())
+        return convert(
+          source._tag === "Suspend" ? source.thunk() : ast.thunk(),
+          ast.thunk(),
+          allowEnum
+        )
       case "Declaration":
         if (ast.typeParameters[0])
           return convert(
             source._tag === "Declaration"
               ? (source.typeParameters[0] ?? ast.typeParameters[0])
               : ast.typeParameters[0],
-            ast.typeParameters[0]
+            ast.typeParameters[0],
+            allowEnum
           )
         break
       case "Union": {
         const members = nonNullMembers(ast)
-        // A failed whole-union match must not narrow to an enum for one member.
-        if (members.length > 1) break
         const member = members[0]
         if (member)
           return convert(
             source._tag === "Union" ? (nonNullMembers(source)[0] ?? member) : member,
-            member
+            member,
+            // A failed whole-union match must not narrow to an enum for one member.
+            allowEnum && members.length === 1
           )
         break
       }
@@ -447,7 +457,7 @@ function makeInputConverter(
         const element = ast.elements[0] ?? ast.rest[0]
         const originalElement =
           source._tag === "Arrays" ? (source.elements[0] ?? source.rest[0]) : undefined
-        if (element) return new GraphQLList(convert(originalElement ?? element, element))
+        if (element) return new GraphQLList(convert(originalElement ?? element, element, allowEnum))
       }
     }
     return toGraphQLInputType(S.make<S.Top>(ast))

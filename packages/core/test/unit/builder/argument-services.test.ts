@@ -133,6 +133,152 @@ describe("argument decoding service requirements", () => {
       }
     }
   )
+
+  it.each(["methods", "pipe"] as const)(
+    "infers every branch of reusable pure field maps through %s",
+    async (style) => {
+      const first = {
+        type: S.String,
+        resolve: (parent: S.Schema.Type<typeof Box>) => Effect.succeed(`first:${parent.id}`),
+      }
+      const second = {
+        type: S.String,
+        resolve: (parent: S.Schema.Type<typeof Box>) => Effect.succeed(`second:${parent.id}`),
+      }
+      const makeFields = (
+        useFirst: boolean
+      ): { first: typeof first } | { second: typeof second } => (useFirst ? { first } : { second })
+      for (const useFirst of [false, true]) {
+        const fields = makeFields(useFirst)
+        const base = GraphQLSchemaBuilder.empty.query("box", {
+          type: Box,
+          resolve: () => Effect.succeed({ id: "box" }),
+        })
+        const builder =
+          style === "methods"
+            ? base.objectType({ name: "Box", schema: Box, fields })
+            : base.pipe(api.objectType({ name: "Box", schema: Box, fields }))
+        expectTypeOf<BuilderRequirements<typeof builder>>().toEqualTypeOf<never>()
+        const field = useFirst ? "first" : "second"
+        expect(
+          await graphql({
+            schema: builder.buildSchema(),
+            source: `{ box { ${field} } }`,
+            contextValue: { services: Context.empty() },
+          })
+        ).toEqual({ data: { box: { [field]: `${field}:box` } } })
+      }
+    }
+  )
+
+  it.each(["methods", "pipe"] as const)(
+    "retains services across optional field config unions through %s",
+    async (style) => {
+      const decoded = {
+        type: S.String,
+        args,
+        resolve: (parent: S.Schema.Type<typeof Box>, { amount }: S.Schema.Type<typeof args>) =>
+          Effect.map(Label, ({ label }) => `${label}:${parent.id}:${amount}`),
+      }
+      const plain = {
+        type: S.String,
+        resolve: (parent: S.Schema.Type<typeof Box>) => Effect.succeed(parent.id),
+      }
+      const makeFields = (withArgs: boolean): { text?: typeof decoded | typeof plain } => ({
+        text: withArgs ? decoded : plain,
+      })
+      for (const withArgs of [false, true]) {
+        const fields = makeFields(withArgs)
+        const base = GraphQLSchemaBuilder.empty.query("box", {
+          type: Box,
+          resolve: () => Effect.succeed({ id: "box" }),
+        })
+        const builder =
+          style === "methods"
+            ? base.objectType({ name: "Box", schema: Box, fields })
+            : base.pipe(api.objectType({ name: "Box", schema: Box, fields }))
+        expectTypeOf<BuilderRequirements<typeof builder>>().toEqualTypeOf<Requirements>()
+        const _missingServices = () => {
+          // @ts-expect-error an optional config union still requires its decoder service
+          toRouter(builder, Layer.succeed(Label, { label: "ready" }))
+          // @ts-expect-error an optional config union still requires its resolver service
+          toRouter(builder, Layer.succeed(Offset, { offset: 10 }))
+        }
+        const app = HttpRouter.toWebHandler(
+          toRouter(
+            builder,
+            Layer.merge(
+              Layer.succeed(Offset, { offset: 10 }),
+              Layer.succeed(Label, { label: "ready" })
+            )
+          )
+        )
+        try {
+          const response = await app.handler(
+            new Request("http://localhost/graphql", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                query: withArgs ? '{ box { text(amount: "2") } }' : "{ box { text } }",
+              }),
+            })
+          )
+          expect(await response.json()).toEqual({
+            data: { box: { text: withArgs ? "ready:box:12" : "box" } },
+          })
+        } finally {
+          await app.dispose()
+        }
+      }
+    }
+  )
+
+  it.each(["methods", "pipe"] as const)(
+    "retains services from disjoint reusable field maps through %s",
+    async (style) => {
+      const decoded = {
+        type: S.String,
+        args,
+        resolve: (parent: S.Schema.Type<typeof Box>, { amount }: S.Schema.Type<typeof args>) =>
+          Effect.map(Label, ({ label }) => `${label}:${parent.id}:${amount}`),
+      }
+      const plain = {
+        type: S.String,
+        resolve: (parent: S.Schema.Type<typeof Box>) => Effect.succeed(parent.id),
+      }
+      const makeFields = (
+        withArgs: boolean
+      ): { decoded: typeof decoded } | { plain: typeof plain } =>
+        withArgs ? { decoded } : { plain }
+      for (const withArgs of [false, true]) {
+        const fields = makeFields(withArgs)
+        const base = GraphQLSchemaBuilder.empty.query("box", {
+          type: Box,
+          resolve: () => Effect.succeed({ id: "box" }),
+        })
+        const builder =
+          style === "methods"
+            ? base.objectType({ name: "Box", schema: Box, fields })
+            : base.pipe(api.objectType({ name: "Box", schema: Box, fields }))
+        expectTypeOf<BuilderRequirements<typeof builder>>().toEqualTypeOf<Requirements>()
+        const _missingServices = () => {
+          // @ts-expect-error disjoint maps still require their argument decoder service
+          toRouter(builder, Layer.succeed(Label, { label: "ready" }))
+          // @ts-expect-error disjoint maps still require their resolver service
+          toRouter(builder, Layer.succeed(Offset, { offset: 10 }))
+        }
+        expect(
+          await graphql({
+            schema: builder.buildSchema(),
+            source: withArgs ? '{ box { decoded(amount: "2") } }' : "{ box { plain } }",
+            contextValue: { services },
+          })
+        ).toEqual({
+          data: { box: withArgs ? { decoded: "ready:box:12" } : { plain: "box" } },
+        })
+      }
+    }
+  )
   it.each(["methods", "pipe"] as const)(
     "keeps explicitly typed service-free registrations runnable with Layer.empty through %s",
     async (style) => {

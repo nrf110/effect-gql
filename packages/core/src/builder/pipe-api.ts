@@ -14,7 +14,7 @@ import type {
   ObjectFieldRegistration,
   ObjectFieldsServices,
 } from "./types"
-import type { ExecutionArgs } from "../extensions"
+import type { ExecutionArgs, ExtensionsService } from "../extensions"
 import { GraphQLSchemaBuilder } from "./schema-builder"
 import type { FieldComplexity } from "../server/complexity"
 
@@ -51,8 +51,11 @@ export const objectType =
      * Can be overridden by field-level cacheControl.
      */
     cacheControl?: CacheHint
-    fields?: Fields &
-      Record<string, ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>>
+    // Infer the whole map union while retaining contextual resolver parent types.
+    fields?:
+      | Fields
+      | (NoInfer<Fields> &
+          Record<string, ObjectFieldRegistration<A, any, unknown, unknown, unknown, unknown>>)
   }): SchemaOperation<ObjectFieldsServices<Fields>> =>
   <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | ObjectFieldsServices<Fields>> =>
     builder.objectType(config)
@@ -221,8 +224,8 @@ export const extension =
     ) => Effect.Effect<void, never, R2>
     onExecuteStart?: (args: ExecutionArgs) => Effect.Effect<void, never, R2>
     onExecuteEnd?: (result: ExecutionResult) => Effect.Effect<void, never, R2>
-  }): SchemaOperation<R2> =>
-  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | R2> =>
+  }): SchemaOperation<Exclude<R2, ExtensionsService>> =>
+  <R>(builder: GraphQLSchemaBuilder<R>): GraphQLSchemaBuilder<R | Exclude<R2, ExtensionsService>> =>
     builder.extension(config)
 
 /**

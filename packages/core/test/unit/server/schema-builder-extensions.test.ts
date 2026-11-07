@@ -7,6 +7,8 @@ import type { ExecutionResult } from "graphql"
 import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
 import { toRouter } from "../../../src/server/schema-builder-extensions"
 import { GraphQLRequestContext } from "../../../src/context"
+import { extension } from "../../../src/builder/pipe-api"
+import { ExtensionsService } from "../../../src/extensions"
 
 // Test service
 interface TestService {
@@ -74,6 +76,77 @@ describe("schema-builder-extensions.ts", () => {
   // toRouter - Basic functionality
   // ==========================================================================
   describe("toRouter - Basic functionality", () => {
+    it("provides hook extensions without erasing application or resolver requirements", async () => {
+      const base = GraphQLSchemaBuilder.empty.query("hello", {
+        type: S.String,
+        resolve: () => Effect.succeed("world"),
+      })
+      const builtinHook = {
+        name: "builtin",
+        onExecuteStart: () =>
+          Effect.gen(function* () {
+            const extensions = yield* ExtensionsService
+            yield* extensions.set("mark", "ready")
+          }),
+      }
+      const applicationHook = {
+        name: "application",
+        onExecuteEnd: () =>
+          Effect.gen(function* () {
+            const extensions = yield* ExtensionsService
+            const service = yield* TestService
+            yield* extensions.set("message", service.getMessage())
+          }),
+      }
+      const builders = [base.extension(builtinHook), base.pipe(extension(builtinHook))]
+      for (const builder of builders) {
+        const result = await executeQuery(
+          builder,
+          Layer.empty,
+          { extensions: builder.getExtensions() },
+          "{ hello }"
+        )
+        expect(result).toEqual({
+          data: { hello: "world" },
+          extensions: { mark: "ready" },
+        })
+      }
+      for (const builder of [
+        base.extension(builtinHook).extension(applicationHook),
+        base.pipe(extension(builtinHook), extension(applicationHook)),
+      ]) {
+        // @ts-expect-error application hook services still come from the user layer
+        toRouter(builder, Layer.empty)
+        const result = await executeQuery(
+          builder,
+          testLayer,
+          { extensions: builder.getExtensions() },
+          "{ hello }"
+        )
+        expect(result).toEqual({
+          data: { hello: "world" },
+          extensions: { mark: "ready", message: "Hello from service" },
+        })
+      }
+
+      const resolverBuilder = base.query("resolverExtension", {
+        type: S.String,
+        resolve: () => Effect.map(ExtensionsService, () => "provided by application"),
+      })
+      const _requiresResolverService = () => {
+        // @ts-expect-error the built-in service is only injected into hooks, not resolvers
+        toRouter(resolverBuilder.extension(builtinHook), Layer.empty)
+        // @ts-expect-error pipe registration must not erase an existing resolver requirement
+        toRouter(resolverBuilder.pipe(extension(builtinHook)), Layer.empty)
+        const late = builders[0].query("late", {
+          type: S.String,
+          resolve: () => Effect.map(ExtensionsService, () => "late"),
+        })
+        // @ts-expect-error resolver requirements added after hooks are still required
+        toRouter(late, Layer.empty)
+      }
+    })
+
     it("requires codec services while accepting layers that provide extra services", async () => {
       const Offset = Context.Service<number>("toRouter/DecodeOffset")
       const args = S.Struct({

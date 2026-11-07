@@ -286,6 +286,57 @@ describe("field-builders.ts", () => {
       })
     })
 
+    it("restores encoded literal tags before decoding transformed discriminators", async () => {
+      const Input = S.Struct({
+        _tag: S.Literal("wire").pipe(
+          S.decodeTo(S.Literal("Domain"), {
+            decode: SchemaGetter.transform(() => "Domain" as const),
+            encode: SchemaGetter.transform(() => "wire" as const),
+          })
+        ),
+        value: S.String,
+      })
+      const args = S.Struct({
+        ...Input.fields,
+        child: Input,
+        items: S.Array(Input),
+      })
+      let received: S.Schema.Type<typeof args> | undefined
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args,
+                resolve: (decoded: S.Schema.Type<typeof args>) => {
+                  received = decoded
+                  return Effect.succeed(decoded.value)
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+
+      const result = await graphql({
+        schema,
+        source: '{ inspect(value: "root", child: { value: "child" }, items: [{ value: "item" }]) }',
+        contextValue: createSimpleContext(),
+      })
+
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ inspect: "root" })
+      expect(received).toEqual({
+        _tag: "Domain",
+        value: "root",
+        child: { _tag: "Domain", value: "child" },
+        items: [{ _tag: "Domain", value: "item" }],
+      })
+    })
+
     it("normalizes nullable Option inputs without bypassing codecs, defaults, or validation", async () => {
       const value = argsSchema.fields.amount
       const options = S.Struct({
