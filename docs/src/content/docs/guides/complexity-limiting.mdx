@@ -372,6 +372,11 @@ Limits are optional; omitted limits remain disabled, and the default field compl
 Both `GraphQLRouterConfigFromEnv` and `ComplexityConfigFromEnv` reject `NaN` for all five
 settings above with a configuration error instead of silently disabling query limits.
 
+Numeric environment values retain JavaScript `Number` parsing: surrounding
+whitespace (`" 2 "`), hexadecimal/binary/octal prefixes (`"0x10"`, `"0b10"`,
+`"0o10"`), trailing decimal points (`"2."`), and scientific notation (`"2e1"`)
+are accepted. The same parsing applies to cache-control max age.
+
 The cache-control setting `GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE` also rejects `NaN`
 in both `GraphQLRouterConfigFromEnv` and `CacheControlConfigFromEnv`, preventing
 `max-age=NaN` headers. Its default remains `0` (`no-store`); zero, negative,

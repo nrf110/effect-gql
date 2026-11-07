@@ -181,6 +181,8 @@ const createGraphqlWsSocketAdapter = <R>(
 ) => {
   const services = extra.services
   let messageCallback: ((message: string) => Promise<void>) | null = null
+  let acknowledged = false
+  let pendingAcknowledgment: AbortController | undefined
   interface OperationDispatch {
     cancelled: boolean
     terminal: boolean
@@ -189,8 +191,12 @@ const createGraphqlWsSocketAdapter = <R>(
   }
   const operations = new Map<string, OperationDispatch>()
   const runningOperations = new Map<string, OperationDispatch>()
-  const close = (code?: number, reason?: string) => {
+  const stopDispatching = () => {
     extra.closing = true
+    pendingAcknowledgment?.abort()
+  }
+  const close = (code?: number, reason?: string) => {
+    stopDispatching()
     Effect.runPromiseWith(services)(socket.close(code, reason)).catch(() => {
       // Ignore close errors
     })
@@ -213,11 +219,24 @@ const createGraphqlWsSocketAdapter = <R>(
           if (message.type === "complete" && operation?.terminal) return Promise.resolve()
           if (operation) operation.terminal = true
         }
-        return Effect.runPromiseWith(services)(
-          socket
-            .send(data)
-            .pipe(Effect.catch((error) => Effect.logError("WebSocket send error", error)))
-        )
+        const send = socket
+          .send(data)
+          .pipe(Effect.catch((error) => Effect.logError("WebSocket send error", error)))
+        if (message.type === "connection_ack") {
+          pendingAcknowledgment = new AbortController()
+          return Effect.runPromiseWith(services)(
+            send.pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  acknowledged = true
+                  pendingAcknowledgment = undefined
+                })
+              )
+            ),
+            { signal: pendingAcknowledgment.signal }
+          )
+        }
+        return Effect.runPromiseWith(services)(send)
       },
 
       close,
@@ -230,6 +249,7 @@ const createGraphqlWsSocketAdapter = <R>(
         // Pong handling - can be used for keepalive
       },
     },
+    stopDispatching,
     dispatchMessage: async (message: string) => {
       const callback = messageCallback
       if (extra.closing || !callback) return
@@ -251,6 +271,12 @@ const createGraphqlWsSocketAdapter = <R>(
       }
       if (parsed.type !== "subscribe") {
         await callback(message)
+        return
+      }
+      // graphql-ws marks the connection acknowledged before awaiting its ACK
+      // send. Keep the pre-ACK rejection policy until the transport finishes it.
+      if (!acknowledged) {
+        close(4401, "Unauthorized")
         return
       }
 
@@ -276,7 +302,7 @@ const createGraphqlWsSocketAdapter = <R>(
       }
       operations.set(id, operation)
       // Publish ownership before native dispatch, which validates fresh IDs
-      // synchronously (in particular, before connection initialization can ACK).
+      // synchronously.
       operation.pending = previous ? previous.pending.then(start, start) : Promise.resolve(start())
       const settled = () => {
         if (operations.get(id) === operation) operations.delete(id)
@@ -309,9 +335,13 @@ const runConnectionLifecycle = <R>(
     const messageQueue = yield* Queue.unbounded<string>()
     const closedDeferred = yield* Deferred.make<CloseEvent, WebSocketError>()
     const activeDispatches = new Set<Promise<void>>()
-    const stopDispatching = Effect.sync(() => {
-      extra.closing = true
-    })
+    // Create the graphql-ws socket adapter
+    const {
+      adapter,
+      dispatchMessage,
+      stopDispatching: stopAdapter,
+    } = createGraphqlWsSocketAdapter(socket, extra, wsRuntime.parseMessage)
+    const stopDispatching = Effect.sync(stopAdapter)
 
     // Fork fiber to consume socket messages and push to queue
     const messageFiber = yield* Effect.forkChild(
@@ -332,13 +362,6 @@ const runConnectionLifecycle = <R>(
           stopDispatching.pipe(Effect.andThen(Deferred.fail(closedDeferred, error)))
         )
       )
-    )
-
-    // Create the graphql-ws socket adapter
-    const { adapter, dispatchMessage } = createGraphqlWsSocketAdapter(
-      socket,
-      extra,
-      wsRuntime.parseMessage
     )
 
     // Open the connection with graphql-ws

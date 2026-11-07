@@ -1,6 +1,7 @@
-import { Config, Option, Schema } from "effect"
+import { Config, Option } from "effect"
 import { ComplexityConfigFromEnv, type ComplexityConfig } from "./complexity"
 import type { CacheControlConfig } from "./cache-control"
+import { numberFromConfig } from "./config-number"
 
 /**
  * Configuration for the GraphiQL UI
@@ -78,12 +79,6 @@ export const normalizeConfig = (input: GraphQLRouterConfigInput = {}): GraphQLRo
   }
 }
 
-const cacheControlNumber = Schema.Number.check(
-  Schema.makeFilter((value: number) => !Number.isNaN(value), {
-    expected: "a number other than NaN",
-  })
-)
-
 /**
  * Effect Config for loading GraphQL router configuration from environment variables.
  *
@@ -113,7 +108,7 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> = Co
     Config.withDefault(false)
   ),
   cacheControlDefaultMaxAge: Config.schema(
-    cacheControlNumber,
+    numberFromConfig,
     "GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE"
   ).pipe(Config.withDefault(0)),
   cacheControlDefaultScope: Config.String("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(

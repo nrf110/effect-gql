@@ -75,8 +75,12 @@ function restoreGraphQLInput(original: AST.AST, value: unknown): unknown {
     case "Arrays": {
       if (!Array.isArray(value)) return value
       let restored = value
+      // The first rest schema repeats; any remaining schemas are anchored at the end.
+      const tailStart = value.length - ast.rest.length + 1
       for (let index = 0; index < value.length; index++) {
-        const element = ast.elements[index] ?? ast.rest[0]
+        const element =
+          ast.elements[index] ??
+          (index >= tailStart ? ast.rest[index - tailStart + 1] : ast.rest[0])
         if (!element) continue
         const item = restoreGraphQLInput(element, value[index])
         if (item !== value[index]) {

@@ -1,4 +1,4 @@
-import { Effect, Option, Config, Data, Schema } from "effect"
+import { Effect, Option, Config, Data } from "effect"
 import {
   DocumentNode,
   OperationDefinitionNode,
@@ -15,6 +15,7 @@ import {
   Kind,
   parse,
 } from "graphql"
+import { numberFromConfig } from "./config-number"
 
 // ============================================================================
 // Errors
@@ -623,12 +624,6 @@ export const validateComplexity = (
 // ============================================================================
 // Environment Configuration
 // ============================================================================
-const complexityNumber = Schema.Number.check(
-  Schema.makeFilter((value: number) => !Number.isNaN(value), {
-    expected: "a number other than NaN",
-  })
-)
-
 /**
  * Effect Config for loading complexity configuration from environment variables.
  *
@@ -640,11 +635,11 @@ const complexityNumber = Schema.Number.check(
  * - GRAPHQL_DEFAULT_FIELD_COMPLEXITY: Default field complexity (default: 1)
  */
 export const ComplexityConfigFromEnv: Config.Config<ComplexityConfig> = Config.all({
-  maxDepth: Config.schema(complexityNumber, "GRAPHQL_MAX_DEPTH").pipe(Config.option),
-  maxComplexity: Config.schema(complexityNumber, "GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
-  maxAliases: Config.schema(complexityNumber, "GRAPHQL_MAX_ALIASES").pipe(Config.option),
-  maxFields: Config.schema(complexityNumber, "GRAPHQL_MAX_FIELDS").pipe(Config.option),
-  defaultFieldComplexity: Config.schema(complexityNumber, "GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
+  maxDepth: Config.schema(numberFromConfig, "GRAPHQL_MAX_DEPTH").pipe(Config.option),
+  maxComplexity: Config.schema(numberFromConfig, "GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
+  maxAliases: Config.schema(numberFromConfig, "GRAPHQL_MAX_ALIASES").pipe(Config.option),
+  maxFields: Config.schema(numberFromConfig, "GRAPHQL_MAX_FIELDS").pipe(Config.option),
+  defaultFieldComplexity: Config.schema(numberFromConfig, "GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
     Config.withDefault(1)
   ),
 }).pipe(

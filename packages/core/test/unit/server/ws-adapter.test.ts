@@ -1693,6 +1693,94 @@ describe("ws-adapter.ts", () => {
       }
     })
 
+    it.each(["subscribe", "disconnect", "interrupt"] as const)(
+      "cancels a suspended ACK send and finalizes resources on %s",
+      async (termination) => {
+        const acknowledging = Effect.runSync(Deferred.make<void>())
+        const finishAck = Effect.runSync(Deferred.make<void>())
+        const protocolClosed = Effect.runSync(Deferred.make<void>())
+        const outgoing = Effect.runSync(Queue.unbounded<unknown>())
+        const mock = createMockSocket()
+        const schema = createTestSchema()
+        const resolve = vi.fn(() => "world")
+        schema.getQueryType()!.getFields().hello.resolve = resolve
+        let sendFinalized = 0
+        let released = 0
+        const layer = Layer.effectDiscard(
+          Effect.acquireRelease(Effect.void, () =>
+            Effect.sync(() => {
+              released++
+            })
+          )
+        )
+        const socket: EffectWebSocket = {
+          ...mock.socket,
+          send: (data) =>
+            Effect.gen(function* () {
+              if (JSON.parse(data).type === "connection_ack") {
+                yield* Deferred.succeed(acknowledging, undefined)
+                yield* Deferred.await(finishAck).pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      sendFinalized++
+                    })
+                  )
+                )
+              }
+              yield* mock.socket.send(data)
+              yield* Queue.offer(outgoing, JSON.parse(data))
+            }),
+          close: (code, reason) =>
+            mock.socket
+              .close(code, reason)
+              .pipe(Effect.andThen(Deferred.succeed(protocolClosed, undefined)), Effect.asVoid),
+        }
+        const fiber = Effect.runFork(makeGraphQLWSHandler(schema, layer)(socket))
+        try {
+          mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+          await Effect.runPromise(Deferred.await(acknowledging).pipe(Effect.timeout("2 seconds")))
+          mock.sendMessage(JSON.stringify({ type: "ping", payload: { barrier: "ack-pending" } }))
+          expect(
+            await Effect.runPromise(Queue.take(outgoing).pipe(Effect.timeout("2 seconds")))
+          ).toEqual({ type: "pong", payload: { barrier: "ack-pending" } })
+
+          if (termination === "subscribe") {
+            mock.sendMessage(
+              JSON.stringify({ id: "early", type: "subscribe", payload: { query: "{ hello }" } })
+            )
+            await Effect.runPromise(
+              Deferred.await(protocolClosed).pipe(Effect.timeout("2 seconds"))
+            )
+            expect(mock.closeInfo).toEqual({ code: 4401, reason: "Unauthorized" })
+          }
+          if (termination === "interrupt") {
+            await Effect.runPromise(Fiber.interrupt(fiber).pipe(Effect.timeout("2 seconds")))
+          } else {
+            mock.closeConnection(1000, "Done")
+            await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+          }
+          expect(sendFinalized).toBe(1)
+          expect(released).toBe(1)
+          expect(resolve).not.toHaveBeenCalled()
+
+          Effect.runSync(Deferred.succeed(finishAck, undefined))
+          mock.sendMessage(
+            JSON.stringify({ id: "late", type: "subscribe", payload: { query: "{ hello }" } })
+          )
+          mock.sendMessage(JSON.stringify({ type: "ping" }))
+          await new Promise<void>((done) => setImmediate(done))
+          expect(resolve).not.toHaveBeenCalled()
+          expect(mock.sentMessages.map((message) => JSON.parse(message))).toEqual([
+            { type: "pong", payload: { barrier: "ack-pending" } },
+          ])
+        } finally {
+          Effect.runSync(Deferred.succeed(finishAck, undefined))
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.interrupt(fiber))
+        }
+      }
+    )
+
     it("discards messages received while awaiting source and disconnect cleanup", async () => {
       const events: string[] = []
       const pulled = Effect.runSync(Deferred.make<void>())

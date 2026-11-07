@@ -26,6 +26,8 @@ A client `complete` message cancels only the operation with that ID. Clients
 must wait for `connection_ack` before sending operations; an operation received
 before initialization is acknowledged closes the connection with code `4401`
 (`Unauthorized`), including an operation queued immediately after `connection_init`.
+This includes an asynchronous `connection_ack` send that has started but has not
+completed: operations are rejected with `4401` until that send completes.
 
 Clients may reuse an ID after sending `complete` or receiving a server `complete`
 or `error` message. If the previous operation's setup, completion hook, or

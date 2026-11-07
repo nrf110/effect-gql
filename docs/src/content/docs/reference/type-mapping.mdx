@@ -86,6 +86,11 @@ S.Struct({
 
 Tuples also map to homogeneous GraphQL lists, not positional GraphQL types. The first fixed element determines the list item type; the rest element is used only when there are no fixed elements. For example, `S.TupleWithRest(S.Tuple([S.Number]), [S.Int])` maps to a list of `Float`, preserving the valid value `[1.5, 2]` for both output and input. Effect Schema still validates the fixed and rest positions when decoding resolver arguments.
 
+For tuples with required elements after a variadic segment, input restoration
+uses each trailing schema at its position relative to the end of the list.
+Hidden tags and Options are restored with that position's schema before full
+Effect decoding; missing positions and invalid trailing values are still rejected.
+
 ## Structs (Object Types)
 
 `S.Struct` maps to GraphQL Object types:

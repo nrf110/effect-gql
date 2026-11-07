@@ -151,6 +151,15 @@ const numericSettings = [
   ["GRAPHQL_DEFAULT_FIELD_COMPLEXITY", "defaultFieldComplexity"],
 ] as const
 
+const numericSyntax = [
+  [" 2 ", 2],
+  ["0x10", 16],
+  ["0b10", 2],
+  ["0o10", 8],
+  ["2.", 2],
+  ["2e1", 20],
+] as const
+
 const configSchema = buildSchema(`
   type Query { hello: String, user: User }
   type User { id: ID }
@@ -176,6 +185,15 @@ describe.each([
     const env = Object.fromEntries(numericSettings.map(([variable]) => [variable, String(value)]))
     const loaded = await Effect.runPromise(load(env))
 
+    expect(loaded).toEqual(
+      Object.fromEntries(numericSettings.map(([, property]) => [property, value]))
+    )
+  })
+
+  it.each(numericSyntax)("accepts numeric syntax %j", async (text, value) => {
+    const loaded = await Effect.runPromise(
+      load(Object.fromEntries(numericSettings.map(([variable]) => [variable, text])))
+    )
     expect(loaded).toEqual(
       Object.fromEntries(numericSettings.map(([, property]) => [property, value]))
     )
@@ -297,6 +315,21 @@ describe.each([
       }
     }
   )
+
+  it.each(numericSyntax)("uses max age syntax %j in the response policy", async (text, value) => {
+    const loaded = await Effect.runPromise(
+      load({
+        GRAPHQL_CACHE_CONTROL_ENABLED: "true",
+        GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE: text,
+      })
+    )
+    if (!loaded) throw new Error("Expected enabled cache control")
+    const policy = await Effect.runPromise(
+      computeCachePolicyFromQuery("{ hello }", undefined, configSchema, new Map(), loaded)
+    )
+    expect(policy).toEqual({ maxAge: value, scope: "PUBLIC" })
+    expect(toCacheControlHeader(policy)).toBe(`public, max-age=${value}`)
+  })
 
   it("does not load environment settings belonging only to the other entrypoint", async () => {
     const unrelatedVariable =

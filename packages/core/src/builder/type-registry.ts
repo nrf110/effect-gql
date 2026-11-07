@@ -73,15 +73,13 @@ function indexAST(
   direction: "output" | "input"
 ): void {
   originals.set(getASTIdentity(schema.ast), name)
-  if (schema.ast.encoding) {
-    // Effect memoizes these public operations by the original AST. Encoding
-    // links are copied by key-context operations, while their transformations
-    // may be shared by genuinely distinct decodeTo wrappers.
-    const optional = S.optionalKey(schema)
-    const mutable = S.mutableKey(schema)
-    for (const variant of [optional, mutable, S.mutableKey(optional), S.optionalKey(mutable)])
-      originals.set(getASTIdentity(variant.ast), name)
-  }
+  // Effect memoizes these public key-context operations by the original AST,
+  // including for schemas without an encoding. Index their exact identities
+  // rather than shared encoding links or transformations.
+  const optional = S.optionalKey(schema)
+  const mutable = S.mutableKey(schema)
+  for (const variant of [optional, mutable, S.mutableKey(optional), S.optionalKey(mutable)])
+    originals.set(getASTIdentity(variant.ast), name)
   const projected = direction === "input" ? AST.toEncoded(schema.ast) : AST.toType(schema.ast)
   let ast = getASTView(projected, direction)
   if (!index.has(getASTIdentity(ast))) index.set(getASTIdentity(ast), name)

@@ -1,4 +1,5 @@
-import { Effect, Config, Schema } from "effect"
+import { Effect, Config } from "effect"
+import { numberFromConfig } from "./config-number"
 import {
   DocumentNode,
   OperationDefinitionNode,
@@ -568,12 +569,6 @@ function analyzeField(
 // Environment Configuration
 // ============================================================================
 
-const cacheControlNumber = Schema.Number.check(
-  Schema.makeFilter((value: number) => !Number.isNaN(value), {
-    expected: "a number other than NaN",
-  })
-)
-
 /**
  * Effect Config for loading cache control configuration from environment variables.
  *
@@ -585,7 +580,7 @@ const cacheControlNumber = Schema.Number.check(
  */
 export const CacheControlConfigFromEnv: Config.Config<CacheControlConfig> = Config.all({
   enabled: Config.Boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(Config.withDefault(true)),
-  defaultMaxAge: Config.schema(cacheControlNumber, "GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(
+  defaultMaxAge: Config.schema(numberFromConfig, "GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(
     Config.withDefault(0)
   ),
   defaultScope: Config.String("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(

@@ -286,6 +286,163 @@ describe("field-builders.ts", () => {
       })
     })
 
+    it.each([
+      { repeated: 0, tails: 1 },
+      { repeated: 2, tails: 1 },
+      { repeated: 0, tails: 2 },
+      { repeated: 2, tails: 2 },
+    ])(
+      "restores fixed, repeated, and $tails trailing tuple tags with $repeated repeated elements",
+      async ({ repeated, tails }) => {
+        const Head = S.TaggedStruct("Head", { value: S.String })
+        const Item = S.TaggedStruct("Item", { value: S.String })
+        const Tail = S.TaggedStruct("Tail", { value: S.String })
+        const End = S.TaggedStruct("End", { value: S.String })
+        const args = S.Struct({
+          items: S.TupleWithRest(S.Tuple([Head]), tails === 1 ? [Item, Tail] : [Item, Tail, End]),
+        })
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: {
+              inspect: buildField(
+                {
+                  type: S.String,
+                  args,
+                  resolve: (args: S.Schema.Type<typeof args>) =>
+                    Effect.succeed(JSON.stringify(args.items)),
+                },
+                createFieldBuilderContext()
+              ),
+            },
+          }),
+        })
+        const expected = [
+          { _tag: "Head", value: "head" },
+          ...Array.from({ length: repeated }, (_, index) => ({
+            _tag: "Item",
+            value: `item${index}`,
+          })),
+          { _tag: "Tail", value: "tail" },
+          ...(tails === 2 ? [{ _tag: "End", value: "end" }] : []),
+        ]
+        const result = await graphql({
+          schema,
+          source: `{ inspect(items: [${expected
+            .map(({ value }) => `{ value: "${value}" }`)
+            .join(", ")}]) }`,
+          contextValue: createSimpleContext(),
+        })
+
+        expect(result.errors).toBeUndefined()
+        expect(JSON.parse(String(result.data?.inspect))).toEqual(expected)
+      }
+    )
+
+    it("restores Options and transformed tags inside trailing tuple elements", async () => {
+      const Item = S.TaggedStruct("Item", { value: S.Option(S.String) })
+      const Tail = S.Struct({
+        _tag: S.Literal("wire").pipe(
+          S.decodeTo(S.Literal("Domain"), {
+            decode: SchemaGetter.transform(() => "Domain" as const),
+            encode: SchemaGetter.transform(() => "wire" as const),
+          })
+        ),
+        value: S.Option(S.String),
+      })
+      const End = S.TaggedStruct("End", { value: S.Option(S.String) })
+      const args = S.Struct({
+        items: S.TupleWithRest(S.Tuple([Item]), [Item, Tail, End]),
+      })
+      let received: S.Schema.Type<typeof args> | undefined
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args,
+                resolve: (args: S.Schema.Type<typeof args>) => {
+                  received = args
+                  return Effect.succeed("decoded")
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      const result = await graphql({
+        schema,
+        source: `{
+          inspect(items: [
+            { value: "head" }, { value: null }, { value: "tail" }, { value: null }
+          ])
+        }`,
+        contextValue: createSimpleContext(),
+      })
+
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ inspect: "decoded" })
+      expect(received).toEqual({
+        items: [
+          { _tag: "Item", value: Option.some("head") },
+          { _tag: "Item", value: Option.none() },
+          { _tag: "Domain", value: Option.some("tail") },
+          { _tag: "End", value: Option.none() },
+        ],
+      })
+    })
+
+    it("rejects missing trailing tuple elements and invalid tail values before resolving", async () => {
+      const Item = S.TaggedStruct("Item", { value: S.String })
+      const Tail = S.TaggedStruct("Tail", {
+        value: S.String.pipe(S.check(S.isMinLength(2))),
+      })
+      const End = S.TaggedStruct("End", { value: S.String })
+      const args = S.Struct({
+        items: S.TupleWithRest(S.Tuple([Item]), [Item, Tail, End]),
+      })
+      let resolutions = 0
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args,
+                resolve: () => {
+                  resolutions++
+                  return Effect.succeed("invalid")
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+
+      for (const items of [
+        "[]",
+        '[{ value: "head" }]',
+        '[{ value: "head" }, { value: "tail" }]',
+        '[{ value: "head" }, { value: "x" }, { value: "end" }]',
+      ]) {
+        const result = await graphql({
+          schema,
+          source: `{ inspect(items: ${items}) }`,
+          contextValue: createSimpleContext(),
+        })
+
+        expect(result.errors).toHaveLength(1)
+        expect(result.errors?.[0].path).toEqual(["inspect"])
+        expect(result.errors?.[0].message).toContain("items")
+      }
+      expect(resolutions).toBe(0)
+    })
+
     it("restores encoded literal tags before decoding transformed discriminators", async () => {
       const Input = S.Struct({
         _tag: S.Literal("wire").pipe(

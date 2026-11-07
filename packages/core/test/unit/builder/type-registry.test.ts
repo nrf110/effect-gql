@@ -1439,6 +1439,130 @@ describe("type-registry.ts", () => {
   })
 })
 
+describe("registered unencoded key-context variants", () => {
+  it.each([false, true])(
+    "preserves computed fields, nullability, and distinct primitive registrations (%s)",
+    async (reversed) => {
+      const Token = S.String.annotate({ identifier: "TokenValue" })
+      const OtherToken = S.String.annotate({ identifier: "TokenValue" })
+      const Result = S.Struct({
+        required: Token,
+        mutable: S.mutableKey(Token),
+        optional: S.optionalKey(Token),
+        mutableOptional: S.mutableKey(S.optionalKey(Token)),
+        optionalMutable: S.optionalKey(S.mutableKey(Token)),
+        optionalValue: S.optional(Token),
+        other: S.optionalKey(OtherToken),
+      }).annotate({ identifier: "TokenResult" })
+      const registrations = [
+        {
+          name: "Token",
+          schema: Token,
+          fields: {
+            valid: {
+              type: S.Boolean,
+              resolve: (token: string) => Effect.succeed(token === "valid"),
+            },
+          },
+        },
+        {
+          name: "OtherToken",
+          schema: OtherToken,
+          fields: {
+            valid: { type: S.Boolean, resolve: () => Effect.succeed(false) },
+          },
+        },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reversed ? registrations.reverse() : registrations) {
+        builder = builder.objectType(registration)
+      }
+      const schema = builder
+        .query("result", {
+          type: Result,
+          resolve: () =>
+            Effect.succeed({
+              required: "valid",
+              mutable: "invalid",
+              optional: "valid",
+              mutableOptional: "valid",
+              optionalMutable: "valid",
+              optionalValue: "valid",
+              other: "valid",
+            }),
+        })
+        .query("absent", {
+          type: Result,
+          resolve: () => Effect.succeed({ required: "valid", mutable: "valid" }),
+        })
+        .buildSchema()
+
+      const fields = (
+        getNamedType(schema.getQueryType()!.getFields().result.type) as GraphQLObjectType
+      ).getFields()
+      expect(
+        Object.fromEntries(
+          Object.entries(fields).map(([name, field]) => [name, String(field.type)])
+        )
+      ).toEqual({
+        required: "Token!",
+        mutable: "Token!",
+        optional: "Token",
+        mutableOptional: "Token",
+        optionalMutable: "Token",
+        optionalValue: "Token",
+        other: "OtherToken",
+      })
+      const result = await Effect.runPromise(
+        execute(
+          schema,
+          Layer.empty
+        )(`{
+          result {
+            required { valid }
+            mutable { valid }
+            optional { valid }
+            mutableOptional { valid }
+            optionalMutable { valid }
+            optionalValue { valid }
+            other { valid }
+          }
+          absent {
+            required { valid }
+            mutable { valid }
+            optional { valid }
+            mutableOptional { valid }
+            optionalMutable { valid }
+            optionalValue { valid }
+            other { valid }
+          }
+        }`)
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        result: {
+          required: { valid: true },
+          mutable: { valid: false },
+          optional: { valid: true },
+          mutableOptional: { valid: true },
+          optionalMutable: { valid: true },
+          optionalValue: { valid: true },
+          other: { valid: false },
+        },
+        absent: {
+          required: { valid: true },
+          mutable: { valid: true },
+          optional: null,
+          mutableOptional: null,
+          optionalMutable: null,
+          optionalValue: null,
+          other: null,
+        },
+      })
+    }
+  )
+})
+
 describe("exact registration precedence", () => {
   it.each([false, true])(
     "keeps an explicitly registered transformation distinct from its registered projection (%s)",

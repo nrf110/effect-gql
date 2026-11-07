@@ -197,6 +197,10 @@ Generic wrappers can name the inferred requirement type with
 `ObjectFieldsServices<Fields>`, exported from both `@effect-gql/core` and
 `@effect-gql/core/builder`.
 
+Registered type overrides also survive `S.optionalKey`, `S.mutableKey`, and
+combinations of those modifiers, including unencoded primitive schemas with
+computed fields. Optional keys remain nullable without losing the registered type.
+
 ### Adding Fields Separately
 
 Use `.field()` to add fields after type registration:
