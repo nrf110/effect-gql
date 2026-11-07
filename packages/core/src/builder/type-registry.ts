@@ -52,36 +52,38 @@ export interface TypeConversionContext {
   schemaToTypeName?: Map<S.Top, string>
   astToTypeName?: Map<AST.AST, string>
   originalASTToTypeName?: Map<AST.AST, string>
+  keyASTToTypeName?: Map<AST.AST, string>
   schemaToInterfaceName?: Map<S.Top, string>
   astToInterfaceName?: Map<AST.AST, string>
   originalASTToInterfaceName?: Map<AST.AST, string>
+  keyASTToInterfaceName?: Map<AST.AST, string>
   schemaToInputName?: Map<S.Top, string>
   astToInputName?: Map<AST.AST, string>
   originalASTToInputName?: Map<AST.AST, string>
+  keyASTToInputName?: Map<AST.AST, string>
   enumSortedValues?: Map<string, readonly string[]>
   unionSortedTypes?: Map<string, readonly string[]>
   literalToEnumName?: Map<string, string>
   convertedOutputTypes?: WeakMap<AST.AST, GraphQLOutputType>
 }
 
-/** Keep exact registrations separate from aliases of their directional projections. */
+/** Index exact ASTs and generated key aliases separately from directional identities. */
 function indexAST(
   schema: S.Top,
   name: string,
   index: Map<AST.AST, string>,
   originals: Map<AST.AST, string>,
+  aliases: Map<AST.AST, string>,
   direction: "output" | "input"
 ): void {
-  originals.set(getASTIdentity(schema.ast), name)
+  originals.set(schema.ast, name)
   // Effect memoizes these public key-context operations by the original AST,
   // including for schemas without an encoding. Index their exact identities
   // rather than shared encoding links or transformations.
   const optional = S.optionalKey(schema)
   const mutable = S.mutableKey(schema)
   for (const variant of [optional, mutable, S.mutableKey(optional), S.optionalKey(mutable)]) {
-    const identity = getASTIdentity(variant.ast)
-    // An alias must not replace an explicit registration indexed earlier.
-    if (!originals.has(identity)) originals.set(identity, name)
+    if (!aliases.has(variant.ast)) aliases.set(variant.ast, name)
   }
   const projected = direction === "input" ? AST.toEncoded(schema.ast) : AST.toType(schema.ast)
   let ast = getASTView(projected, direction)
@@ -97,15 +99,24 @@ export function buildReverseLookups(ctx: TypeConversionContext): void {
     ctx.schemaToTypeName = new Map()
     ctx.astToTypeName = new Map()
     ctx.originalASTToTypeName = new Map()
+    ctx.keyASTToTypeName = new Map()
     for (const [name, registration] of ctx.types) {
       ctx.schemaToTypeName.set(registration.schema, name)
-      indexAST(registration.schema, name, ctx.astToTypeName, ctx.originalASTToTypeName, "output")
+      indexAST(
+        registration.schema,
+        name,
+        ctx.astToTypeName,
+        ctx.originalASTToTypeName,
+        ctx.keyASTToTypeName,
+        "output"
+      )
     }
   }
   if (!ctx.schemaToInterfaceName) {
     ctx.schemaToInterfaceName = new Map()
     ctx.astToInterfaceName = new Map()
     ctx.originalASTToInterfaceName = new Map()
+    ctx.keyASTToInterfaceName = new Map()
     for (const [name, registration] of ctx.interfaces) {
       ctx.schemaToInterfaceName.set(registration.schema, name)
       indexAST(
@@ -113,6 +124,7 @@ export function buildReverseLookups(ctx: TypeConversionContext): void {
         name,
         ctx.astToInterfaceName,
         ctx.originalASTToInterfaceName,
+        ctx.keyASTToInterfaceName,
         "output"
       )
     }
@@ -122,6 +134,7 @@ export function buildReverseLookups(ctx: TypeConversionContext): void {
     ctx.schemaToInputName = cache.schemaToInputName
     ctx.astToInputName = cache.astToInputName
     ctx.originalASTToInputName = cache.originalASTToInputName
+    ctx.keyASTToInputName = cache.keyASTToInputName
   }
   if (!ctx.enumSortedValues) {
     ctx.enumSortedValues = new Map()
@@ -198,15 +211,22 @@ type OutputConverter = (original: AST.AST, projected: AST.AST) => GraphQLOutputT
 function makeOutputConverter(ctx: TypeConversionContext): OutputConverter {
   const converted = (ctx.convertedOutputTypes ??= new WeakMap())
   const convert: OutputConverter = (original, projected) => {
-    const originalIdentity = getASTIdentity(original)
-    const exactName = ctx.originalASTToTypeName?.get(originalIdentity)
+    const exactName = ctx.originalASTToTypeName?.get(original)
     const exactType = exactName ? ctx.typeRegistry.get(exactName) : undefined
     if (exactType) return exactType
-    const exactInterfaceName = ctx.originalASTToInterfaceName?.get(originalIdentity)
+    const exactInterfaceName = ctx.originalASTToInterfaceName?.get(original)
     const exactInterface = exactInterfaceName
       ? ctx.interfaceRegistry.get(exactInterfaceName)
       : undefined
     if (exactInterface) return exactInterface
+    const aliasName = ctx.keyASTToTypeName?.get(original)
+    const aliasType = aliasName ? ctx.typeRegistry.get(aliasName) : undefined
+    if (aliasType) return aliasType
+    const aliasInterfaceName = ctx.keyASTToInterfaceName?.get(original)
+    const aliasInterface = aliasInterfaceName
+      ? ctx.interfaceRegistry.get(aliasInterfaceName)
+      : undefined
+    if (aliasInterface) return aliasInterface
     const source = getASTView(original, "output")
     const ast = getASTView(projected, "output")
     const identity = getASTIdentity(ast)
@@ -260,7 +280,8 @@ function makeOutputConverter(ctx: TypeConversionContext): OutputConverter {
         const originals = source._tag === "Union" ? nonNullMembers(source) : members
         const names = members.map(
           (member, index) =>
-            ctx.originalASTToTypeName?.get(getASTIdentity(originals[index] ?? member)) ??
+            ctx.originalASTToTypeName?.get(originals[index] ?? member) ??
+            ctx.keyASTToTypeName?.get(originals[index] ?? member) ??
             ctx.astToTypeName?.get(getASTIdentity(member)) ??
             getASTName(member)
         )
@@ -318,6 +339,7 @@ export interface InputTypeLookupCache {
   schemaToInputName?: Map<S.Top, string>
   astToInputName?: Map<AST.AST, string>
   originalASTToInputName?: Map<AST.AST, string>
+  keyASTToInputName?: Map<AST.AST, string>
   literalToEnumName?: Map<string, string>
   enumSortedValues?: Map<string, readonly string[]>
   convertedInputTypes?: WeakMap<AST.AST, GraphQLInputType>
@@ -331,6 +353,7 @@ export function buildInputTypeLookupCache(
     schemaToInputName: new Map(),
     astToInputName: new Map(),
     originalASTToInputName: new Map(),
+    keyASTToInputName: new Map(),
     literalToEnumName: new Map(),
     enumSortedValues: new Map(),
   }
@@ -341,6 +364,7 @@ export function buildInputTypeLookupCache(
       name,
       cache.astToInputName!,
       cache.originalASTToInputName!,
+      cache.keyASTToInputName!,
       "input"
     )
   }
@@ -385,9 +409,12 @@ function makeInputConverter(
     // Key codecs can wrap an exact registration before its shared projection.
     let source = original
     while (true) {
-      const exactName = cache.originalASTToInputName?.get(getASTIdentity(source))
+      const exactName = cache.originalASTToInputName?.get(source)
       const exactType = exactName ? inputRegistry.get(exactName) : undefined
       if (exactType) return exactType
+      const aliasName = cache.keyASTToInputName?.get(source)
+      const aliasType = aliasName ? inputRegistry.get(aliasName) : undefined
+      if (aliasType) return aliasType
       if (!source.encoding) break
       source = source.encoding[source.encoding.length - 1].to
     }

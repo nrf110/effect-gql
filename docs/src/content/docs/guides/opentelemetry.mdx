@@ -236,6 +236,18 @@ unmatched requests (404), failing handlers, and sibling routes merged into the
 same router. Register tracing once per shared router to avoid nested request
 spans. Route-scoped middleware and request services keep their original scope.
 
+The root span records `http.status_code` before ending on both successful
+responses and failures, including unmatched GET/POST requests (404) and unhandled
+handler errors (500). Failure statuses are derived without executing custom
+`HttpServerRespondable` conversions: standard HTTP errors use their known status,
+and explicit response defects retain their response status. Ordinary unhandled
+failures are recorded as 500. Status is left unset for custom Respondable errors
+and pure interruptions because their final status is unknown at this boundary.
+The original failure remains available to enclosing middleware and the HTTP
+server; if outer middleware recovers or a custom Respondable chooses a different
+response, the root span still describes the failure observed inside the traced
+dispatch, not that final response.
+
 With `propagateContext: true` (the default), the configured span uses the
 incoming W3C parent directly. Setting it to `false` disables this package's
 header extraction; the span instead inherits the enclosing Effect server span.

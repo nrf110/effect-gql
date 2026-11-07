@@ -197,13 +197,15 @@ Generic wrappers can name the inferred requirement type with
 `ObjectFieldsServices<Fields>`, exported from both `@effect-gql/core` and
 `@effect-gql/core/builder`.
 
-Registered type overrides also survive `S.optionalKey`, `S.mutableKey`, and
-combinations of those modifiers, including unencoded primitive schemas with
-computed fields. Optional keys remain nullable without losing the registered type.
+Registered object and interface types also survive `S.optionalKey`, `S.mutableKey`,
+and combinations of those modifiers, including structs and unencoded primitive
+schemas with computed fields. Unregistered key variants reuse the named
+registration; optional keys remain nullable without losing that type.
 If a base schema and a key-modified schema are explicitly registered under
 different names, each exact registration takes precedence over generated key
-aliases regardless of registration order. Root fields and nested references
-therefore select the same registered type for that schema.
+aliases regardless of registration order. Root fields, nested references, and
+registered union member matching retain those distinct names even when the
+schemas share the same structural body.
 
 ### Adding Fields Separately
 
@@ -348,6 +350,14 @@ builder
     resolve: (args) => Effect.succeed({ id: "1", ...args.input }),
   })
 ```
+
+Input registrations follow the same exact-schema precedence. For example,
+registering `Base` as `BaseInput` and `S.optionalKey(Base)` as `KeyInput` keeps
+both names distinct in arguments and nested input fields, in either registration
+order. Declare variables using the name registered for the argument's schema:
+`BaseInput!` for a required `Base` argument and `KeyInput` for the optional key
+variant. Without an explicit registration for a key variant, it reuses the
+base schema's registered input name.
 
 GraphQL has no input union type. Unless a union exactly matches a registered
 enum, input mapping falls back to its first non-null member. Registered input

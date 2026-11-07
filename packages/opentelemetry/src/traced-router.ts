@@ -1,8 +1,41 @@
-import { HttpRouter, HttpServerRequest } from "effect/http"
-import { Effect, Layer, Tracer } from "effect"
+import {
+  HttpRouter,
+  HttpServerError,
+  HttpServerRequest,
+  HttpServerRespondable,
+  HttpServerResponse,
+} from "effect/http"
+import { Effect, Layer, Tracer, type Cause } from "effect"
 import type { GraphQLSchema } from "graphql"
 import { makeGraphQLRouter, type MakeGraphQLRouterOptions } from "@effect-gql/core/server"
 import { extractTraceContext, type TraceContext } from "./context-propagation"
+
+// Inspect only known HTTP errors: Respondable conversion can run user effects.
+const failureStatus = (cause: Cause.Cause<unknown>): number | undefined => {
+  let error: unknown
+  let hasFailure = false
+  for (const reason of cause.reasons) {
+    if (reason._tag === "Fail") {
+      hasFailure = true
+      error = reason.error
+    } else if (reason._tag === "Die") {
+      hasFailure = true
+      if (HttpServerResponse.isHttpServerResponse(reason.defect)) {
+        return HttpServerError.causeResponseStripped(cause)[0].status
+      }
+      error = reason.defect
+    }
+  }
+  if (!hasFailure) return undefined
+  if (HttpServerError.isHttpServerError(error)) {
+    if (error.reason._tag === "RouteNotFound") return 404
+    if (error.reason._tag === "RequestParseError") {
+      return error.reason.reason === "BodyTooLarge" ? 413 : 400
+    }
+    return 500
+  }
+  return HttpServerRespondable.isRespondable(error) ? undefined : 500
+}
 
 /**
  * Options for the traced GraphQL router
@@ -144,7 +177,12 @@ export const withTracedRouter = <A, E, R>(
         const spanOptions = createSpanOptions(traceContext, request, options)
 
         return yield* httpEffect.pipe(
-          Effect.tap((response) => Effect.annotateCurrentSpan("http.status_code", response.status)),
+          Effect.onExit((exit) => {
+            const status = exit._tag === "Success" ? exit.value.status : failureStatus(exit.cause)
+            return status === undefined
+              ? Effect.void
+              : Effect.annotateCurrentSpan("http.status_code", status)
+          }),
           Effect.withSpan(options.rootSpanName ?? "graphql.http", spanOptions)
         )
       }),

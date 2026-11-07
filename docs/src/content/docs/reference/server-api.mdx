@@ -76,16 +76,18 @@ import { toRouter } from "@effect-gql/core"
 
 function toRouter<R>(
   builder: GraphQLSchemaBuilder<R>,
-  layer: Layer.Layer<NoInfer<Exclude<R, GraphQLRequestContext>>>,
+  layer: Layer.Layer<NoInfer<Exclude<R, GraphQLRequestContext | HttpRouter.Provided>>>,
   config?: GraphQLRouterConfigInput
 ): Layer.Layer<never, never, HttpRouter.HttpRouter>
 ```
 
-The layer must provide resolver and argument-decoder services accumulated by the
-builder. `GraphQLRequestContext` is supplied by the router for each request and
-does not belong in that layer. Additional services are allowed. Unlike `toRouter`,
-APIs accepting a bare `GraphQLSchema` cannot statically recover the builder's
-service requirements.
+The layer must provide application resolver and argument-decoder services accumulated
+by the builder. `GraphQLRequestContext` and `HttpRouter.Provided` services—the native
+HTTP request, parsed search parameters, route context, and request scope—are supplied
+for each request and do not belong in that layer. These services are available to
+both resolvers and argument decoders. Additional application services are allowed.
+Unlike `toRouter`, APIs accepting a bare `GraphQLSchema` cannot statically recover
+the builder's service requirements.
 
 **Example:**
 

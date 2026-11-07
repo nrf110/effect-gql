@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import { Effect, Layer, Context } from "effect"
 import * as S from "effect/Schema"
 import * as Getter from "effect/SchemaGetter"
-import { HttpRouter } from "effect/http"
+import { HttpRouter, HttpServerRequest } from "effect/http"
 import type { ExecutionResult } from "graphql"
 import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
 import { toRouter } from "../../../src/server/schema-builder-extensions"
@@ -218,6 +218,76 @@ describe("schema-builder-extensions.ts", () => {
           })
         )
         expect(await response.json()).toEqual({ data: { authorization: "Bearer context-only" } })
+      } finally {
+        await Promise.all([app.dispose(), contextOnly.dispose()])
+      }
+    })
+
+    it("uses HTTP-provided services in decoders and resolvers with fresh request scopes", async () => {
+      const finalized: string[] = []
+      const args = S.Struct({
+        value: S.String.pipe(
+          S.decodeTo(S.String, {
+            decode: Getter.transformEffect((value) =>
+              Effect.gen(function* () {
+                const request = yield* HttpServerRequest.HttpServerRequest
+                const search = yield* HttpServerRequest.ParsedSearchParams
+                const { route } = yield* HttpRouter.RouteContext
+                return `${request.headers.authorization}:${search.token}:${route.path}:${value}`
+              })
+            ),
+            encode: Getter.transform((value) => value),
+          })
+        ),
+      })
+      const requestBuilder = GraphQLSchemaBuilder.empty.query("request", {
+        type: S.String,
+        args,
+        resolve: ({ value }) =>
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                finalized.push(request.headers.authorization ?? "")
+              })
+            )
+            return value
+          }),
+      })
+      const builder = requestBuilder.query("message", {
+        type: S.String,
+        resolve: () => Effect.map(TestService, (service) => service.getMessage()),
+      })
+      const _requiresApplicationServices = () => {
+        // @ts-expect-error HTTP services do not satisfy application dependencies
+        toRouter(builder, Layer.empty)
+      }
+      const contextOnly = HttpRouter.toWebHandler(toRouter(requestBuilder, Layer.empty))
+      const app = HttpRouter.toWebHandler(toRouter(builder, testLayer))
+      try {
+        for (const [handler, token, withMessage] of [
+          [contextOnly.handler, "first", false],
+          [app.handler, "second", true],
+        ] as const) {
+          const response = await handler(
+            new Request(`http://localhost/graphql?token=${token}`, {
+              method: "POST",
+              headers: { "content-type": "application/json", authorization: token },
+              body: JSON.stringify({
+                query: `{ request(value: "decoded") ${withMessage ? "message" : ""} }`,
+              }),
+            })
+          )
+          expect(response.status).toBe(200)
+          expect(await response.json()).toEqual({
+            data: {
+              request: `${token}:${token}:/graphql:decoded`,
+              ...(withMessage ? { message: "Hello from service" } : {}),
+            },
+          })
+          expect(finalized).toContain(token)
+        }
+        expect(finalized).toEqual(["first", "second"])
       } finally {
         await Promise.all([app.dispose(), contextOnly.dispose()])
       }

@@ -173,8 +173,9 @@ const result = await Effect.runPromise(
 
 <Aside>
   The builder's type parameter `R` accumulates resolver and argument-decoder service requirements.
-  `toRouter(builder, layer)` rejects a layer missing any of those services. Calling
-  `buildSchema()` returns a standard `GraphQLSchema`, which does not retain this
+  `toRouter(builder, layer)` requires those application services from the layer,
+  while `GraphQLRequestContext` and `HttpRouter.Provided` services are supplied by
+  HTTP dispatch. Calling `buildSchema()` returns a standard `GraphQLSchema`, which does not retain this
   type information; when using `execute(schema, layer)` or another bare-schema API,
   you must supply the required services yourself.
 </Aside>

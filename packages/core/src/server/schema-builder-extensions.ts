@@ -11,7 +11,7 @@ import { makeGraphQLRouter, type MakeGraphQLRouterOptions } from "./router"
  * Field complexities and cache hints are automatically extracted from the builder.
  *
  * @param builder - The GraphQL schema builder
- * @param layer - Effect layer providing resolver and argument-decoding services, except request context
+ * @param layer - Effect layer providing application resolver and argument-decoding services
  * @param options - Optional configuration for paths, GraphiQL, complexity, and caching
  * @returns A route registration layer that can be merged with other routes
  *
@@ -42,7 +42,7 @@ import { makeGraphQLRouter, type MakeGraphQLRouterOptions } from "./router"
  */
 export const toRouter = <R>(
   builder: GraphQLSchemaBuilder<R>,
-  layer: Layer.Layer<NoInfer<Exclude<R, GraphQLRequestContext>>>,
+  layer: Layer.Layer<NoInfer<Exclude<R, GraphQLRequestContext | HttpRouter.Provided>>>,
   options?: Omit<MakeGraphQLRouterOptions, "fieldComplexities" | "cacheHints">
 ): Layer.Layer<never, never, HttpRouter.HttpRouter> => {
   const schema = builder.buildSchema()

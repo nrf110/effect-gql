@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest"
-import { Context, Effect, Exit, Layer, Option, Tracer } from "effect"
-import { HttpRouter, HttpServerResponse } from "effect/http"
+import { Cause, Context, Effect, Exit, Layer, Option, Tracer } from "effect"
+import { HttpRouter, HttpServerRespondable, HttpServerResponse } from "effect/http"
+import { buildSchema } from "graphql"
 import { resolverTracingMiddleware } from "../../src"
-import { withTracedRouter } from "../../src/traced-router"
+import { makeTracedGraphQLRouter, withTracedRouter } from "../../src/traced-router"
 
 const traceId = "4bf92f3577b34da6a3ce929d0e0e4736"
 const parentSpanId = "00f067aa0ba902b7"
@@ -102,9 +103,10 @@ describe("tracing", () => {
       { path: "/hello", status: 200, child: "hello.handler" },
       { path: "/missing", status: 404, child: undefined },
       { path: "/fail", status: 500, child: "failure.handler" },
+      { path: "/response-failure", status: 429, child: undefined },
     ])("finishes the configured request span for $path", async ({ path, status, child }) => {
       const recording = recordingTracer()
-      const routes = Layer.merge(
+      const routes = Layer.mergeAll(
         HttpRouter.add(
           "GET",
           "/hello",
@@ -114,6 +116,11 @@ describe("tracing", () => {
           "GET",
           "/fail",
           Effect.die(new Error("route failed")).pipe(Effect.withSpan("failure.handler"))
+        ),
+        HttpRouter.add(
+          "GET",
+          "/response-failure",
+          Effect.die(HttpServerResponse.empty({ status: 429 }))
         )
       )
       const app = Layer.merge(
@@ -143,6 +150,7 @@ describe("tracing", () => {
         expect(root.attributes.get("custom.version")).toBe(2)
         expect(root.attributes.get("custom.enabled")).toBe(true)
         expect(root.attributes.get("http.target")).toBe(path)
+        expect(root.attributes.get("http.status_code")).toBe(status)
         expect(root.traceId).toBe(traceId)
         expect(Option.getOrThrow(root.parent)).toMatchObject({
           _tag: "ExternalSpan",
@@ -160,6 +168,118 @@ describe("tracing", () => {
           expect(Option.getOrThrow(childSpan.parent).spanId).toBe(root.spanId)
         }
         for (const span of recording.spans) expect(span.status._tag).toBe("Ended")
+      } finally {
+        await dispose()
+      }
+    })
+
+    it.each(["GET", "POST"])(
+      "records the unmatched %s status before the GraphQL request span ends",
+      async (method) => {
+        const recording = recordingTracer()
+        const app = Layer.merge(
+          makeTracedGraphQLRouter(buildSchema("type Query { hello: String }"), Layer.empty, {
+            rootSpanName: "graphql.request",
+          }),
+          recording.layer
+        )
+        const { handler, dispose } = HttpRouter.toWebHandler(app, { disableLogger: true })
+
+        try {
+          const response = await handler(new Request("http://localhost/missing", { method }))
+          expect(response.status).toBe(404)
+          const root = recording.spans.find((span) => span.name === "graphql.request")!
+          expect(root.attributes.get("http.status_code")).toBe(404)
+          expect(root.status._tag).toBe("Ended")
+          if (root.status._tag === "Ended") expect(Exit.isFailure(root.status.exit)).toBe(true)
+        } finally {
+          await dispose()
+        }
+      }
+    )
+
+    it.each(["defect", "respondable"])("preserves %s failures for outer recovery", async (kind) => {
+      const recording = recordingTracer()
+      const failure = new Error("original route failure")
+      let conversions = 0
+      if (kind === "respondable") {
+        Object.assign(failure, {
+          [HttpServerRespondable.symbol]: () =>
+            Effect.sync(() => {
+              conversions++
+              return HttpServerResponse.text("custom conversion", { status: 418 })
+            }),
+        })
+      }
+      const failureCause = kind === "defect" ? Cause.die(failure) : Cause.fail(failure)
+      let observedCause: Cause.Cause<unknown> | undefined
+      const recover = HttpRouter.middleware(
+        (httpEffect) =>
+          Effect.catchCause(httpEffect, (cause) => {
+            observedCause = cause
+            return Effect.succeed(
+              HttpServerResponse.text("recovered by outer middleware", { status: 503 })
+            )
+          }),
+        { global: true }
+      )
+      const app = Layer.merge(
+        withTracedRouter(HttpRouter.add("GET", "/fail", Effect.failCause(failureCause)), {
+          rootSpanName: "failed.request",
+        }).pipe(Layer.provide(recover)),
+        recording.layer
+      )
+      const { handler, dispose } = HttpRouter.toWebHandler(app, { disableLogger: true })
+
+      try {
+        const response = await handler(new Request("http://localhost/fail"))
+        expect(response.status).toBe(503)
+        expect(await response.text()).toBe("recovered by outer middleware")
+        expect(conversions).toBe(0)
+        expect(observedCause?.reasons).toHaveLength(1)
+        expect(Cause.squash(observedCause!)).toBe(failure)
+        const root = recording.spans.find((span) => span.name === "failed.request")!
+        expect(root.attributes.get("http.status_code")).toBe(kind === "defect" ? 500 : undefined)
+        expect(root.status._tag).toBe("Ended")
+        if (root.status._tag === "Ended")
+          expect(root.status.exit).toEqual(Exit.failCause(observedCause!))
+      } finally {
+        await dispose()
+      }
+    })
+
+    it("leaves custom response conversion to the HTTP server", async () => {
+      const recording = recordingTracer()
+      let conversions = 0
+      const failure = {
+        [HttpServerRespondable.symbol]: () =>
+          Effect.sync(() => {
+            conversions++
+            return HttpServerResponse.text("custom response", { status: 418 })
+          }),
+      }
+      const app = Layer.merge(
+        withTracedRouter(HttpRouter.add("GET", "/fail", Effect.fail(failure)), {
+          rootSpanName: "custom.failure",
+        }),
+        recording.layer
+      )
+      const { handler, dispose } = HttpRouter.toWebHandler(app, { disableLogger: true })
+
+      try {
+        const response = await handler(new Request("http://localhost/fail"))
+        expect(response.status).toBe(418)
+        expect(await response.text()).toBe("custom response")
+        expect(conversions).toBe(1)
+        const root = recording.spans.find((span) => span.name === "custom.failure")!
+        expect(root.attributes.has("http.status_code")).toBe(false)
+        expect(root.status._tag).toBe("Ended")
+        if (root.status._tag === "Ended") {
+          expect(Exit.isFailure(root.status.exit)).toBe(true)
+          if (Exit.isFailure(root.status.exit)) {
+            expect(Cause.squash(root.status.exit.cause)).toBe(failure)
+          }
+        }
       } finally {
         await dispose()
       }

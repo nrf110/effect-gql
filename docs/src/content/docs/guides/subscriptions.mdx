@@ -38,6 +38,11 @@ runs. Other IDs and ping/pong messages remain concurrent.
 Cancelling a waiting replacement skips its setup;
 closing the connection skips all waiting replacements. Late iterator cleanup
 remains tracked independently, so it cannot outlive connection-scoped services.
+Once an operation is cancelled, its remaining `next`, `error`, and `complete`
+frames are suppressed, including errors from asynchronous source finalizers.
+They cannot terminate a replacement using the same ID. Finalizers and lifecycle
+hooks still run and remain tracked; errors from uncancelled operations are
+delivered normally.
 
 A protocol close request immediately suppresses further dispatch and sends,
 before the peer acknowledges the WebSocket close handshake. Deferred

@@ -1609,6 +1609,209 @@ describe("registered unencoded key-context variants", () => {
 })
 
 describe("exact registration precedence", () => {
+  it.each([
+    ["optional", false],
+    ["optional", true],
+    ["mutable", false],
+    ["mutable", true],
+    ["both", false],
+    ["both", true],
+  ] as const)(
+    "keeps struct %s key registrations distinct in nested selections and named inputs (%s)",
+    async (modifier, reversed) => {
+      const Base = S.Struct({ id: S.String })
+      const Key =
+        modifier === "optional"
+          ? S.optionalKey(Base)
+          : modifier === "mutable"
+            ? S.mutableKey(Base)
+            : S.optionalKey(S.mutableKey(Base))
+      const Pair = S.Struct({ base: Base, key: Key })
+      const registrations = [
+        { name: "Base", schema: Base },
+        { name: "Key", schema: Key },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reversed ? registrations.reverse() : registrations) {
+        builder = builder
+          .objectType({
+            ...registration,
+            fields: {
+              [registration.name === "Base" ? "baseOnly" : "keyOnly"]: {
+                type: S.String,
+                resolve: () => Effect.succeed(registration.name),
+              },
+            },
+          })
+          .inputType({ name: `${registration.name}Input`, schema: registration.schema })
+      }
+      const schema = builder
+        .unionType({ name: "Either", types: ["Base", "Key"], resolveType: () => "Key" })
+        .inputType({ name: "PairInput", schema: Pair })
+        .query("directBase", {
+          type: Base,
+          resolve: () => Effect.succeed({ id: "base" }),
+        })
+        .query("directKey", {
+          type: Key,
+          resolve: () => Effect.succeed({ id: "key" }),
+        })
+        .query("nested", {
+          type: Pair,
+          resolve: () => Effect.succeed({ base: { id: "base" }, key: { id: "key" } }),
+        })
+        .query("either", {
+          type: S.Union([Base, Key]),
+          resolve: () => Effect.succeed({ id: "key" }),
+        })
+        .query("echo", {
+          type: S.String,
+          args: S.Struct({ base: Base, key: Key, pair: Pair }),
+          resolve: ({ base, key, pair }) =>
+            Effect.succeed(`${base.id}:${key?.id}:${pair.base.id}:${pair.key?.id}`),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)(
+          `query($base: BaseInput!, $key: KeyInput${modifier === "mutable" ? "!" : ""}, $pair: PairInput!) {
+            directBase { baseOnly }
+            either { __typename ... on Key { keyOnly } }
+            directKey { keyOnly }
+            nested { base { baseOnly } key { keyOnly } }
+            echo(base: $base, key: $key, pair: $pair)
+          }`,
+          {
+            base: { id: "base" },
+            key: { id: "key" },
+            pair: { base: { id: "nested-base" }, key: { id: "nested-key" } },
+          }
+        )
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        directBase: { baseOnly: "Base" },
+        directKey: { keyOnly: "Key" },
+        either: { __typename: "Key", keyOnly: "Key" },
+        nested: { base: { baseOnly: "Base" }, key: { keyOnly: "Key" } },
+        echo: "base:key:nested-base:nested-key",
+      })
+    }
+  )
+
+  it.each([
+    ["optional", false],
+    ["optional", true],
+    ["mutable", false],
+    ["mutable", true],
+    ["both", false],
+    ["both", true],
+  ] as const)(
+    "keeps struct %s key interface registrations distinct in nested selections (%s)",
+    async (modifier, reversed) => {
+      const Base = S.Struct({ id: S.String })
+      const Key =
+        modifier === "optional"
+          ? S.optionalKey(Base)
+          : modifier === "mutable"
+            ? S.mutableKey(Base)
+            : S.optionalKey(S.mutableKey(Base))
+      const registrations = [
+        { name: "BaseNode", schema: Base, resolveType: () => "BaseValue" },
+        { name: "KeyNode", schema: Key, resolveType: () => "KeyValue" },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reversed ? registrations.reverse() : registrations) {
+        builder = builder.interfaceType(registration)
+      }
+      const schema = builder
+        .objectType({
+          name: "BaseValue",
+          schema: S.Struct({ id: S.String }),
+          implements: ["BaseNode"],
+        })
+        .objectType({
+          name: "KeyValue",
+          schema: S.Struct({ id: S.String }),
+          implements: ["KeyNode"],
+        })
+        .query("nested", {
+          type: S.Struct({ base: Base, key: Key }),
+          resolve: () => Effect.succeed({ base: { id: "base" }, key: { id: "key" } }),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)("{ nested { base { __typename id } key { __typename id } } }")
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        nested: {
+          base: { __typename: "BaseValue", id: "base" },
+          key: { __typename: "KeyValue", id: "key" },
+        },
+      })
+    }
+  )
+
+  it("reuses a struct registration for unregistered key variants in output and input", async () => {
+    const Base = S.Struct({ id: S.String })
+    const Variants = S.Struct({
+      optional: S.optionalKey(Base),
+      mutable: S.mutableKey(Base),
+      mutableOptional: S.mutableKey(S.optionalKey(Base)),
+      optionalMutable: S.optionalKey(S.mutableKey(Base)),
+    })
+    const schema = GraphQLSchemaBuilder.empty
+      .objectType({
+        name: "Base",
+        schema: Base,
+        fields: { kind: { type: S.String, resolve: () => Effect.succeed("Base") } },
+      })
+      .inputType({ name: "BaseInput", schema: Base })
+      .query("variants", {
+        type: Variants,
+        resolve: () =>
+          Effect.succeed({
+            optional: { id: "1" },
+            mutable: { id: "2" },
+            mutableOptional: { id: "3" },
+            optionalMutable: { id: "4" },
+          }),
+      })
+      .query("echo", {
+        type: S.String,
+        args: Variants,
+        resolve: ({ optional, mutable, mutableOptional, optionalMutable }) =>
+          Effect.succeed(
+            `${optional?.id}:${mutable.id}:${mutableOptional?.id}:${optionalMutable?.id}`
+          ),
+      })
+      .buildSchema()
+    const result = await Effect.runPromise(
+      execute(schema, Layer.empty)(
+        `query($value: BaseInput!) {
+          variants {
+            optional { kind }
+            mutable { kind }
+            mutableOptional { kind }
+            optionalMutable { kind }
+          }
+          echo(optional: $value, mutable: $value, mutableOptional: $value, optionalMutable: $value)
+        }`,
+        { value: { id: "input" } }
+      )
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({
+      variants: {
+        optional: { kind: "Base" },
+        mutable: { kind: "Base" },
+        mutableOptional: { kind: "Base" },
+        optionalMutable: { kind: "Base" },
+      },
+      echo: "input:input:input:input",
+    })
+  })
+
   it.each([false, true])(
     "keeps an explicitly registered transformation distinct from its registered projection (%s)",
     async (projectedFirst) => {

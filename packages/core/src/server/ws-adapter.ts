@@ -217,15 +217,17 @@ const createGraphqlWsSocketAdapter = <R>(
       send: (data: string) => {
         if (extra.closing) return Promise.resolve()
         const message = parseMessage(data)
-        if (message.type === "complete" || message.type === "error") {
-          // The client can reuse the ID as soon as it receives this frame, but
-          // graphql-ws keeps its reservation until the sending callback settles.
+        if (message.type === "next" || message.type === "complete" || message.type === "error") {
           // Attribute frames to the running callback, not its queued replacement.
-          // ERROR is already terminal: graphql-ws may still invoke its completion
-          // hook afterward, but its COMPLETE must not terminate a reused client ID.
+          // A cancelled callback can still send while its source finalizes.
           const operation = runningOperations.get(message.id)
-          if (message.type === "complete" && operation?.terminal) return Promise.resolve()
-          if (operation) operation.terminal = true
+          if (operation?.cancelled) return Promise.resolve()
+          if (message.type === "complete" || message.type === "error") {
+            // The client can reuse the ID before the sending callback settles.
+            // ERROR is terminal, even if graphql-ws invokes completion afterward.
+            if (message.type === "complete" && operation?.terminal) return Promise.resolve()
+            if (operation) operation.terminal = true
+          }
         }
         const send = socket
           .send(data)

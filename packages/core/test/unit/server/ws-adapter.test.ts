@@ -726,6 +726,140 @@ describe("ws-adapter.ts", () => {
       }
     })
 
+    it.each([
+      { cancelled: true, fails: true },
+      { cancelled: true, fails: false },
+      { cancelled: false, fails: false },
+    ])(
+      "isolates reused IDs from asynchronous stream cleanup (cancelled: $cancelled, fails: $fails)",
+      async ({ cancelled, fails }) => {
+        const finalizing = Effect.runSync(Deferred.make<void>())
+        const finishFinalizer = Effect.runSync(Deferred.make<void>())
+        const events: string[] = []
+        let queries = 0
+        const schema = GraphQLSchemaBuilder.empty
+          .query("hello", {
+            type: S.String,
+            resolve: () =>
+              Effect.sync(() => {
+                queries++
+                return "world"
+              }),
+          })
+          .subscription("token", {
+            type: S.Number,
+            subscribe: () =>
+              Effect.succeed(
+                Stream.make(1).pipe(
+                  Stream.concat(cancelled ? Stream.never : Stream.fail(new Error("source failed"))),
+                  Stream.ensuring(
+                    Effect.gen(function* () {
+                      events.push("finalizing")
+                      yield* Deferred.succeed(finalizing, undefined)
+                      yield* Deferred.await(finishFinalizer)
+                      events.push("finalized")
+                      if (fails) yield* Effect.die(new Error("cleanup failed"))
+                    })
+                  )
+                )
+              ),
+          })
+          .buildSchema()
+        const layer = Layer.effectDiscard(
+          Effect.acquireRelease(Effect.void, () =>
+            Effect.sync(() => {
+              events.push("released")
+            })
+          )
+        )
+        const mock = createMockSocket()
+        const outgoing = Effect.runSync(Queue.unbounded<unknown>())
+        const socket: EffectWebSocket = {
+          ...mock.socket,
+          send: (data) =>
+            mock.socket
+              .send(data)
+              .pipe(Effect.andThen(Queue.offer(outgoing, JSON.parse(data))), Effect.asVoid),
+        }
+        const nextMessage = () =>
+          Effect.runPromise(Queue.take(outgoing).pipe(Effect.timeout("2 seconds")))
+        const fiber = Effect.runFork(makeGraphQLWSHandler(schema, layer)(socket))
+        try {
+          mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+          expect(await nextMessage()).toEqual({ type: "connection_ack" })
+          mock.sendMessage(
+            JSON.stringify({
+              id: "same",
+              type: "subscribe",
+              payload: { query: "subscription { token }" },
+            })
+          )
+          expect(await nextMessage()).toEqual({
+            id: "same",
+            type: "next",
+            payload: { data: { token: 1 } },
+          })
+          if (cancelled) mock.sendMessage(JSON.stringify({ id: "same", type: "complete" }))
+          await Effect.runPromise(Deferred.await(finalizing).pipe(Effect.timeout("2 seconds")))
+          if (cancelled) {
+            mock.sendMessage(
+              JSON.stringify({ id: "same", type: "subscribe", payload: { query: "{ hello }" } })
+            )
+          }
+          mock.sendMessage(JSON.stringify({ type: "ping", payload: { barrier: "finalizing" } }))
+          expect(await nextMessage()).toEqual({
+            type: "pong",
+            payload: { barrier: "finalizing" },
+          })
+          expect(queries).toBe(0)
+          expect(events).toEqual(["finalizing"])
+
+          Effect.runSync(Deferred.succeed(finishFinalizer, undefined))
+          if (!cancelled) {
+            expect(await nextMessage()).toEqual({
+              id: "same",
+              type: "error",
+              payload: [expect.objectContaining({ message: "source failed" })],
+            })
+            mock.sendMessage(
+              JSON.stringify({ id: "same", type: "subscribe", payload: { query: "{ hello }" } })
+            )
+          }
+          expect(await nextMessage()).toEqual({
+            id: "same",
+            type: "next",
+            payload: { data: { hello: "world" } },
+          })
+          expect(await nextMessage()).toEqual({ id: "same", type: "complete" })
+          expect(queries).toBe(1)
+          expect(events).toEqual(["finalizing", "finalized"])
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+          expect(events).toEqual(["finalizing", "finalized", "released"])
+          expect(mock.sentMessages.map((data) => JSON.parse(data))).toEqual([
+            { type: "connection_ack" },
+            { id: "same", type: "next", payload: { data: { token: 1 } } },
+            { type: "pong", payload: { barrier: "finalizing" } },
+            ...(!cancelled
+              ? [
+                  {
+                    id: "same",
+                    type: "error",
+                    payload: [expect.objectContaining({ message: "source failed" })],
+                  },
+                ]
+              : []),
+            { id: "same", type: "next", payload: { data: { hello: "world" } } },
+            { id: "same", type: "complete" },
+          ])
+        } finally {
+          Effect.runSync(Deferred.succeed(finishFinalizer, undefined))
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.interrupt(fiber))
+        }
+      }
+    )
+
     it.each(["hook", "source"] as const)(
       "cancels immediately during %s setup without consuming the late iterator or closing the connection",
       async (phase) => {
