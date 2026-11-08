@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Cause, Context, Effect, Exit, Layer, Option, Tracer } from "effect"
+import { Cause, Context, Effect, Exit, Layer, Option, Schema, Tracer } from "effect"
 import { HttpRouter, HttpServerRespondable, HttpServerResponse } from "effect/http"
 import { buildSchema } from "graphql"
 import { resolverTracingMiddleware } from "../../src"
@@ -104,8 +104,13 @@ describe("tracing", () => {
       { path: "/missing", status: 404, child: undefined },
       { path: "/fail", status: 500, child: "failure.handler" },
       { path: "/response-failure", status: 429, child: undefined },
+      { path: "/schema-failure", status: 400, child: undefined },
+      { path: "/missing-value", status: 404, child: undefined },
+      { path: "/schema-defect", status: 500, child: undefined },
+      { path: "/missing-value-defect", status: 500, child: undefined },
     ])("finishes the configured request span for $path", async ({ path, status, child }) => {
       const recording = recordingTracer()
+      const invalidInput = Schema.decodeUnknownEffect(Schema.Number)("invalid")
       const routes = Layer.mergeAll(
         HttpRouter.add(
           "GET",
@@ -121,7 +126,19 @@ describe("tracing", () => {
           "GET",
           "/response-failure",
           Effect.die(HttpServerResponse.empty({ status: 429 }))
-        )
+        ),
+        HttpRouter.add(
+          "GET",
+          "/schema-failure",
+          invalidInput.pipe(Effect.as(HttpServerResponse.empty()))
+        ),
+        HttpRouter.add("GET", "/missing-value", Effect.fail(new Cause.NoSuchElementError())),
+        HttpRouter.add(
+          "GET",
+          "/schema-defect",
+          invalidInput.pipe(Effect.orDie, Effect.as(HttpServerResponse.empty()))
+        ),
+        HttpRouter.add("GET", "/missing-value-defect", Effect.die(new Cause.NoSuchElementError()))
       )
       const app = Layer.merge(
         withTracedRouter(routes, {

@@ -5,7 +5,7 @@ import {
   HttpServerRespondable,
   HttpServerResponse,
 } from "effect/http"
-import { Effect, Layer, Tracer, type Cause } from "effect"
+import { Cause, Effect, Layer, Schema, Tracer } from "effect"
 import type { GraphQLSchema } from "graphql"
 import { makeGraphQLRouter, type MakeGraphQLRouterOptions } from "@effect-gql/core/server"
 import { extractTraceContext, type TraceContext } from "./context-propagation"
@@ -14,16 +14,19 @@ import { extractTraceContext, type TraceContext } from "./context-propagation"
 const failureStatus = (cause: Cause.Cause<unknown>): number | undefined => {
   let error: unknown
   let hasFailure = false
+  let isDefect = false
   for (const reason of cause.reasons) {
     if (reason._tag === "Fail") {
       hasFailure = true
       error = reason.error
+      isDefect = false
     } else if (reason._tag === "Die") {
       hasFailure = true
       if (HttpServerResponse.isHttpServerResponse(reason.defect)) {
         return HttpServerError.causeResponseStripped(cause)[0].status
       }
       error = reason.defect
+      isDefect = true
     }
   }
   if (!hasFailure) return undefined
@@ -34,7 +37,12 @@ const failureStatus = (cause: Cause.Cause<unknown>): number | undefined => {
     }
     return 500
   }
-  return HttpServerRespondable.isRespondable(error) ? undefined : 500
+  if (HttpServerRespondable.isRespondable(error)) return undefined
+  if (!isDefect) {
+    if (Schema.isSchemaError(error)) return 400
+    if (Cause.isNoSuchElementError(error)) return 404
+  }
+  return 500
 }
 
 /**

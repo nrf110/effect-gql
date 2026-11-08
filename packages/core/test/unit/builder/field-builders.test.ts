@@ -592,6 +592,82 @@ describe("field-builders.ts", () => {
       }
     )
 
+    it.each(
+      ["toString", "constructor"].flatMap((name) => [
+        { name, kind: "optional string", field: S.optional(S.String), fallback: false },
+        {
+          name,
+          kind: "optional Option",
+          field: S.optional(S.Option(S.String)),
+          fallback: false,
+        },
+        {
+          name,
+          kind: "optional-key Option",
+          field: S.optionalKey(S.Option(S.String)),
+          fallback: false,
+        },
+        {
+          name,
+          kind: "defaulted string",
+          field: S.String.pipe(S.withDecodingDefault(Effect.succeed("fallback"))),
+          fallback: true,
+        },
+      ])
+    )(
+      "decodes omitted and present $kind arguments named $name",
+      async ({ name, field, fallback }) => {
+        const args = S.Struct({
+          [name]: field,
+          input: S.Struct({ option: S.Option(S.String), [name]: field }),
+        })
+        const inspect = (value: Record<string, unknown>) => {
+          const present = Object.hasOwn(value, name)
+          const item = present ? value[name] : undefined
+          return {
+            present,
+            value: Option.isOption(item) ? Option.getOrNull(item) : (item ?? null),
+          }
+        }
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: {
+              inspect: buildField(
+                {
+                  type: S.String,
+                  args,
+                  resolve: (decoded: Record<string, unknown>) =>
+                    Effect.succeed(
+                      JSON.stringify([
+                        inspect(decoded),
+                        inspect(decoded.input as Record<string, unknown>),
+                      ])
+                    ),
+                },
+                createFieldBuilderContext()
+              ),
+            },
+          }),
+        })
+        for (const [argumentsText, expected] of [
+          ["(input: {})", { present: fallback, value: fallback ? "fallback" : null }],
+          [
+            `(${name}: "present", input: { ${name}: "present" })`,
+            { present: true, value: "present" },
+          ],
+        ] as const) {
+          const result = await graphql({
+            schema,
+            source: `{ inspect${argumentsText} }`,
+            contextValue: createSimpleContext(),
+          })
+          expect(result.errors).toBeUndefined()
+          expect(JSON.parse(String(result.data?.inspect))).toEqual([expected, expected])
+        }
+      }
+    )
+
     it("distinguishes omitted optional Options, explicit null, and present values", async () => {
       const args = S.Struct({
         value: S.optional(S.Option(S.String)),

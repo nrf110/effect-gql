@@ -240,9 +240,12 @@ The root span records `http.status_code` before ending on both successful
 responses and failures, including unmatched GET/POST requests (404) and unhandled
 handler errors (500). Failure statuses are derived without executing custom
 `HttpServerRespondable` conversions: standard HTTP errors use their known status,
-and explicit response defects retain their response status. Ordinary unhandled
-failures are recorded as 500. Status is left unset for custom Respondable errors
-and pure interruptions because their final status is unknown at this boundary.
+and explicit response defects retain their response status. Typed `SchemaError`
+failures are recorded as 400 and `Cause.NoSuchElementError` failures as 404,
+matching Effect's HTTP conversion. If raised as defects instead, these errors
+remain 500. Ordinary unhandled failures are also recorded as 500. Status is left
+unset for custom Respondable errors and pure interruptions because their final
+status is unknown at this boundary.
 The original failure remains available to enclosing middleware and the HTTP
 server; if outer middleware recovers or a custom Respondable chooses a different
 response, the root span still describes the failure observed inside the traced
