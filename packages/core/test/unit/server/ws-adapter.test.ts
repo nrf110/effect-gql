@@ -1915,6 +1915,224 @@ describe("ws-adapter.ts", () => {
       }
     )
 
+    it("interrupts a pending next send and joins send, source, and hook cleanup before release", async () => {
+      const sending = Effect.runSync(Deferred.make<void>())
+      const finishSendFallback = Effect.runSync(Deferred.make<void>())
+      const sendFinalizing = Effect.runSync(Deferred.make<void>())
+      const finishSendFinalizer = Effect.runSync(Deferred.make<void>())
+      const sourceFinalizing = Effect.runSync(Deferred.make<void>())
+      const finishSourceFinalizer = Effect.runSync(Deferred.make<void>())
+      const disconnecting = Effect.runSync(Deferred.make<void>())
+      const finishDisconnect = Effect.runSync(Deferred.make<void>())
+      const disconnected = Effect.runSync(Deferred.make<void>())
+      const completing = Effect.runSync(Deferred.make<void>())
+      const finishComplete = Effect.runSync(Deferred.make<void>())
+      const events: string[] = []
+      let released = false
+      const schema = createTestSchema()
+      schema.getSubscriptionType()!.getFields().tick.subscribe = () => ({
+        [Symbol.asyncIterator]() {
+          return this
+        },
+        next: async () => ({ done: false, value: { tick: { count: 1 } } }),
+        return: async () => {
+          events.push("source:finalizing")
+          Effect.runSync(Deferred.succeed(sourceFinalizing, undefined))
+          await Effect.runPromise(Deferred.await(finishSourceFinalizer))
+          events.push("source:finalized")
+          return { done: true, value: undefined }
+        },
+      })
+      const layer = Layer.effectDiscard(
+        Effect.acquireRelease(Effect.void, () =>
+          Effect.sync(() => {
+            released = true
+            events.push("released")
+          })
+        )
+      )
+      const mock = createMockSocket()
+      const socket: EffectWebSocket = {
+        ...mock.socket,
+        send: (data) =>
+          JSON.parse(data).type === "next"
+            ? Deferred.succeed(sending, undefined).pipe(
+                Effect.andThen(Deferred.await(finishSendFallback)),
+                Effect.ensuring(
+                  Effect.gen(function* () {
+                    events.push("send:finalizing")
+                    yield* Deferred.succeed(sendFinalizing, undefined)
+                    yield* Deferred.await(finishSendFinalizer)
+                    events.push("send:finalized")
+                  })
+                )
+              )
+            : mock.socket.send(data),
+      }
+      const fiber = Effect.runFork(
+        makeGraphQLWSHandler(schema, layer, {
+          onComplete: () =>
+            Effect.gen(function* () {
+              events.push("complete:start")
+              yield* Deferred.succeed(completing, undefined)
+              yield* Deferred.await(finishComplete)
+              events.push("complete:end")
+            }),
+          onDisconnect: () =>
+            Effect.gen(function* () {
+              events.push("disconnect:start")
+              yield* Deferred.succeed(disconnecting, undefined)
+              yield* Deferred.await(finishDisconnect)
+              events.push("disconnect:end")
+              yield* Deferred.succeed(disconnected, undefined)
+            }),
+        })(socket)
+      )
+      try {
+        mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+        await mock.waitForAck()
+        mock.sendMessage(
+          JSON.stringify({
+            id: "pending",
+            type: "subscribe",
+            payload: { query: "subscription { tick { count } }" },
+          })
+        )
+        await Effect.runPromise(Deferred.await(sending).pipe(Effect.timeout("2 seconds")))
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Deferred.await(sendFinalizing).pipe(Effect.timeout("2 seconds")))
+        await Effect.runPromise(Deferred.await(sourceFinalizing).pipe(Effect.timeout("2 seconds")))
+        expect(released).toBe(false)
+
+        Effect.runSync(Deferred.succeed(finishSourceFinalizer, undefined))
+        await Effect.runPromise(Deferred.await(disconnecting).pipe(Effect.timeout("2 seconds")))
+        expect(released).toBe(false)
+        Effect.runSync(Deferred.succeed(finishDisconnect, undefined))
+        await Effect.runPromise(Deferred.await(disconnected).pipe(Effect.timeout("2 seconds")))
+        expect(released).toBe(false)
+        expect(events).not.toContain("send:finalized")
+        expect(events).not.toContain("complete:start")
+
+        Effect.runSync(Deferred.succeed(finishSendFinalizer, undefined))
+        await Effect.runPromise(Deferred.await(completing).pipe(Effect.timeout("2 seconds")))
+        expect(released).toBe(false)
+        Effect.runSync(Deferred.succeed(finishComplete, undefined))
+        await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+        expect(events.slice(0, 2).sort()).toEqual(["send:finalizing", "source:finalizing"])
+        expect(events.slice(2)).toEqual([
+          "source:finalized",
+          "disconnect:start",
+          "disconnect:end",
+          "send:finalized",
+          "complete:start",
+          "complete:end",
+          "released",
+        ])
+        expect(mock.sentMessages.map((data) => JSON.parse(data))).toEqual([
+          { type: "connection_ack" },
+        ])
+      } finally {
+        Effect.runSync(Deferred.succeed(finishSendFallback, undefined))
+        Effect.runSync(Deferred.succeed(finishSendFinalizer, undefined))
+        Effect.runSync(Deferred.succeed(finishSourceFinalizer, undefined))
+        Effect.runSync(Deferred.succeed(finishDisconnect, undefined))
+        Effect.runSync(Deferred.succeed(finishComplete, undefined))
+        mock.closeConnection(1000, "Done")
+        await Effect.runPromise(Fiber.interrupt(fiber))
+      }
+    })
+
+    it.each(["pong", "complete", "error"] as const)(
+      "interrupts a pending %s send and joins its async finalizer after disconnect",
+      async (frame) => {
+        const sending = Effect.runSync(Deferred.make<void>())
+        const finishSendFallback = Effect.runSync(Deferred.make<void>())
+        const finalizing = Effect.runSync(Deferred.make<void>())
+        const finishFinalizer = Effect.runSync(Deferred.make<void>())
+        const disconnected = Effect.runSync(Deferred.make<void>())
+        const events: string[] = []
+        let released = false
+        const layer = Layer.effectDiscard(
+          Effect.acquireRelease(Effect.void, () =>
+            Effect.sync(() => {
+              released = true
+              events.push("released")
+            })
+          )
+        )
+        const mock = createMockSocket()
+        const socket: EffectWebSocket = {
+          ...mock.socket,
+          send: (data) =>
+            JSON.parse(data).type === frame
+              ? Deferred.succeed(sending, undefined).pipe(
+                  Effect.andThen(Deferred.await(finishSendFallback)),
+                  Effect.ensuring(
+                    Effect.gen(function* () {
+                      events.push("send:finalizing")
+                      yield* Deferred.succeed(finalizing, undefined)
+                      yield* Deferred.await(finishFinalizer)
+                      events.push("send:finalized")
+                    })
+                  )
+                )
+              : mock.socket.send(data),
+        }
+        const fiber = Effect.runFork(
+          makeGraphQLWSHandler(createTestSchema(), layer, {
+            onComplete: () =>
+              Effect.sync(() => {
+                events.push("complete")
+              }),
+            onError: () =>
+              Effect.sync(() => {
+                events.push("error")
+              }),
+            onDisconnect: () =>
+              Effect.gen(function* () {
+                events.push("disconnect")
+                yield* Deferred.succeed(disconnected, undefined)
+              }),
+          })(socket)
+        )
+        try {
+          mock.sendMessage(JSON.stringify({ type: "connection_init" }))
+          await mock.waitForAck()
+          mock.sendMessage(
+            JSON.stringify(
+              frame === "pong"
+                ? { type: "ping" }
+                : {
+                    id: "pending",
+                    type: "subscribe",
+                    payload: { query: frame === "error" ? "{ missing }" : "{ hello }" },
+                  }
+            )
+          )
+          await Effect.runPromise(Deferred.await(sending).pipe(Effect.timeout("2 seconds")))
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Deferred.await(finalizing).pipe(Effect.timeout("2 seconds")))
+          await Effect.runPromise(Deferred.await(disconnected).pipe(Effect.timeout("2 seconds")))
+          expect(released).toBe(false)
+          expect(events).not.toContain("send:finalized")
+          Effect.runSync(Deferred.succeed(finishFinalizer, undefined))
+          await Effect.runPromise(Fiber.join(fiber).pipe(Effect.timeout("2 seconds")))
+          expect(events.slice(-2)).toEqual(["send:finalized", "released"])
+          expect(events.filter((event) => event === "complete")).toEqual(
+            frame === "complete" ? ["complete"] : []
+          )
+          expect(events.filter((event) => event === "error")).toEqual(
+            frame === "error" ? ["error"] : []
+          )
+        } finally {
+          Effect.runSync(Deferred.succeed(finishSendFallback, undefined))
+          Effect.runSync(Deferred.succeed(finishFinalizer, undefined))
+          mock.closeConnection(1000, "Done")
+          await Effect.runPromise(Fiber.interrupt(fiber))
+        }
+      }
+    )
+
     it("terminates closed pulls when an iterator yields from finally", async () => {
       const resolving = Effect.runSync(Deferred.make<void>())
       let release!: () => void

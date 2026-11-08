@@ -240,7 +240,8 @@ The root span records `http.status_code` before ending on both successful
 responses and failures, including unmatched GET/POST requests (404) and unhandled
 handler errors (500). Failure statuses are derived without executing custom
 `HttpServerRespondable` conversions: standard HTTP errors use their known status,
-and explicit response defects retain their response status. Typed `SchemaError`
+and explicit `HttpServerResponse` failures or defects retain their response
+status. Typed `SchemaError`
 failures are recorded as 400 and `Cause.NoSuchElementError` failures as 404,
 matching Effect's HTTP conversion. If raised as defects instead, these errors
 remain 500. Ordinary unhandled failures are also recorded as 500. Status is left

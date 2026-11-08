@@ -40,6 +40,28 @@ function encodeResolverOutput(
   return Effect.succeed(value)
 }
 
+/** Only explicit undefined encodings make an omitted required key restorable. */
+function hasUndefinedEncoding(ast: AST.AST, seen?: Set<AST.AST>): boolean {
+  switch (ast._tag) {
+    case "Undefined":
+    case "Void":
+      return true
+    case "Union":
+      for (const member of ast.types) {
+        if (hasUndefinedEncoding(member, seen)) return true
+      }
+      return false
+    case "Suspend": {
+      if (seen?.has(ast)) return false
+      const visited = seen ?? new Set<AST.AST>()
+      visited.add(ast)
+      return hasUndefinedEncoding(ast.thunk(), visited)
+    }
+    default:
+      return false
+  }
+}
+
 /**
  * Restore the representations hidden by GraphQL before full-schema decoding.
  * Optional keys stay absent so schema defaults and key-level codecs still run.
@@ -105,7 +127,7 @@ function restoreGraphQLInput(original: AST.AST, value: unknown): unknown {
           field.name === "_tag" && encoded?._tag === "Literal"
             ? encoded.literal
             : restoreGraphQLInput(field.type, present ? record[field.name] : undefined)
-        if (!present && item === undefined) continue
+        if (!present && item === undefined && (!encoded || !hasUndefinedEncoding(encoded))) continue
         if (!present || item !== record[field.name]) {
           if (restored === record) restored = Object.assign(Object.create(null), record)
           restored[field.name] = item

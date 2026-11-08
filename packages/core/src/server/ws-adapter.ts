@@ -20,7 +20,7 @@ interface WSExtra<R> {
   services: Context.Context<R>
   connectionParams: Record<string, unknown>
   closing: boolean
-  setupAbort: AbortController
+  connectionAbort: AbortController
   pendingReturns: Set<Promise<unknown>>
 }
 
@@ -46,7 +46,7 @@ const makeOnConnectHandler = <R>(
     try {
       const result = await Effect.runPromiseWith(extra.services)(
         options.onConnect!(ctx.connectionParams ?? {}),
-        { signal: extra.setupAbort.signal }
+        { signal: extra.connectionAbort.signal }
       )
       if (typeof result === "object" && result !== null) {
         Object.assign(extra.connectionParams, result)
@@ -130,7 +130,7 @@ const makeOnSubscribeHandler = <R>(
             extensions: payload.extensions ?? undefined,
           },
         }),
-        { signal: extra.setupAbort.signal }
+        { signal: extra.connectionAbort.signal }
       )
     }
   }
@@ -186,7 +186,6 @@ const createGraphqlWsSocketAdapter = <R>(
   let messageCallback: ((message: string) => Promise<void>) | null = null
   let acknowledged = false
   let closeRequested = false
-  let pendingAcknowledgment: AbortController | undefined
   interface OperationDispatch {
     cancelled: boolean
     terminal: boolean
@@ -197,9 +196,8 @@ const createGraphqlWsSocketAdapter = <R>(
   const runningOperations = new Map<string, OperationDispatch>()
   const stopDispatching = () => {
     extra.closing = true
-    // Setup belongs to the connection; cleanup hooks still run with live services.
-    extra.setupAbort.abort()
-    pendingAcknowledgment?.abort()
+    // Setup and sends belong to the connection; cleanup keeps live services.
+    extra.connectionAbort.abort()
   }
   const close = (code?: number, reason?: string) => {
     if (closeRequested) return
@@ -232,21 +230,18 @@ const createGraphqlWsSocketAdapter = <R>(
         const send = socket
           .send(data)
           .pipe(Effect.catch((error) => Effect.logError("WebSocket send error", error)))
-        if (message.type === "connection_ack") {
-          pendingAcknowledgment = new AbortController()
-          return Effect.runPromiseWith(services)(
-            send.pipe(
-              Effect.andThen(
-                Effect.sync(() => {
-                  acknowledged = true
-                  pendingAcknowledgment = undefined
-                })
+        return Effect.runPromiseWith(services)(
+          message.type === "connection_ack"
+            ? send.pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    acknowledged = true
+                  })
+                )
               )
-            ),
-            { signal: pendingAcknowledgment.signal }
-          )
-        }
-        return Effect.runPromiseWith(services)(send)
+            : send,
+          { signal: extra.connectionAbort.signal }
+        )
       },
 
       close,
@@ -597,7 +592,7 @@ export const makeGraphQLWSHandler = <R, LE = never>(
         services: initialized.services,
         connectionParams: {},
         closing: false,
-        setupAbort: new AbortController(),
+        connectionAbort: new AbortController(),
         pendingReturns: new Set(),
       }
 

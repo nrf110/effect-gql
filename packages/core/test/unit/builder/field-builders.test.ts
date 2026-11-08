@@ -556,6 +556,139 @@ describe("field-builders.ts", () => {
       expect(observed).toHaveLength(3)
     })
 
+    it("restores required undefined-encoded Options without filling optional keys or bypassing defaults", async () => {
+      const fields = {
+        value: S.OptionFromUndefinedOr(S.String),
+        union: S.UndefinedOr(S.String),
+        suspended: S.suspend(() => S.Union([S.String, S.Void])),
+        optional: S.optionalKey(S.OptionFromUndefinedOr(S.String)),
+        fallback: S.OptionFromUndefinedOr(S.String).pipe(
+          S.withDecodingDefault(Effect.succeed("fallback"))
+        ),
+      }
+      const args = S.Struct({ ...fields, input: S.Struct(fields) })
+      const observed: S.Schema.Type<typeof args>[] = []
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: buildField(
+              {
+                type: S.String,
+                args,
+                resolve: (decoded: S.Schema.Type<typeof args>) => {
+                  observed.push(decoded)
+                  return Effect.succeed("accepted")
+                },
+              },
+              createFieldBuilderContext()
+            ),
+          },
+        }),
+      })
+      for (const argumentsText of [
+        "(input: {})",
+        `(
+          value: "root", union: "root union", suspended: "root suspended",
+          optional: "root optional", fallback: "root fallback",
+          input: {
+            value: "nested", union: "nested union", suspended: "nested suspended",
+            optional: "nested optional", fallback: "nested fallback"
+          }
+        )`,
+      ]) {
+        expect(
+          await graphql({
+            schema,
+            source: `{ inspect${argumentsText} }`,
+            contextValue: createSimpleContext(),
+          })
+        ).toEqual({ data: { inspect: "accepted" } })
+      }
+      expect(observed).toStrictEqual([
+        {
+          value: Option.none(),
+          union: undefined,
+          suspended: undefined,
+          fallback: Option.some("fallback"),
+          input: {
+            value: Option.none(),
+            union: undefined,
+            suspended: undefined,
+            fallback: Option.some("fallback"),
+          },
+        },
+        {
+          value: Option.some("root"),
+          union: "root union",
+          suspended: "root suspended",
+          optional: Option.some("root optional"),
+          fallback: Option.some("root fallback"),
+          input: {
+            value: Option.some("nested"),
+            union: "nested union",
+            suspended: "nested suspended",
+            optional: Option.some("nested optional"),
+            fallback: Option.some("nested fallback"),
+          },
+        },
+      ])
+    })
+
+    it.each([
+      ["Unknown", S.Unknown],
+      ["Any", S.Any],
+    ] as const)("does not invent omitted required %s arguments", async (_name, value) => {
+      const args = S.Struct({ value, input: S.Struct({ value }) })
+      const observed: S.Schema.Type<typeof args>[] = []
+      const field = buildField(
+        {
+          type: S.String,
+          args,
+          resolve: (decoded: S.Schema.Type<typeof args>) => {
+            observed.push(decoded)
+            return Effect.succeed("accepted")
+          },
+        },
+        createFieldBuilderContext()
+      )
+      // Leave wire keys nullable to exercise the codec's required-key boundary.
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            inspect: {
+              ...field,
+              args: {
+                value: { type: GraphQLString },
+                input: {
+                  type: new GraphQLInputObjectType({
+                    name: "RequiredInput",
+                    fields: { value: { type: GraphQLString } },
+                  }),
+                },
+              },
+            },
+          },
+        }),
+      })
+      for (const argumentsText of ['(input: { value: "nested" })', '(value: "root", input: {})']) {
+        const result = await graphql({
+          schema,
+          source: `{ inspect${argumentsText} }`,
+          contextValue: createSimpleContext(),
+        })
+        expect(result.errors).toHaveLength(1)
+        expect(result.errors?.[0].path).toEqual(["inspect"])
+      }
+      expect(observed).toStrictEqual([])
+      const explicit = { value: undefined, input: { value: undefined } }
+      expect(
+        await field.resolve!(undefined, explicit, createSimpleContext(), {} as GraphQLResolveInfo)
+      ).toBe("accepted")
+      expect(observed).toStrictEqual([explicit])
+    })
+
     it.each(["toString", "constructor"])(
       "normalizes omitted, null and present Option arguments named %s",
       async (name) => {

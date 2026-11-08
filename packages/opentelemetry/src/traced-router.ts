@@ -15,6 +15,7 @@ const failureStatus = (cause: Cause.Cause<unknown>): number | undefined => {
   let error: unknown
   let hasFailure = false
   let isDefect = false
+  let responseStatus: number | undefined
   for (const reason of cause.reasons) {
     if (reason._tag === "Fail") {
       hasFailure = true
@@ -23,13 +24,16 @@ const failureStatus = (cause: Cause.Cause<unknown>): number | undefined => {
     } else if (reason._tag === "Die") {
       hasFailure = true
       if (HttpServerResponse.isHttpServerResponse(reason.defect)) {
-        return HttpServerError.causeResponseStripped(cause)[0].status
+        responseStatus = reason.defect.status
+      } else {
+        error = reason.defect
+        isDefect = true
       }
-      error = reason.defect
-      isDefect = true
     }
   }
+  if (responseStatus !== undefined) return responseStatus
   if (!hasFailure) return undefined
+  if (HttpServerResponse.isHttpServerResponse(error)) return error.status
   if (HttpServerError.isHttpServerError(error)) {
     if (error.reason._tag === "RouteNotFound") return 404
     if (error.reason._tag === "RequestParseError") {

@@ -78,6 +78,12 @@ applies to query, computed-field, and subscription arguments. If the schema has
 an explicit null branch, such as `S.NullOr(S.Option(S.String))`, `null` remains
 `null` instead.
 
+Omitting a required `S.OptionFromUndefinedOr(inner)` input restores its encoded
+`undefined` value before decoding, producing `Option.none()`. Required encodings
+that explicitly include `undefined` or `void` behave similarly; genuinely optional
+keys remain absent, and defaults still apply. Other required keys are not filled
+with `undefined`.
+
 Tagged schemas keep their literal `_tag` discriminators even though GraphQL does not expose those fields as inputs. The framework restores those encoded discriminator literals before decoding, including inside Option values. All normalized inputs still pass through the entire argument schema's validation and transformations before any typed callback runs.
 
 ### Field Resolvers

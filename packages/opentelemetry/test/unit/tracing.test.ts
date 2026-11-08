@@ -104,6 +104,8 @@ describe("tracing", () => {
       { path: "/missing", status: 404, child: undefined },
       { path: "/fail", status: 500, child: "failure.handler" },
       { path: "/response-failure", status: 429, child: undefined },
+      { path: "/typed-response-failure", status: 429, child: undefined },
+      { path: "/composite-response-failure", status: 403, child: undefined },
       { path: "/schema-failure", status: 400, child: undefined },
       { path: "/missing-value", status: 404, child: undefined },
       { path: "/schema-defect", status: 500, child: undefined },
@@ -126,6 +128,23 @@ describe("tracing", () => {
           "GET",
           "/response-failure",
           Effect.die(HttpServerResponse.empty({ status: 429 }))
+        ),
+        HttpRouter.add(
+          "GET",
+          "/typed-response-failure",
+          Effect.fail(HttpServerResponse.empty({ status: 429 }))
+        ),
+        HttpRouter.add(
+          "GET",
+          "/composite-response-failure",
+          Effect.failCause(
+            Cause.fromReasons([
+              ...Cause.die(HttpServerResponse.empty({ status: 418 })).reasons,
+              ...Cause.fail(HttpServerResponse.empty({ status: 429 })).reasons,
+              ...Cause.die(HttpServerResponse.empty({ status: 403 })).reasons,
+              ...Cause.die(new Error("later defect")).reasons,
+            ])
+          )
         ),
         HttpRouter.add(
           "GET",

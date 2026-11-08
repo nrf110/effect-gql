@@ -58,10 +58,12 @@ acquisition to complete normally. A single close observation is retained through
 the acquisition-to-protocol handoff, so closure is not lost between those phases.
 
 WebSocket shutdown discards queued messages and interrupts pending `onConnect`
-and `onSubscribe` Effects on transport closure, protocol close, or handler
-interruption. Their finalizers finish before connection-scoped services are
-released. Cleanup hooks (`onDisconnect`, `onComplete`, and `onError`) remain
-awaited with those services available.
+and `onSubscribe` Effects and in-flight sends on transport closure, protocol
+close, or handler interruption. This includes `connection_ack`, `next`, `complete`,
+`error`, and `pong` sends. Their asynchronous finalizers finish before
+connection-scoped services are released. Cleanup hooks (`onDisconnect`,
+`onComplete`, and `onError`) remain awaited with those services available and are
+not interrupted by this connection cancellation signal.
 
 Shutdown also awaits active subscription source finalizers and cleanup of any
 late-created iterator, including closure during the setup/registration handoff.
