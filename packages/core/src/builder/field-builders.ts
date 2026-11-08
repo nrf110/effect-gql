@@ -101,7 +101,7 @@ function restoreGraphQLInput(original: AST.AST, value: unknown): unknown {
         const item =
           field.name === "_tag" && encoded?._tag === "Literal"
             ? encoded.literal
-            : restoreGraphQLInput(field.type, record[field.name])
+            : restoreGraphQLInput(field.type, present ? record[field.name] : undefined)
         if (!present && item === undefined) continue
         if (!present || item !== record[field.name]) {
           if (restored === record) restored = { ...record }

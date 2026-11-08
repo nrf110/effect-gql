@@ -370,6 +370,13 @@ order. Declare variables using the name registered for the argument's schema:
 variant. Without an explicit registration for a key variant, it reuses the
 base schema's registered input name.
 
+Separate registrations for a codec and `S.toEncoded(codec)` also remain distinct
+inside generated wrapper inputs. A wrapper containing the codec uses its registered
+input name, while `S.toEncoded(wrapper)` uses the encoded registration, regardless
+of argument order. This also applies through Options, lists, and recursive wrappers.
+Equivalent generated inputs whose fields resolve identically still reuse their
+GraphQL input type.
+
 GraphQL has no input union type. Unless a union exactly matches a registered
 enum, input mapping falls back to its first non-null member. Registered input
 objects retain their registered name and identity through that fallback.

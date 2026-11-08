@@ -442,7 +442,7 @@ export interface InputTypeLookupCache {
   keyASTToInputName?: Map<AST.AST, string>
   literalToEnumName?: Map<string, string>
   enumSortedValues?: Map<string, readonly string[]>
-  convertedInputTypes?: WeakMap<AST.AST, GraphQLInputType>
+  convertedInputObjects?: WeakMap<AST.AST, WeakMap<AST.AST, GraphQLInputObjectType>>
 }
 
 export function buildInputTypeLookupCache(
@@ -499,58 +499,240 @@ type InputConverter = (
   allowEnum?: boolean
 ) => GraphQLInputType
 
+function inputOptionValue(original: AST.AST): AST.AST | undefined {
+  return isOptionDeclaration(original) && original._tag === "Declaration" && !original.encoding
+    ? original.typeParameters[0]
+    : undefined
+}
+
+function findInputRegistration(
+  original: AST.AST,
+  projected: AST.AST,
+  enumRegistry: Map<string, GraphQLEnumType>,
+  inputRegistry: Map<string, GraphQLInputObjectType>,
+  cache: InputTypeLookupCache,
+  allowEnum: boolean
+): GraphQLInputType | undefined {
+  // Key codecs can wrap an exact registration before its shared projection.
+  let source = original
+  while (true) {
+    const exactName = cache.originalASTToInputName?.get(source)
+    const exactType = exactName ? inputRegistry.get(exactName) : undefined
+    if (exactType) return exactType
+    const aliasName = cache.keyASTToInputName?.get(source)
+    const aliasType = aliasName ? inputRegistry.get(aliasName) : undefined
+    if (aliasType) return aliasType
+    if (!source.encoding) break
+    source = source.encoding[source.encoding.length - 1].to
+  }
+  const optionValue = inputOptionValue(original)
+  if (optionValue) {
+    return findInputRegistration(
+      optionValue,
+      projected._tag === "Declaration" ? (projected.typeParameters[0] ?? optionValue) : projected,
+      enumRegistry,
+      inputRegistry,
+      cache,
+      allowEnum
+    )
+  }
+  const ast = getASTView(projected, "input")
+  const encodedName = cache.astToInputName?.get(getASTIdentity(ast))
+  const registered = encodedName ? inputRegistry.get(encodedName) : undefined
+  return registered ?? (allowEnum ? findEnum(ast, enumRegistry, cache) : undefined)
+}
+
+// Match input conversion's precedence and enum fallback without resolving lazy
+// fields. A pair may be revisited with enum narrowing disabled by a parent union.
+function hasInputDifferences(
+  original: AST.AST,
+  projected: AST.AST,
+  enumRegistry: Map<string, GraphQLEnumType>,
+  inputRegistry: Map<string, GraphQLInputObjectType>,
+  cache: InputTypeLookupCache,
+  seen: WeakMap<AST.AST, WeakMap<AST.AST, number>>,
+  allowEnum = true
+): boolean {
+  if (original === projected) return false
+  const registered = findInputRegistration(
+    original,
+    projected,
+    enumRegistry,
+    inputRegistry,
+    cache,
+    allowEnum
+  )
+  const projectedRegistration = findInputRegistration(
+    projected,
+    projected,
+    enumRegistry,
+    inputRegistry,
+    cache,
+    allowEnum
+  )
+  if (registered || projectedRegistration) return registered !== projectedRegistration
+  const optionValue = inputOptionValue(original)
+  if (optionValue) {
+    return hasInputDifferences(
+      optionValue,
+      projected._tag === "Declaration" ? (projected.typeParameters[0] ?? optionValue) : projected,
+      enumRegistry,
+      inputRegistry,
+      cache,
+      seen,
+      allowEnum
+    )
+  }
+  const source = getASTView(original, "input")
+  const ast = getASTView(projected, "input")
+  if (getASTIdentity(source) === getASTIdentity(ast)) return false
+  let projections = seen.get(source)
+  const mode = allowEnum ? 1 : 2
+  const visited = projections?.get(ast) ?? 0
+  if (visited & mode) return false
+  if (!projections) {
+    projections = new WeakMap()
+    seen.set(source, projections)
+  }
+  projections.set(ast, visited | mode)
+  switch (ast._tag) {
+    case "Objects": {
+      const fields = source._tag === "Objects" ? source.propertySignatures : ast.propertySignatures
+      return fields.some(
+        (field, index) =>
+          field.name !== "_tag" &&
+          (isNullableAST(getASTView(field.type, "input")) !==
+            isNullableAST(getASTView(ast.propertySignatures[index].type, "input")) ||
+            hasInputDifferences(
+              field.type,
+              ast.propertySignatures[index].type,
+              enumRegistry,
+              inputRegistry,
+              cache,
+              seen
+            ))
+      )
+    }
+    case "Suspend":
+      return hasInputDifferences(
+        source._tag === "Suspend" ? source.thunk() : ast.thunk(),
+        ast.thunk(),
+        enumRegistry,
+        inputRegistry,
+        cache,
+        seen,
+        allowEnum
+      )
+    case "Declaration": {
+      const inner = ast.typeParameters[0]
+      return inner
+        ? hasInputDifferences(
+            source._tag === "Declaration" ? (source.typeParameters[0] ?? inner) : inner,
+            inner,
+            enumRegistry,
+            inputRegistry,
+            cache,
+            seen,
+            allowEnum
+          )
+        : false
+    }
+    case "Union": {
+      const members = nonNullMembers(ast)
+      const member = members[0]
+      const originalMember = source._tag === "Union" ? nonNullMembers(source)[0] : undefined
+      return member
+        ? hasInputDifferences(
+            originalMember ?? member,
+            member,
+            enumRegistry,
+            inputRegistry,
+            cache,
+            seen,
+            allowEnum && members.length === 1
+          )
+        : false
+    }
+    case "Arrays": {
+      const element = ast.elements[0] ?? ast.rest[0]
+      const originalElement =
+        source._tag === "Arrays" ? (source.elements[0] ?? source.rest[0]) : undefined
+      return element
+        ? hasInputDifferences(
+            originalElement ?? element,
+            element,
+            enumRegistry,
+            inputRegistry,
+            cache,
+            seen,
+            allowEnum
+          )
+        : false
+    }
+    default:
+      return false
+  }
+}
+
 function makeInputConverter(
   enumRegistry: Map<string, GraphQLEnumType>,
   inputRegistry: Map<string, GraphQLInputObjectType>,
   cache: InputTypeLookupCache
 ): InputConverter {
-  const converted = (cache.convertedInputTypes ??= new WeakMap())
+  const converted = (cache.convertedInputObjects ??= new WeakMap())
   const convert: InputConverter = (original, projected, allowEnum = true) => {
-    // Key codecs can wrap an exact registration before its shared projection.
-    let source = original
-    while (true) {
-      const exactName = cache.originalASTToInputName?.get(source)
-      const exactType = exactName ? inputRegistry.get(exactName) : undefined
-      if (exactType) return exactType
-      const aliasName = cache.keyASTToInputName?.get(source)
-      const aliasType = aliasName ? inputRegistry.get(aliasName) : undefined
-      if (aliasType) return aliasType
-      if (!source.encoding) break
-      source = source.encoding[source.encoding.length - 1].to
-    }
-    if (
-      isOptionDeclaration(original) &&
-      original._tag === "Declaration" &&
-      !original.encoding &&
-      original.typeParameters[0]
-    ) {
+    const registered = findInputRegistration(
+      original,
+      projected,
+      enumRegistry,
+      inputRegistry,
+      cache,
+      allowEnum
+    )
+    if (registered) return registered
+    const optionValue = inputOptionValue(original)
+    if (optionValue) {
       return convert(
-        original.typeParameters[0],
-        projected._tag === "Declaration"
-          ? (projected.typeParameters[0] ?? original.typeParameters[0])
-          : projected,
+        optionValue,
+        projected._tag === "Declaration" ? (projected.typeParameters[0] ?? optionValue) : projected,
         allowEnum
       )
     }
+    const source = getASTView(original, "input")
     const ast = getASTView(projected, "input")
     const identity = getASTIdentity(ast)
-    const encodedName = cache.astToInputName?.get(identity)
-    const registeredEncoded = encodedName ? inputRegistry.get(encodedName) : undefined
-    if (registeredEncoded) return registeredEncoded
-    const enumType = allowEnum ? findEnum(ast, enumRegistry, cache) : undefined
-    if (enumType) return enumType
-    const cached = converted.get(identity)
-    if (cached) return cached
     switch (ast._tag) {
       case "Objects": {
-        const schemaName = getASTName(original)
-        const type = new GraphQLInputObjectType({
-          name: schemaName
-            ? `${schemaName}Input`
-            : `Input_${Math.random().toString(36).slice(2, 11)}`,
-          fields: () => inputFields(source._tag === "Objects" ? source : ast, ast, convert),
-        })
-        converted.set(identity, type)
+        const sourceIdentity = getASTIdentity(source)
+        let projectedTypes = converted.get(sourceIdentity)
+        const cached = projectedTypes?.get(identity)
+        if (cached) return cached
+        const sharesProjection =
+          sourceIdentity === identity ||
+          !hasInputDifferences(source, ast, enumRegistry, inputRegistry, cache, new WeakMap())
+        let type = sharesProjection ? converted.get(identity)?.get(identity) : undefined
+        if (!type) {
+          const schemaName = getASTName(original)
+          type = new GraphQLInputObjectType({
+            name: schemaName
+              ? `${schemaName}Input`
+              : `Input_${Math.random().toString(36).slice(2, 11)}`,
+            fields: () => inputFields(source._tag === "Objects" ? source : ast, ast, convert),
+          })
+        }
+        if (!projectedTypes) {
+          projectedTypes = new WeakMap()
+          converted.set(sourceIdentity, projectedTypes)
+        }
+        projectedTypes.set(identity, type)
+        if (sharesProjection && sourceIdentity !== identity) {
+          let projectionTypes = converted.get(identity)
+          if (!projectionTypes) {
+            projectionTypes = new WeakMap()
+            converted.set(identity, projectionTypes)
+          }
+          projectionTypes.set(identity, type)
+        }
         return type
       }
       case "Suspend":

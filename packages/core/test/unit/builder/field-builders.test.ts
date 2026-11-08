@@ -556,6 +556,42 @@ describe("field-builders.ts", () => {
       expect(observed).toHaveLength(3)
     })
 
+    it.each(["toString", "constructor"])(
+      "normalizes omitted, null and present Option arguments named %s",
+      async (name) => {
+        const args = S.Struct({ [name]: S.Option(S.String) })
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: {
+              inspect: buildField(
+                {
+                  type: S.String,
+                  args,
+                  resolve: (args: Record<string, Option.Option<string>>) =>
+                    Effect.succeed(Option.getOrElse(args[name], () => "none")),
+                },
+                createFieldBuilderContext()
+              ),
+            },
+          }),
+        })
+        for (const [argumentsText, expected] of [
+          ["", "none"],
+          [`(${name}: null)`, "none"],
+          [`(${name}: "present")`, "present"],
+        ]) {
+          expect(
+            await graphql({
+              schema,
+              source: `{ inspect${argumentsText} }`,
+              contextValue: createSimpleContext(),
+            })
+          ).toEqual({ data: { inspect: expected } })
+        }
+      }
+    )
+
     it("distinguishes omitted optional Options, explicit null, and present values", async () => {
       const args = S.Struct({
         value: S.optional(S.Option(S.String)),

@@ -959,7 +959,7 @@ describe("schema conversion identity", () => {
   )
 
   it.each([false, true])(
-    "shares encoded projection identities without losing optional argument decoding (projected first: %s)",
+    "decodes shared named input variables without losing optional arguments (projected first: %s)",
     async (projectedFirst) => {
       const Child = S.TaggedStruct("Child", { n: S.NumberFromString })
       const Projected = S.toEncoded(Child)
@@ -975,6 +975,7 @@ describe("schema conversion identity", () => {
             extra: S.optionalKey(S.NumberFromString),
           })
       const schema = GraphQLSchemaBuilder.empty
+        .inputType({ name: "UnrelatedInput", schema: S.Struct({ label: S.String }) })
         .query("sum", {
           type: S.Number,
           args,
@@ -984,20 +985,79 @@ describe("schema conversion identity", () => {
         .buildSchema()
 
       expect(validateSchema(schema)).toEqual([])
-      const fields = schema.getQueryType()!.getFields()
-      expect(getNamedType(fields.sum.args.find((arg) => arg.name === "original")!.type)).toBe(
-        getNamedType(fields.sum.args.find((arg) => arg.name === "projected")!.type)
-      )
       const result = await Effect.runPromise(
-        execute(
-          schema,
-          Layer.empty
-        )(
-          '{ omitted: sum(original: {n: "2"}, projected: {n: "3"}) present: sum(original: {n: "2"}, projected: {n: "3"}, extra: "4") }'
+        execute(schema, Layer.empty)(
+          `query($original: ChildInput!, $projected: ChildInput!) {
+            omitted: sum(original: $original, projected: $projected)
+            present: sum(original: $original, projected: $projected, extra: "4")
+          }`,
+          { original: { n: "2" }, projected: { n: "3" } }
         )
       )
       expect(result.errors).toBeUndefined()
       expect(result.data).toEqual({ omitted: 5, present: 9 })
+    }
+  )
+
+  it.each([false, true])(
+    "preserves nested input registrations through recursive generated wrappers (%s)",
+    async (encodedFirst) => {
+      const Value = S.Struct({ amount: S.NumberFromString })
+      interface Node {
+        readonly value: { readonly amount: number }
+        readonly next?: Node
+      }
+      interface EncodedNode {
+        readonly value: { readonly amount: string }
+        readonly next?: EncodedNode
+      }
+      const Node: S.Codec<Node, EncodedNode> = S.Struct({
+        next: S.optionalKey(S.suspend(() => Node)),
+        value: Value,
+      })
+      const Encoded = S.toEncoded(Node)
+      const modified = S.optionalKey(S.mutableKey(Node))
+      const args = encodedFirst
+        ? S.Struct({ encoded: Encoded, original: Node, modified })
+        : S.Struct({ original: Node, encoded: Encoded, modified })
+      const schema = GraphQLSchemaBuilder.empty
+        .inputType({ name: "OriginalInput", schema: Value })
+        .inputType({ name: "EncodedInput", schema: S.toEncoded(Value) })
+        .query("inspect", {
+          type: S.String,
+          args,
+          resolve: ({ original, encoded, modified }) =>
+            Effect.succeed(
+              JSON.stringify({
+                original: original.value.amount,
+                originalNext: original.next?.value.amount,
+                encoded: encoded.value.amount,
+                encodedNext: encoded.next?.value.amount,
+                modified: modified?.value.amount,
+              })
+            ),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)(
+          `query($original: OriginalInput!, $encoded: EncodedInput!) {
+            inspect(
+              original: { value: $original, next: { value: $original } }
+              encoded: { value: $encoded, next: { value: $encoded } }
+              modified: { value: $original }
+            )
+          }`,
+          { original: { amount: "2" }, encoded: { amount: "3" } }
+        )
+      )
+      expect(result.errors).toBeUndefined()
+      expect(JSON.parse(String(result.data?.inspect))).toEqual({
+        original: 2,
+        originalNext: 2,
+        encoded: "3",
+        encodedNext: "3",
+        modified: 2,
+      })
     }
   )
 

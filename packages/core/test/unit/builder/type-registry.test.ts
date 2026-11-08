@@ -1933,6 +1933,68 @@ describe("exact registration precedence", () => {
     }
   )
 
+  it.each([false, true])(
+    "accepts distinct named inputs through generated wrappers (encoded first: %s)",
+    async (encodedFirst) => {
+      const Original = S.Struct({ amount: S.NumberFromString })
+      const Encoded = S.toEncoded(Original)
+      const Wrapper = S.Struct({ value: Original })
+      const EncodedWrapper = S.toEncoded(Wrapper)
+      const Nested = S.Struct({ items: S.Option(S.Array(S.suspend(() => Wrapper))) })
+      const EncodedNested = S.toEncoded(Nested)
+      const args = encodedFirst
+        ? S.Struct({
+            encoded: EncodedWrapper,
+            original: Wrapper,
+            encodedNested: EncodedNested,
+            originalNested: Nested,
+          })
+        : S.Struct({
+            original: Wrapper,
+            encoded: EncodedWrapper,
+            originalNested: Nested,
+            encodedNested: EncodedNested,
+          })
+      const schema = GraphQLSchemaBuilder.empty
+        .inputType({ name: "OriginalInput", schema: Original })
+        .inputType({ name: "EncodedInput", schema: Encoded })
+        .query("inspect", {
+          type: S.String,
+          args,
+          resolve: ({ original, encoded, originalNested, encodedNested }) =>
+            Effect.succeed(
+              JSON.stringify({
+                original: original.value.amount,
+                encoded: encoded.value.amount,
+                originalNested: Option.getOrElse(originalNested.items, () => [])[0].value.amount,
+                encodedNested: Option.getOrElse(encodedNested.items, () => [])[0].value.amount,
+              })
+            ),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)(
+          `query($original: OriginalInput!, $encoded: EncodedInput!) {
+            inspect(
+              original: { value: $original }
+              encoded: { value: $encoded }
+              originalNested: { items: [{ value: $original }] }
+              encodedNested: { items: [{ value: $encoded }] }
+            )
+          }`,
+          { original: { amount: "2" }, encoded: { amount: "3" } }
+        )
+      )
+      expect(result.errors).toBeUndefined()
+      expect(JSON.parse(String(result.data?.inspect))).toEqual({
+        original: 2,
+        encoded: "3",
+        originalNested: 2,
+        encodedNested: "3",
+      })
+    }
+  )
+
   it("reuses generated recursive objects through unregistered key variants", async () => {
     interface Node {
       readonly id: string
