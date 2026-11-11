@@ -58,10 +58,12 @@ acquisition to complete normally. A single close observation is retained through
 the acquisition-to-protocol handoff, so closure is not lost between those phases.
 
 WebSocket shutdown discards queued messages and interrupts pending `onConnect`
-and `onSubscribe` Effects and in-flight sends on transport closure, protocol
-close, or handler interruption. This includes `connection_ack`, `next`, `complete`,
-`error`, and `pong` sends. Their asynchronous finalizers finish before
-connection-scoped services are released. Cleanup hooks (`onDisconnect`,
+and `onSubscribe` Effects, framework argument decoding, query/mutation/object
+resolvers, subscription setup and event resolver Effects, and in-flight sends on
+transport closure, protocol close, or handler interruption. This includes
+`connection_ack`, `next`, `complete`, `error`, and `pong` sends. Their asynchronous
+finalizers finish before connection-scoped services are released, even when a
+subscription's outward read has already ended. Cleanup hooks (`onDisconnect`,
 `onComplete`, and `onError`) remain awaited with those services available and are
 not interrupted by this connection cancellation signal.
 
@@ -71,6 +73,11 @@ Native GraphQL asynchronous setup that is already running may still finish
 during shutdown; its iterator is closed without delivering further events.
 Cleanup values yielded by `return()` are drained until the iterator finishes,
 so code after a generator's cleanup yield also runs before services are released.
+
+Native iterators do not need to resolve an outstanding `next()` from `return()`.
+After return cleanup finishes, the adapter completes outstanding outward reads
+without waiting for those old source reads. A cancelled operation's ID can then
+be reused, and connection shutdown can finish.
 
 The Node `createGraphQLWSServer().close()` and Express
 `attachWebSocket().close()` promises wait for connection handlers to finish,

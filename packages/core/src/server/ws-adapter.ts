@@ -1,7 +1,7 @@
 import { Context, Effect, Layer, Stream, Queue, Fiber, Deferred } from "effect"
 import { GraphQLSchema, subscribe, GraphQLError, type ExecutionResult } from "graphql"
 import type { Server, ServerOptions } from "graphql-ws"
-import { makeSubscriptionContext } from "../subscription-context"
+import { makeSubscriptionContext, subscriptionOperations } from "../subscription-context"
 import type {
   EffectWebSocket,
   GraphQLWSOptions,
@@ -21,7 +21,7 @@ interface WSExtra<R> {
   connectionParams: Record<string, unknown>
   closing: boolean
   connectionAbort: AbortController
-  pendingReturns: Set<Promise<unknown>>
+  pendingWork: Set<Promise<unknown>>
 }
 
 /**
@@ -196,7 +196,7 @@ const createGraphqlWsSocketAdapter = <R>(
   const runningOperations = new Map<string, OperationDispatch>()
   const stopDispatching = () => {
     extra.closing = true
-    // Setup and sends belong to the connection; cleanup keeps live services.
+    // Connection work is cancelled; cleanup keeps live services.
     extra.connectionAbort.abort()
   }
   const close = (code?: number, reason?: string) => {
@@ -418,8 +418,10 @@ const runConnectionLifecycle = <R>(
           if (activeDispatches.size > 0) {
             yield* Effect.promise(() => Promise.allSettled(activeDispatches))
           }
-          if (extra.pendingReturns.size > 0) {
-            yield* Effect.promise(() => Promise.allSettled(extra.pendingReturns))
+          // Returned native iterators need not settle an old pull. Its Effect
+          // resolvers still own services until their cancellation finalizers end.
+          while (extra.pendingWork.size > 0) {
+            yield* Effect.promise(() => Promise.allSettled(extra.pendingWork))
           }
         })
       )
@@ -496,10 +498,14 @@ export const makeGraphQLWSHandler = <R, LE = never>(
 
           context: async (ctx) => {
             const extra = ctx.extra as WSExtra<R>
-            return makeSubscriptionContext({
+            const context = makeSubscriptionContext({
               ...extra.connectionParams,
               services: extra.services,
             })
+            const operation = subscriptionOperations.get(context)!
+            operation.runOptions = extra.connectionAbort
+            operation.pendingWork = extra.pendingWork
+            return context
           },
 
           subscribe: async (args) => subscribe(args),
@@ -509,12 +515,32 @@ export const makeGraphQLWSHandler = <R, LE = never>(
             const extra = ctx.extra as WSExtra<R>
             const iterator = result[Symbol.asyncIterator]()
             let returned: Promise<IteratorResult<ExecutionResult>> | undefined
+            const pendingPulls = new Set<
+              (result: Promise<IteratorResult<ExecutionResult>>) => void
+            >()
             const stream = {
               [Symbol.asyncIterator]() {
                 return this
               },
-              next: (value?: unknown): Promise<IteratorResult<ExecutionResult>> =>
-                extra.closing ? stream.return(value) : iterator.next(value),
+              next: (value?: unknown): Promise<IteratorResult<ExecutionResult>> => {
+                if (returned || extra.closing) return stream.return(value)
+                const { promise, resolve, reject } =
+                  Promise.withResolvers<IteratorResult<ExecutionResult>>()
+                pendingPulls.add(resolve)
+                const fail = (error: unknown) => {
+                  pendingPulls.delete(resolve)
+                  reject(error)
+                }
+                try {
+                  void iterator.next(value).then((result) => {
+                    pendingPulls.delete(resolve)
+                    resolve(result)
+                  }, fail)
+                } catch (error) {
+                  fail(error)
+                }
+                return promise
+              },
               return: (value?: unknown) => {
                 if (!returned) {
                   const pending = Promise.resolve().then(async () => {
@@ -525,9 +551,13 @@ export const makeGraphQLWSHandler = <R, LE = never>(
                     return result
                   })
                   returned = pending
-                  extra.pendingReturns.add(pending)
+                  // Returning need not settle the source's outstanding next().
+                  // Adopt cleanup's result without retaining completed pulls.
+                  for (const finish of pendingPulls) finish(pending)
+                  pendingPulls.clear()
+                  extra.pendingWork.add(pending)
                   const settled = () => {
-                    extra.pendingReturns.delete(pending)
+                    extra.pendingWork.delete(pending)
                   }
                   void pending.then(settled, settled)
                 }
@@ -593,7 +623,7 @@ export const makeGraphQLWSHandler = <R, LE = never>(
         connectionParams: {},
         closing: false,
         connectionAbort: new AbortController(),
-        pendingReturns: new Set(),
+        pendingWork: new Set(),
       }
 
       // Only initialization races closure; established cleanup must finish.

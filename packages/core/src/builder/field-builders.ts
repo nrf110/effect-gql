@@ -20,6 +20,23 @@ import {
 import { getASTView, isOptionDeclaration } from "../schema-mapping"
 import { subscriptionOperations } from "../subscription-context"
 
+function runResolverEffect<A, E>(
+  context: GraphQLEffectContext<any>,
+  effect: Effect.Effect<A, E, any>
+): Promise<A> {
+  const operation = subscriptionOperations.get(context)
+  const pending = Effect.runPromiseWith(context.services)(effect, operation?.runOptions)
+  const pendingWork = operation?.pendingWork
+  if (pendingWork) {
+    pendingWork.add(pending)
+    const settled = () => {
+      pendingWork.delete(pending)
+    }
+    void pending.then(settled, settled)
+  }
+  return pending
+}
+
 /**
  * Encode a resolver's output value using the schema.
  * This is primarily needed for Option types where Option.none() needs to become null
@@ -276,9 +293,7 @@ export function buildField(
       context: GraphQLEffectContext<any>,
       info: GraphQLResolveInfo
     ) => {
-      const decodedArgs = decodeArgs
-        ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
-        : args
+      const decodedArgs = decodeArgs ? await runResolverEffect(context, decodeArgs(args)) : args
 
       // Apply directives first (per-field, explicit)
       let effect = applyDirectives(
@@ -292,12 +307,10 @@ export function buildField(
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       // Execute the resolver
-      const result = await Effect.runPromiseWith(context.services)(effect)
+      const result = await runResolverEffect(context, effect)
 
       // Encode the result (converts Option.none() to null, Option.some(x) to x)
-      return await Effect.runPromiseWith(context.services)(
-        encodeResolverOutput(config.type, result)
-      )
+      return await runResolverEffect(context, encodeResolverOutput(config.type, result))
     },
   }
 
@@ -329,9 +342,7 @@ export function buildObjectField(
   const fieldConfig: GraphQLFieldConfig<any, any> = {
     type: toGraphQLTypeWithRegistry(config.type, ctx),
     resolve: async (parent, args, context: GraphQLEffectContext<any>, info: GraphQLResolveInfo) => {
-      const decodedArgs = decodeArgs
-        ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
-        : args
+      const decodedArgs = decodeArgs ? await runResolverEffect(context, decodeArgs(args)) : args
 
       // Apply directives first (per-field, explicit)
       let effect = applyDirectives(
@@ -345,12 +356,10 @@ export function buildObjectField(
       effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
       // Execute the resolver
-      const result = await Effect.runPromiseWith(context.services)(effect)
+      const result = await runResolverEffect(context, effect)
 
       // Encode the result (converts Option.none() to null, Option.some(x) to x)
-      return await Effect.runPromiseWith(context.services)(
-        encodeResolverOutput(config.type, result)
-      )
+      return await runResolverEffect(context, encodeResolverOutput(config.type, result))
     },
   }
 
@@ -397,9 +406,7 @@ export function buildSubscriptionField(
     ) => {
       // Claim before the first await: concurrent setup cannot reuse this identity.
       const operation = claimSubscriptionContext(context)
-      const decodedArgs = decodeArgs
-        ? await Effect.runPromiseWith(context.services)(decodeArgs(args))
-        : args
+      const decodedArgs = decodeArgs ? await runResolverEffect(context, decodeArgs(args)) : args
       operation.args = decodedArgs
 
       // Get the Stream from the subscribe Effect
@@ -416,7 +423,7 @@ export function buildSubscriptionField(
       const middlewareContext: MiddlewareContext = { parent: _parent, args: decodedArgs, info }
       subscribeEffect = applyMiddleware(subscribeEffect, middlewareContext, ctx.middlewares) as any
 
-      const stream = await Effect.runPromiseWith(context.services)(subscribeEffect)
+      const stream = await runResolverEffect(context, subscribeEffect)
 
       return serializeStreamPulls(Stream.toAsyncIterableWith(stream, context.services))
     },
@@ -440,18 +447,14 @@ export function buildSubscriptionField(
           effect = applyMiddleware(effect, middlewareContext, ctx.middlewares)
 
           // Execute the resolver
-          const result = await Effect.runPromiseWith(context.services)(effect)
+          const result = await runResolverEffect(context, effect)
 
           // Encode the result (converts Option.none() to null, Option.some(x) to x)
-          return await Effect.runPromiseWith(context.services)(
-            encodeResolverOutput(config.type, result)
-          )
+          return await runResolverEffect(context, encodeResolverOutput(config.type, result))
         }
       : async (value, _args, context: GraphQLEffectContext<any>) => {
           // Even without custom resolve, encode Option values
-          return await Effect.runPromiseWith(context.services)(
-            encodeResolverOutput(config.type, value)
-          )
+          return await runResolverEffect(context, encodeResolverOutput(config.type, value))
         },
   }
 

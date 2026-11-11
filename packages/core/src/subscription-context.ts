@@ -5,6 +5,8 @@ import type { GraphQLEffectContext, SubscriptionContext } from "./builder/types"
 interface SubscriptionOperation {
   claimed: boolean
   args: unknown
+  runOptions?: { readonly signal: AbortSignal }
+  pendingWork?: Set<Promise<unknown>>
 }
 
 // Separate entrypoint and ESM/CJS bundles must recognize the same identities.
