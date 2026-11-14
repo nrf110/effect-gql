@@ -20,6 +20,11 @@ acquired only once per build. Connection/subscription resources are released
 when that connection closes or that subscription completes or is cancelled;
 ambient services retain their surrounding scope.
 
+For cross-request state such as an in-memory message broker, acquire the instance
+once in the **host's scope** and pass that same instance through `Layer.succeed`.
+Reusing a `Layer.effect` definition is not enough: each connection/request builds
+it independently. See [Building a PubSub Service](#building-a-pubsub-service).
+
 A WebSocket connection runs accepted operations concurrently. An open
 subscription does not block other subscriptions, queries, or ping/pong messages.
 A client `complete` message cancels only the operation with that ID. Clients
@@ -104,9 +109,9 @@ GraphQL subscriptions enable clients to receive live updates when data changes:
 | Direction | Bidirectional | Server → Client only |
 | Protocol | Dedicated protocol | HTTP/1.1+ |
 | Proxy support | May require configuration | Works out of the box |
-| Browser support | Native `WebSocket` | Native `EventSource` |
-| Connection limits | Unlimited | 6 per domain (HTTP/1.1) |
-| Reconnection | Manual | Built-in |
+| Browser support | Native `WebSocket` | Fetch streaming (`graphql-sse` or a custom client) |
+| Connection limits | Browser/proxy dependent | Typically 6 per domain on HTTP/1.1; HTTP/2 differs |
+| Reconnection | Client-managed (e.g., graphql-ws) | Client-managed (e.g., graphql-sse) |
 | Dependencies | `ws` package (Node.js) | None |
 
 **Use WebSocket when:**
@@ -135,6 +140,7 @@ import * as S from "effect/Schema"
 
 const MessageSchema = S.Struct({
   id: S.String,
+  channelId: S.String,
   content: S.String,
   createdAt: S.String
 })
@@ -212,6 +218,16 @@ The framework keeps operation metadata under weak context keys. It does not allo
 
 WebSocket subscriptions use the [graphql-ws](https://github.com/enisdenjo/graphql-ws) protocol.
 
+<Aside type="caution" title="Node.js WebSocket initialization">
+The current Node.js adapter can lose an immediate `connection_init` while the
+protocol module or connection service layer is still initializing. The server
+then closes the connection with code `4408` (connection initialization timeout).
+A subsequent connection can succeed after initialization; an HTTP health check
+does not prove that the first WebSocket handshake is ready. Account for this
+runtime limitation when evaluating the examples; changing the GraphiQL URL does
+not resolve it.
+</Aside>
+
 ### Server Setup
 
 <Tabs>
@@ -267,12 +283,14 @@ import { createServer } from "node:http"
 import { toMiddleware, attachWebSocket } from "@effect-gql/express"
 
 const app = express()
-app.use(toMiddleware(router, Layer.empty))
+const middleware = toMiddleware(router, serviceLayer)
+app.use(middleware)
 
 const server = createServer(app)
-attachWebSocket(server, schema, Layer.empty, { path: "/graphql" })
+const websocket = attachWebSocket(server, schema, serviceLayer, { path: "/graphql" })
 
 server.listen(4000)
+// Host shutdown: await websocket.close(), stop/await server, then await middleware.dispose().
 ```
   </TabItem>
   <TabItem label="Custom">
@@ -312,8 +330,8 @@ serve(router, serviceLayer, {
 
     // Called when client connects (for authentication)
     onConnect: (connectionParams) => Effect.gen(function* () {
-      const token = connectionParams.authToken as string
-      if (!token) return false  // Reject connection
+      const token = connectionParams.authToken
+      if (typeof token !== "string" || !token) return false  // Reject connection
 
       const user = yield* AuthService.validateToken(token)
       return { user }  // Merged into GraphQL context
@@ -365,6 +383,9 @@ const unsubscribe = client.subscribe(
 ## SSE Transport
 
 SSE subscriptions use the [graphql-sse](https://github.com/enisdenjo/graphql-sse) protocol (distinct connections mode).
+
+The supplied HTTP adapters read a JSON request body over POST. Use `graphql-sse`
+or streaming `fetch`, not the browser's GET-only `EventSource` constructor.
 
 ### Server Setup
 
@@ -423,7 +444,7 @@ import { sseMiddleware } from "@effect-gql/express"
 const app = express()
 app.use(express.json())
 
-app.use(sseMiddleware(schema, Layer.empty, {
+app.use(sseMiddleware(schema, serviceLayer, {
   path: "/graphql/stream"
 }))
 
@@ -434,7 +455,7 @@ app.listen(4000)
 ```typescript
 import { createSSEHandler } from "@effect-gql/web"
 
-const sseHandler = createSSEHandler(schema, Layer.empty)
+const sseHandler = createSSEHandler(schema, serviceLayer)
 
 export default {
   async fetch(request: Request) {
@@ -452,9 +473,29 @@ export default {
 
 ### SSE Lifecycle Hooks
 
-The SSE `onComplete` callback is constructed and its Effect runs only when the
-subscription stream finalizes, including cancellation. Request-scoped services
-remain available to the hook and are released afterward.
+The SSE `onComplete` callback is constructed and its Effect runs once when an
+established subscription iterator finalizes: normal completion, execution failure,
+or consumer cancellation. Setup failures that never produce an iterator do not
+call `onComplete`.
+
+`onDisconnect` runs once when the consumer cancels the stream or the client
+disconnects, including during setup. It does not run on normal completion or a
+terminal error delivered to the client. Cancellation does not call `onError` or
+send an `error`/`complete` event.
+
+`onError` runs for setup failures, iterator/serialization failures, and each
+GraphQL execution result containing errors, before the corresponding SSE event.
+It receives the thrown failure or an array of GraphQL/validation errors. GraphQL
+execution-result errors preserve their existing wire format: streamed results
+still use `next`, while rejected setup and iterator failures use `error` followed
+by `complete`.
+
+Iterator and in-flight resolver cleanup are awaited before `onDisconnect` and
+`onComplete`; on cancellation, `onDisconnect` runs before `onComplete`. All hooks
+run with the subscription's services available and are awaited before those
+services release. Failures constructing or running `onDisconnect`, `onError`, or
+`onComplete` are ignored so hook failures cannot prevent service release or
+turn cancellation into an execution error.
 
 Reject a connection by returning `Effect.fail(...)` or throwing from the
 `onConnect` callback. Both send an `error` event with the `CONNECTION_REJECTED`
@@ -464,7 +505,7 @@ sends `SUBSCRIPTION_ERROR` followed by `complete`, closes its iterator, and runs
 `onComplete` before releasing request-scoped services.
 
 ```typescript
-const sseHandler = createSSEHandler(schema, Layer.empty, {
+const sseHandler = createSSEHandler(schema, serviceLayer, {
   // Called before subscription starts (for auth)
   onConnect: (request, headers) => Effect.gen(function* () {
     const token = headers.get("authorization")
@@ -552,6 +593,8 @@ You can offer both WebSocket and SSE subscriptions simultaneously:
 import { createServer } from "node:http"
 import { createGraphQLWSServer, createSSEHandler } from "@effect-gql/node"
 
+const sseHandler = createSSEHandler(schema, serviceLayer)
+
 const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`)
 
@@ -565,8 +608,9 @@ const httpServer = createServer(async (req, res) => {
 })
 
 // WebSocket subscriptions
-const { handleUpgrade } = createGraphQLWSServer(schema, Layer.empty)
+const { handleUpgrade, close } = createGraphQLWSServer(schema, serviceLayer)
 httpServer.on("upgrade", handleUpgrade)
+// During host shutdown, await close() before stopping the HTTP server.
 
 httpServer.listen(4000, () => {
   console.log("WebSocket: ws://localhost:4000/graphql")
@@ -578,52 +622,44 @@ httpServer.listen(4000, () => {
 
 ## Building a PubSub Service
 
-A typical subscription setup requires a pub/sub system. Here's a simple in-memory implementation:
+This in-memory broker is typed for the `MessageSchema` defined above. All
+requests and connections must receive the same broker instance:
 
 ```typescript
 import { Context, Effect, Layer, Stream, PubSub } from "effect"
 
+type Message = typeof MessageSchema.Type
+
 class PubSubService extends Context.Service<PubSubService, {
-  publish: <A>(topic: string, message: A) => Effect.Effect<void>
-  subscribe: <A>(topic: string) => Stream.Stream<A>
+  publish: (topic: string, message: Message) => Effect.Effect<void>
+  subscribe: (topic: string) => Stream.Stream<Message>
 }>()("PubSubService") {}
 
 const makePubSubService = Effect.gen(function* () {
-  const topics = new Map<string, PubSub.PubSub<any>>()
-
-  const getOrCreateTopic = (topic: string) => Effect.gen(function* () {
-    let pubsub = topics.get(topic)
-    if (!pubsub) {
-      pubsub = yield* PubSub.unbounded<any>()
-      topics.set(topic, pubsub)
-    }
-    return pubsub
-  })
+  const bus = yield* Effect.acquireRelease(
+    PubSub.unbounded<{ readonly topic: string; readonly message: Message }>(),
+    PubSub.shutdown
+  )
 
   return {
-    publish: <A>(topic: string, message: A) =>
-      Effect.gen(function* () {
-        const pubsub = yield* getOrCreateTopic(topic)
-        yield* PubSub.publish(pubsub, message)
-      }),
-
-    subscribe: <A>(topic: string): Stream.Stream<A> =>
-      Stream.unwrap(
-        Effect.gen(function* () {
-          const pubsub = yield* getOrCreateTopic(topic)
-          return Stream.fromPubSub(pubsub)
-        })
-      )
+    publish: (topic: string, message: Message) =>
+      PubSub.publish(bus, { topic, message }).pipe(Effect.asVoid),
+    subscribe: (topic: string): Stream.Stream<Message> =>
+      Stream.fromPubSub(bus).pipe(
+        Stream.filter((event) => event.topic === topic),
+        Stream.map((event) => event.message)
+      ),
   }
 })
-
-const PubSubServiceLive = Layer.effect(PubSubService, makePubSubService)
 ```
 
 ### Using PubSub in Resolvers
 
 ```typescript
+import { GraphQLSchemaBuilder, query, mutation, subscription } from "@effect-gql/core"
+
 const builder = GraphQLSchemaBuilder.empty.pipe(
+  query("health", { type: S.String, resolve: () => Effect.succeed("ok") }),
   // Mutation triggers subscription updates
   mutation("sendMessage", {
     type: MessageSchema,
@@ -637,7 +673,6 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
         createdAt: new Date().toISOString()
       }
 
-      yield* MessageRepository.save(message)
       yield* pubsub.publish(`channel:${channelId}`, message)
 
       return message
@@ -656,13 +691,61 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 )
 ```
 
+Do **not** pass `Layer.effect(PubSubService, makePubSubService)` as the resolver
+layer: it creates a different broker per request/connection. Acquire once and
+publish it with `Layer.succeed` instead. Start the host only after defining the schema:
+
+```typescript
+import express from "express"
+import { createServer } from "node:http"
+import { NodeRuntime } from "@effect/platform-node"
+import { toRouter } from "@effect-gql/core"
+import { toMiddleware, attachWebSocket } from "@effect-gql/express"
+
+// builder is the schema from "Using PubSub in Resolvers" above.
+const program = Effect.scoped(Effect.gen(function* () {
+  const broker = yield* makePubSubService
+  const services = Layer.succeed(PubSubService, broker)
+  const schema = builder.buildSchema()
+  const router = toRouter(builder, services)
+  const middleware = toMiddleware(router, services)
+  const app = express()
+  app.use(middleware)
+  const server = createServer(app)
+  const websocket = attachWebSocket(server, schema, services)
+
+  yield* Effect.addFinalizer(() => Effect.promise(async () => {
+    await websocket.close()
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve())
+    })
+    await middleware.dispose()
+  }))
+  yield* Effect.tryPromise(() => new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(4000, resolve)
+  }))
+  yield* Effect.never
+}))
+
+NodeRuntime.runMain(program)
+```
+
+The host finalizes WebSocket connections and HTTP services before shutting down
+the broker. This shares messages within one process; multiple replicas need an
+external shared broker instead.
+
 ---
 
 ## Advanced Patterns
 
 ### Filtering Subscriptions
 
-Filter events server-side to reduce bandwidth:
+Filter events server-side to reduce bandwidth.
+
+For other payload types, define domain-specific services with the same typed
+broker pattern (`ActivityPubSub` emits `Activity`, and `PricePubSub` emits
+`StockPrice`). Do not cast a message broker to an unrelated event type.
 
 ```typescript
 subscription("userActivity", {
@@ -672,9 +755,9 @@ subscription("userActivity", {
     types: S.optional(S.Array(S.String))
   }),
   subscribe: ({ userId, types }) => Effect.gen(function* () {
-    const pubsub = yield* PubSubService
+    const pubsub = yield* ActivityPubSub
 
-    return pubsub.subscribe<Activity>("activity").pipe(
+    return pubsub.subscribe("activity").pipe(
       Stream.filter((activity) =>
         userId ? activity.userId === userId : true
       ),
@@ -695,9 +778,9 @@ subscription("stockPrices", {
   type: S.Array(StockPriceSchema),
   args: S.Struct({ symbols: S.Array(S.String) }),
   subscribe: ({ symbols }) => Effect.gen(function* () {
-    const pubsub = yield* PubSubService
+    const pubsub = yield* PricePubSub
 
-    return pubsub.subscribe<StockPrice>("prices").pipe(
+    return pubsub.subscribe("prices").pipe(
       Stream.filter((price) => symbols.includes(price.symbol)),
       Stream.groupedWithin(100, { duration: "100 millis" }),
       Stream.map((prices) => [...prices])
@@ -742,7 +825,7 @@ serve(router, serviceLayer, {
 })
 
 // SSE
-const sseHandler = createSSEHandler(schema, Layer.empty, {
+const sseHandler = createSSEHandler(schema, serviceLayer, {
   complexity: { maxComplexity: 100, maxDepth: 5 },
   fieldComplexities: builder.getFieldComplexities(),
 })
@@ -765,7 +848,7 @@ const sseHandler = createSSEHandler(schema, Layer.empty, {
 | Library | Import |
 |---------|--------|
 | graphql-sse | `import { createClient } from "graphql-sse"` |
-| Native | `EventSource` or `fetch` API |
+| Native | `fetch` API with a streamed POST response |
 
 ---
 

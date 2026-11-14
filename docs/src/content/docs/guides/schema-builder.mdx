@@ -11,6 +11,8 @@ The `GraphQLSchemaBuilder` is the core API for constructing GraphQL schemas in E
 
 ```typescript
 import { GraphQLSchemaBuilder } from "@effect-gql/core"
+import { Effect } from "effect"
+import * as S from "effect/Schema"
 
 // Start with an empty builder
 const builder = GraphQLSchemaBuilder.empty
@@ -159,11 +161,9 @@ builder.objectType({
   name: "User",
   schema: UserSchema,
   fields: {
-    fullName: {
+    displayName: {
       type: S.String,
-      resolve: (parent) => Effect.succeed(
-        `${parent.firstName} ${parent.lastName}`
-      ),
+      resolve: (parent) => Effect.succeed(parent.name.toUpperCase()),
     },
     posts: {
       type: S.Array(PostSchema),
@@ -227,9 +227,13 @@ builder
   .objectType({ name: "User", schema: UserSchema })
   .field("User", "posts", {
     type: S.Array(PostSchema),
-    resolve: (parent) => Effect.succeed([]),
+    resolve: (parent: S.Schema.Type<typeof UserSchema>) => Effect.succeed([]),
   })
 ```
+
+Separate `.field()` calls do not infer the parent from the type-name string.
+Annotate it as above, or use inline `objectType({ fields: ... })` for contextual
+parent inference.
 
 ## Root Operations
 
@@ -246,7 +250,7 @@ builder
 .query("user", {
   type: UserSchema,
   args: S.Struct({ id: S.String }),
-  resolve: (args) => Effect.succeed({ id: args.id, name: "Alice" }),
+  resolve: (args) => Effect.succeed({ id: args.id, name: "Alice", email: "alice@example.com" }),
 })
 
 // With description
@@ -275,7 +279,9 @@ builder
 
 ### Subscriptions
 
-Subscriptions return an Effect that produces a Stream:
+`subscribe(args)` returns an Effect that produces a Stream. Optional
+`resolve(value, args)` transforms each emitted value with an Effect; it does not
+create the stream.
 
 ```typescript
 import { Stream } from "effect"
@@ -301,7 +307,7 @@ Register enum types with values:
 })
 ```
 
-Use in queries with `S.Literal`:
+Use in queries with `S.Literals`:
 
 ```typescript
 .query("usersByStatus", {
@@ -390,21 +396,25 @@ Register custom directives:
 ```typescript
 import { DirectiveLocation } from "graphql"
 
-builder.directive({
-  name: "auth",
-  description: "Requires authentication",
+const tracedBuilder = builder.directive({
+  name: "trace",
+  description: "Log resolution of selected fields",
   locations: [DirectiveLocation.FIELD_DEFINITION],
-  args: S.Struct({
-    role: S.optional(S.Literals(["USER", "ADMIN"])),
-  }),
-  transformer: (effect, args) =>
-    Effect.gen(function* () {
-      const auth = yield* AuthService
-      yield* auth.requireRole(args.role ?? "USER")
-      return yield* effect
-    }),
+  args: S.Struct({ label: S.String }),
+  apply: ({ label }) => (effect) =>
+    Effect.logInfo(label).pipe(Effect.andThen(effect)),
+}).query("hello", {
+  type: S.String,
+  directives: [{ name: "trace", args: { label: "Resolving hello" } }],
+  resolve: () => Effect.succeed("world"),
 })
 ```
+
+Registration alone does not execute the wrapper; apply it explicitly with
+`directives: [{ name, args }]`. `apply` preserves the wrapped effect's generic
+error type, so it cannot introduce a new typed authorization error. Perform
+fallible authorization in the resolver instead. For service-dependent wrappers,
+explicit `directive<Args, Services>(...)` type arguments may be necessary.
 
 ## Building the Schema
 
@@ -413,12 +423,19 @@ Call `.buildSchema()` to produce the final `GraphQLSchema`:
 ```typescript
 const schema = builder.buildSchema()
 
-// Use with any GraphQL server
-import { graphql } from "graphql"
-const result = await graphql({ schema, source: "{ hello }" })
+import { Effect, Layer } from "effect"
+import { execute } from "@effect-gql/core"
+
+const result = await Effect.runPromise(
+  execute(schema, Layer.empty)("{ hello }")
+)
 ```
 
 <Aside type="tip">
-  For request execution with Effect services, use the `execute` function instead of `graphql()` directly.
-  See the [Resolvers guide](/effect-gql/guides/resolvers/) for details.
+  Even pure Effect resolvers require an Effect service context. Prefer `execute`,
+  using a layer with every resolver and argument-decoder dependency.
+  Native `graphql()` callers must provide `contextValue: { services }`, obtained
+  inside the lifetime of that layer. `buildSchema()` returns a bare GraphQL schema
+  and erases the builder's service requirements; `execute` cannot check that the
+  layer is complete. Use `toRouter(builder, layer)` to retain that check.
 </Aside>

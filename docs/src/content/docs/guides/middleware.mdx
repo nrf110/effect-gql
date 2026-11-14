@@ -7,6 +7,10 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 Middleware provides a way to wrap resolver execution with cross-cutting concerns. Unlike directives (which are applied explicitly to individual fields), middleware can apply globally or match fields by pattern.
 
+Middleware wraps registered root-operation and computed-field resolvers.
+Schema-derived object properties that use GraphQL's default property resolver
+are not individually wrapped.
+
 ## When to Use Middleware vs Directives
 
 | Feature | Middleware | Directives |
@@ -48,7 +52,7 @@ Middleware provides a way to wrap resolver execution with cross-cutting concerns
    ).buildSchema()
    ```
 
-3. **All resolvers are automatically wrapped**
+3. **Registered resolvers are automatically wrapped**
 
    When `{ hello }` is executed, the logging middleware runs automatically.
 </Steps>
@@ -57,7 +61,7 @@ Middleware provides a way to wrap resolver execution with cross-cutting concerns
 
 ### Basic Middleware
 
-The simplest middleware applies to all resolvers:
+The simplest middleware applies to every registered resolver:
 
 ```typescript
 middleware({
@@ -80,19 +84,22 @@ Use the `match` predicate to selectively apply middleware:
 
 ```typescript
 middleware({
-  name: "adminOnly",
-  description: "Requires admin role for admin* fields",
+  name: "adminLogging",
+  description: "Logs admin-prefixed fields",
   match: (info) => info.fieldName.startsWith("admin"),
-  apply: (effect) =>
-    Effect.gen(function* () {
-      const auth = yield* AuthService
-      yield* auth.requireAdmin()
-      return yield* effect
-    }),
+  apply: (effect, ctx) => effect.pipe(
+    Effect.tap(() => Effect.logInfo(`Resolved ${ctx.info.fieldName}`))
+  ),
 })
 ```
 
 The `match` function receives the GraphQL `info` object and returns `true` if middleware should apply.
+
+Middleware's `apply` is polymorphic in the resolver's success and error types:
+it must preserve `A` and cannot add a new typed error channel. Put failing
+authorization guards in resolvers, where their error types can be accumulated.
+The same constraint applies to executable directive transformers. Do not
+convert expected authorization failures to defects just to satisfy this signature.
 
 ### Middleware with Services
 
@@ -131,7 +138,12 @@ middleware<MetricsService>({
 The `apply` function receives two arguments:
 
 ```typescript
-apply: (effect, ctx) => Effect.Effect<A, E, R>
+interface MiddlewareRegistration<R> {
+  apply: <A, E, R2>(
+    effect: Effect.Effect<A, E, R2>,
+    ctx: MiddlewareContext
+  ) => Effect.Effect<A, E, R | R2>
+}
 ```
 
 | Parameter | Type | Description |
@@ -161,10 +173,18 @@ middleware({
 Middleware executes in "onion" order - first registered is outermost:
 
 ```typescript
+const trace = (name: string) => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    yield* Effect.logInfo(`${name}.before`)
+    const result = yield* effect
+    yield* Effect.logInfo(`${name}.after`)
+    return result
+  })
+
 const builder = GraphQLSchemaBuilder.empty.pipe(
-  middleware({ name: "outer", apply: (e) => /* runs first/last */ }),
-  middleware({ name: "middle", apply: (e) => /* runs second */ }),
-  middleware({ name: "inner", apply: (e) => /* runs closest to resolver */ }),
+  middleware({ name: "outer", apply: trace("outer") }),
+  middleware({ name: "middle", apply: trace("middle") }),
+  middleware({ name: "inner", apply: trace("inner") }),
 )
 ```
 
@@ -196,74 +216,49 @@ middleware({
 })
 ```
 
-### Error Normalization
+### Error Logging
 
 ```typescript
 middleware({
-  name: "errorNormalization",
+  name: "errorLogging",
   apply: (effect, ctx) =>
-    Effect.catch(effect, (error) =>
-      Effect.fail(
-        new Error(
-          `Error in ${ctx.info.parentType.name}.${ctx.info.fieldName}: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        )
+    effect.pipe(
+      Effect.tapError((error) =>
+        Effect.logError(`Error in ${ctx.info.parentType.name}.${ctx.info.fieldName}`, error)
       )
     ),
 })
 ```
 
+This preserves the original error type. A middleware cannot replace arbitrary
+resolver failures with a new `Error` type; normalize typed failures in resolvers.
+
 ### Role-Based Access Control
 
-```typescript
-// Apply to all mutation fields
-middleware<AuthService>({
-  name: "mutationAuth",
-  match: (info) => info.parentType.name === "Mutation",
-  apply: (effect) =>
-    Effect.gen(function* () {
-      const auth = yield* AuthService
-      yield* auth.requireAuthenticated()
-      return yield* effect
-    }),
-})
+Keep authorization failures in the resolver's typed channel:
 
-// Apply to admin-prefixed fields
-middleware<AuthService>({
-  name: "adminAuth",
-  match: (info) => info.fieldName.startsWith("admin"),
-  apply: (effect) =>
-    Effect.gen(function* () {
-      const auth = yield* AuthService
-      yield* auth.requireRole("ADMIN")
-      return yield* effect
-    }),
+```typescript
+query("adminStats", {
+  type: StatsSchema,
+  resolve: () => Effect.gen(function* () {
+    const auth = yield* AuthService
+    yield* auth.requireRole("ADMIN")
+    const stats = yield* StatsService
+    return yield* stats.getData()
+  }),
 })
 ```
 
-### Caching Middleware
+Use a shared application guard across protected resolvers. Pattern-matched
+middleware can observe those fields but cannot add a new authorization error
+to every resolver's arbitrary error type.
 
-```typescript
-middleware<CacheService>({
-  name: "caching",
-  match: (info) => info.fieldName.startsWith("cached"),
-  apply: (effect, ctx) =>
-    Effect.gen(function* () {
-      const cache = yield* CacheService
-      const key = `${ctx.info.fieldName}:${JSON.stringify(ctx.args)}`
+### Caching and Generic Results
 
-      const cached = yield* cache.get(key)
-      if (cached !== undefined) {
-        return cached
-      }
-
-      const result = yield* effect
-      yield* cache.set(key, result)
-      return result
-    }),
-})
-```
+Middleware must also preserve an arbitrary resolver result type `A`. An untyped
+cache returning `unknown` cannot satisfy this contract without unsafe casts.
+Implement typed value caching in individual resolvers, and use the
+[caching guide](/effect-gql/guides/response-caching) for response cache policies.
 
 ## Composing with Directives
 
@@ -272,17 +267,21 @@ Middleware and directives can work together. Middleware wraps the entire resolve
 ```typescript
 const builder = GraphQLSchemaBuilder.empty.pipe(
   // Middleware wraps everything
-  middleware({ name: "timing", apply: ... }),
+  middleware({
+    name: "timing",
+    apply: (effect) => effect.pipe(Effect.tap(() => Effect.logInfo("Resolved"))),
+  }),
 
-  // Directive for specific fields
-  directive("uppercase", {
+  // Directive transformers must preserve every possible result type.
+  directive({
+    name: "logField",
     locations: [DirectiveLocation.FIELD_DEFINITION],
-    apply: (effect) => effect.pipe(Effect.map(s => s.toUpperCase())),
+    apply: () => (effect) => effect.pipe(Effect.tap(() => Effect.logInfo("Greeting resolved"))),
   }),
 
   query("greeting", {
     type: S.String,
-    directives: [{ name: "uppercase" }],
+    directives: [{ name: "logField" }],
     resolve: () => Effect.succeed("hello"),
   }),
 )
@@ -333,18 +332,6 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
       }),
   }),
 
-  // Admin-only for admin* fields
-  middleware<AuthService>({
-    name: "adminOnly",
-    match: (info) => info.fieldName.startsWith("admin"),
-    apply: (effect) =>
-      Effect.gen(function* () {
-        const auth = yield* AuthService
-        yield* auth.requireAdmin()
-        return yield* effect
-      }),
-  }),
-
   // Queries
   query("users", {
     type: S.Array(S.Struct({ id: S.String, name: S.String })),
@@ -353,15 +340,28 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 
   query("adminStats", {
     type: S.Struct({ count: S.Number }),
-    resolve: () => Effect.succeed({ count: 42 }),
+    resolve: () => Effect.gen(function* () {
+      const auth = yield* AuthService
+      yield* auth.requireAdmin()
+      return { count: 42 }
+    }),
   }),
 )
 
 const schema = builder.buildSchema()
+const serviceLayer = Layer.mergeAll(
+  Layer.succeed(AuthService, { requireAdmin: () => Effect.void }),
+  Layer.succeed(MetricsService, {
+    recordTiming: (field, ms) => Effect.logInfo(`${field}: ${ms}ms`),
+  }),
+)
+const result = await Effect.runPromise(
+  execute(schema, serviceLayer)("{ users { name } adminStats { count } }")
+)
 ```
 
 ## Next Steps
 
 - [Extensions](/effect-gql/guides/extensions) - Request lifecycle hooks for tracing and metadata
 - [Error Handling](/effect-gql/guides/error-handling) - Handle errors in middleware
-- [Directives](/effect-gql/guides/schema-builder#custom-directives) - Per-field transformations
+- [Directives](/effect-gql/guides/schema-builder/#directives) - Per-field transformations

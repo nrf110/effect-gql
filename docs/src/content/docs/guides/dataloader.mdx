@@ -32,8 +32,8 @@ Without DataLoader, if you have 100 posts, this executes 101 database queries. W
    import { Loader } from "@effect-gql/core"
 
    const loaders = Loader.define({
-     UserById: Loader.single<string, User>({
-       batch: (ids) => db.getUsersByIds(ids),
+     UserById: Loader.single<string, User, Database>({
+       batch: (ids) => Effect.flatMap(Database, (db) => db.getUsersByIds(ids)),
        key: (user) => user.id
      })
    })
@@ -42,9 +42,8 @@ Without DataLoader, if you have 100 posts, this executes 101 database queries. W
 2. **Add the loader layer**
 
    ```typescript
-   const serviceLayer = Layer.mergeAll(
-     DatabaseLive,
-     loaders.toLayer()
+   const serviceLayer = loaders.toLayer().pipe(
+     Layer.provideMerge(DatabaseLive)
    )
    ```
 
@@ -53,7 +52,7 @@ Without DataLoader, if you have 100 posts, this executes 101 database queries. W
    ```typescript
    field("Post", "author", {
      type: UserSchema,
-     resolve: (post) => loaders.load("UserById", post.authorId)
+     resolve: (post: Post) => loaders.load("UserById", post.authorId)
    })
    ```
 </Steps>
@@ -66,7 +65,7 @@ One key maps to one value. Use for relationships like "post belongs to author".
 
 ```typescript
 const loaders = Loader.define({
-  UserById: Loader.single<string, User>({
+  UserById: Loader.single<string, User, Database>({
     // Batch function receives all requested keys
     batch: (ids) => Effect.gen(function* () {
       const db = yield* Database
@@ -81,7 +80,7 @@ const loaders = Loader.define({
 **Type Parameters:**
 - `K` - The key type (typically `string` or `number`)
 - `V` - The value type (the entity being loaded)
-- `R` - Service requirements (inferred from the batch function)
+- `R` - Service requirements. Inferred when all type arguments are omitted; when supplying `K` and `V`, also supply `R` (otherwise it defaults to `never`).
 
 **How it works:**
 1. Collect all `load("UserById", id)` calls in the current tick
@@ -95,7 +94,7 @@ One key maps to many values. Use for one-to-many relationships like "author has 
 
 ```typescript
 const loaders = Loader.define({
-  PostsByAuthorId: Loader.grouped<string, Post>({
+  PostsByAuthorId: Loader.grouped<string, Post, Database>({
     // Batch function returns all posts for the requested author IDs
     batch: (authorIds) => Effect.gen(function* () {
       const db = yield* Database
@@ -116,7 +115,7 @@ const loaders = Loader.define({
 ## Full Example
 
 ```typescript
-import { GraphQLSchemaBuilder, query, field, Loader } from "@effect-gql/core"
+import { GraphQLSchemaBuilder, query, objectType, field, Loader, execute } from "@effect-gql/core"
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
 
@@ -134,6 +133,9 @@ const PostSchema = S.Struct({
   authorId: S.String
 })
 
+type User = S.Schema.Type<typeof UserSchema>
+type Post = S.Schema.Type<typeof PostSchema>
+
 // Database service
 class Database extends Context.Service<Database, {
   getAllPosts: () => Effect.Effect<Post[]>
@@ -141,9 +143,17 @@ class Database extends Context.Service<Database, {
   getPostsByAuthorIds: (authorIds: readonly string[]) => Effect.Effect<Post[]>
 }>()("Database") {}
 
+const users: User[] = [{ id: "1", name: "Alice", email: "alice@example.com" }]
+const posts: Post[] = [{ id: "p1", title: "Hello", content: "First post", authorId: "1" }]
+const DatabaseLive = Layer.succeed(Database, {
+  getAllPosts: () => Effect.succeed(posts),
+  getUsersByIds: (ids) => Effect.succeed(users.filter((user) => ids.includes(user.id))),
+  getPostsByAuthorIds: (ids) => Effect.succeed(posts.filter((post) => ids.includes(post.authorId)))
+})
+
 // Define all loaders
 const loaders = Loader.define({
-  UserById: Loader.single<string, User>({
+  UserById: Loader.single<string, User, Database>({
     batch: (ids) => Effect.gen(function* () {
       const db = yield* Database
       return yield* db.getUsersByIds(ids)
@@ -151,7 +161,7 @@ const loaders = Loader.define({
     key: (user) => user.id
   }),
 
-  PostsByAuthorId: Loader.grouped<string, Post>({
+  PostsByAuthorId: Loader.grouped<string, Post, Database>({
     batch: (authorIds) => Effect.gen(function* () {
       const db = yield* Database
       return yield* db.getPostsByAuthorIds(authorIds)
@@ -178,19 +188,19 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
   // Relational fields
   field("Post", "author", {
     type: UserSchema,
-    resolve: (post) => loaders.load("UserById", post.authorId)
+    resolve: (post: Post) => loaders.load("UserById", post.authorId)
   }),
 
   field("User", "posts", {
     type: S.Array(PostSchema),
-    resolve: (user) => loaders.load("PostsByAuthorId", user.id)
+    resolve: (user: User) => loaders.load("PostsByAuthorId", user.id)
   })
 )
 
 // Create service layer with loaders
-const serviceLayer = Layer.mergeAll(
-  DatabaseLive,
-  loaders.toLayer()
+const serviceLayer = loaders.toLayer().pipe(Layer.provideMerge(DatabaseLive))
+const result = await Effect.runPromise(
+  execute(builder.buildSchema(), serviceLayer)("{ posts { title author { name posts { title } } } }")
 )
 ```
 
@@ -256,13 +266,12 @@ DataLoaders should be **scoped to each request** to ensure:
 2. **Fresh data**: Each request starts with empty cache
 3. **Batching window**: Batches only collect calls within a single request
 
-Effect GraphQL handles this automatically when you use `toLayer()`:
+`execute` and the HTTP router build the supplied layer per request. Reuse the layer recipe, not a previously built context:
 
 ```typescript
 // Each request gets fresh loader instances
-const serviceLayer = Layer.mergeAll(
-  DatabaseLive,
-  loaders.toLayer()  // Fresh instances per request
+const serviceLayer = loaders.toLayer().pipe(
+  Layer.provideMerge(DatabaseLive) // Supplies dependencies and retains Database
 )
 ```
 
@@ -273,12 +282,10 @@ const serviceLayer = Layer.mergeAll(
 Map items to match requested keys (useful in batch functions):
 
 ```typescript
-batch: (ids) => Effect.gen(function* () {
-  const db = yield* Database
-  const users = yield* db.getUsersByIds(ids)
-  // Ensure order matches requested ids
-  return Loader.mapByKey(ids, users, (user) => user.id)
-})
+const ordered = Loader.mapByKey(ids, users, (user) => user.id)
+// (User | Error)[]; missing keys become Error values.
+// Single-loader batch functions return User[] instead: the registry
+// already matches each returned user to its key.
 ```
 
 ### `Loader.groupByKey`
@@ -315,25 +322,27 @@ export const loaders = Loader.define({
 Define key types explicitly:
 
 ```typescript
-type UserId = string & { readonly _brand: "UserId" }
+type UserId = User["id"]
 
 const loaders = Loader.define({
-  UserById: Loader.single<UserId, User>({
-    batch: (ids) => ...,
-    key: (user) => user.id as UserId
+  UserById: Loader.single<UserId, User, Database>({
+    batch: (ids) => Effect.flatMap(Database, (db) => db.getUsersByIds(ids)),
+    key: (user) => user.id
   })
 })
 ```
 
 ### 3. Handle Missing Values
 
-Single loaders return an Error for missing keys. Handle gracefully:
+Single loaders fail with an `Error` for missing keys. `load`, `loadMany`, and `use`
+expose rejected promises through Effect's typed error channel, so recover with
+`Effect.catch` rather than catching defects. Native `Error` values are not tagged.
 
 ```typescript
 field("Post", "author", {
   type: S.NullOr(UserSchema),
-  resolve: (post) => loaders.load("UserById", post.authorId).pipe(
-    Effect.catchTag("Error", () => Effect.succeed(null))
+  resolve: (post: Post) => loaders.load("UserById", post.authorId).pipe(
+    Effect.catch(() => Effect.succeed(null))
   )
 })
 ```
@@ -344,7 +353,7 @@ Loaders can depend on other services:
 
 ```typescript
 const loaders = Loader.define({
-  UserById: Loader.single<string, User>({
+  UserById: Loader.single<string, User, Database | CacheService>({
     batch: (ids) => Effect.gen(function* () {
       const db = yield* Database
       const cache = yield* CacheService
@@ -378,12 +387,12 @@ Wrap the batch function to see what's being batched:
 
 ```typescript
 const loaders = Loader.define({
-  UserById: Loader.single<string, User>({
+  UserById: Loader.single<string, User, Database>({
     batch: (ids) => Effect.gen(function* () {
-      console.log(`Loading users: ${ids.join(", ")}`)
+      yield* Effect.logInfo(`Loading users: ${ids.join(", ")}`)
       const db = yield* Database
       const users = yield* db.getUsersByIds(ids)
-      console.log(`Loaded ${users.length} users`)
+      yield* Effect.logInfo(`Loaded ${users.length} users`)
       return users
     }),
     key: (user) => user.id
@@ -393,7 +402,7 @@ const loaders = Loader.define({
 
 ### Monitor Cache Hits
 
-The underlying DataLoader tracks statistics:
+The underlying DataLoader does not expose cache-hit statistics:
 
 ```typescript
 loaders.use(async (instances) => {

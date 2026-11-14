@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Option } from "effect"
+import { Deferred, Effect, Option } from "effect"
 import * as S from "effect/Schema"
 import { GraphQLSchemaBuilder } from "../../src/builder/schema-builder"
 import { execute } from "../../src/builder/execute"
@@ -202,6 +202,132 @@ describe("ResolverContext", () => {
         outer: "outer",
         inner: "inner",
         afterInner: "outer",
+      })
+    })
+
+    it("should isolate overlapping scopes from siblings and the parent", async () => {
+      const slot = ResolverContext.make<string>("ParallelScope")
+      const effect = Effect.gen(function* () {
+        yield* ResolverContext.set(slot, "outer")
+        const leftReady = yield* Deferred.make<void>()
+        const rightReady = yield* Deferred.make<void>()
+        const leftRead = yield* Deferred.make<void>()
+
+        const values = yield* Effect.all(
+          [
+            ResolverContext.scoped(
+              slot,
+              "left"
+            )(
+              Effect.gen(function* () {
+                yield* Deferred.succeed(leftReady, undefined)
+                yield* Deferred.await(rightReady)
+                const value = yield* ResolverContext.get(slot)
+                yield* Deferred.succeed(leftRead, undefined)
+                return value
+              })
+            ),
+            Effect.gen(function* () {
+              yield* Deferred.await(leftReady)
+              return yield* ResolverContext.scoped(
+                slot,
+                "right"
+              )(
+                Effect.gen(function* () {
+                  yield* Deferred.succeed(rightReady, undefined)
+                  yield* Deferred.await(leftRead)
+                  return yield* ResolverContext.get(slot)
+                })
+              )
+            }),
+          ],
+          { concurrency: "unbounded" }
+        )
+
+        return { values, parent: yield* ResolverContext.get(slot) }
+      })
+
+      const result = await Effect.runPromise(effect.pipe(Effect.provide(storeLayer)))
+      expect(result).toEqual({ values: ["left", "right"], parent: "outer" })
+    })
+
+    it("should isolate nested overrides while preserving unrelated writes after failure", async () => {
+      const slot = ResolverContext.make<string>("NestedScope")
+      const other = ResolverContext.make<string>("ScopedWrite")
+      const effect = Effect.gen(function* () {
+        yield* ResolverContext.set(slot, "outer")
+        yield* ResolverContext.set(other, "original")
+        const inner = yield* ResolverContext.scoped(
+          slot,
+          "inner"
+        )(
+          Effect.gen(function* () {
+            yield* ResolverContext.set(other, "temporary")
+            const nested = yield* ResolverContext.scoped(slot, "nested")(ResolverContext.get(slot))
+            return yield* Effect.fail({ nested, scoped: yield* ResolverContext.get(slot) })
+          })
+        ).pipe(Effect.catch((error) => Effect.succeed(error)))
+
+        return {
+          inner,
+          parent: yield* ResolverContext.get(slot),
+          other: yield* ResolverContext.get(other),
+        }
+      })
+
+      const result = await Effect.runPromise(effect.pipe(Effect.provide(storeLayer)))
+      expect(result).toEqual({
+        inner: { nested: "nested", scoped: "inner" },
+        parent: "outer",
+        other: "temporary",
+      })
+    })
+
+    it("should route all accessors and writes through the matching slot override", async () => {
+      const slot = ResolverContext.make<string>("ScopedAccessors")
+      const other = ResolverContext.make<string>("SharedWrites")
+      const effect = Effect.gen(function* () {
+        const inner = yield* ResolverContext.scoped(
+          slot,
+          "initial"
+        )(
+          Effect.gen(function* () {
+            yield* ResolverContext.setMany([
+              [slot, "local"],
+              [other, "shared"],
+            ])
+            yield* ResolverContext.scoped(
+              other,
+              "nested"
+            )(ResolverContext.set(slot, "inherited override"))
+            return {
+              value: yield* ResolverContext.getOrElse(slot, () => "missing"),
+              option: Option.getOrThrow(yield* ResolverContext.getOption(slot)),
+              exists: yield* ResolverContext.has(slot),
+              other: yield* ResolverContext.get(other),
+            }
+          })
+        )
+
+        return {
+          inner,
+          parentHasSlot: yield* ResolverContext.has(slot),
+          parentOption: Option.isNone(yield* ResolverContext.getOption(slot)),
+          other: yield* ResolverContext.get(other),
+        }
+      })
+
+      const result = await Effect.runPromise(effect.pipe(Effect.provide(storeLayer)))
+      expect(result).toEqual({
+        inner: {
+          value: "inherited override",
+          option: "inherited override",
+          exists: true,
+          other: "shared",
+        },
+        parentHasSlot: false,
+        parentOption: true,
+        other: "shared",
       })
     })
   })

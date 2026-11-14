@@ -12,17 +12,17 @@ The `@effect-gql/cli` package provides command-line tools for common development
 <Tabs>
   <TabItem label="npm">
     ```bash
-    npm install @effect-gql/cli
+    npm install --save-dev @effect-gql/cli@^2
     ```
   </TabItem>
   <TabItem label="pnpm">
     ```bash
-    pnpm add @effect-gql/cli
+    pnpm add --save-dev @effect-gql/cli@^2
     ```
   </TabItem>
   <TabItem label="yarn">
     ```bash
-    yarn add @effect-gql/cli
+    yarn add --dev @effect-gql/cli@^2
     ```
   </TabItem>
 </Tabs>
@@ -30,7 +30,7 @@ The `@effect-gql/cli` package provides command-line tools for common development
 Or use directly with npx:
 
 ```bash
-npx @effect-gql/cli <command>
+npx @effect-gql/cli@^2 <command>
 ```
 
 ## Commands
@@ -64,11 +64,15 @@ effect-gql generate-schema ./src/schema.ts -o schema.graphql --watch
 Your schema module should export one of:
 
 ```typescript
-// Option 1: Export builder
-export const builder = GraphQLSchemaBuilder.empty.pipe(
-  query("hello", { ... }),
-  objectType({ ... })
-)
+import { Effect } from "effect"
+import * as S from "effect/Schema"
+import { GraphQLSchemaBuilder } from "@effect-gql/core"
+
+// Option 1: Export a builder.
+export const builder = GraphQLSchemaBuilder.empty.query("hello", {
+  type: S.String,
+  resolve: () => Effect.succeed("world"),
+})
 
 // Option 2: Export schema
 export const schema = builder.buildSchema()
@@ -120,23 +124,18 @@ The CLI automatically detects if you're inside a monorepo by looking for:
 - `package.json` with `workspaces` field
 - `turbo.json`
 
-When in a monorepo, `@effect-gql/*` dependencies use `workspace:*` instead of version numbers:
+For a package two directories below the root, such as `packages/api`, use:
 
 ```bash
 # Inside a pnpm monorepo
-effect-gql create packages/api -s node --monorepo
+effect-gql create @myorg/api -s node -d packages/api --monorepo
 ```
 
-```json
-// Generated package.json
-{
-  "dependencies": {
-    "@effect-gql/core": "workspace:*",
-    "@effect-gql/node": "workspace:*",
-    // ...
-  }
-}
-```
+Monorepo mode makes `tsconfig.json` extend `../../tsconfig.json`; ensure that file
+exists and your workspace configuration includes the target directory.
+Dependencies still use published versions: `@effect-gql/*` uses `^2.0.0` and
+`effect` uses `^4.1.1`. The generator does not switch these dependencies to
+`workspace:*`.
 
 #### Generated Project Structure
 
@@ -148,6 +147,13 @@ my-api/
 └── src/
     └── index.ts    # Server entry point with example schema
 ```
+
+After generation, use the compiler version and `lib` configuration from the
+[installation guide](/effect-gql/getting-started/installation/#typescript-configuration).
+In particular, the current standalone template still starts with `ES2022`
+libraries; update it to the documented `ES2024` and web API libraries before
+typechecking these examples. Decorator flags in a generated config do not enable
+an effect-gql decorator API.
 
 #### Examples
 
@@ -177,8 +183,15 @@ In code-first GraphQL frameworks, the schema is typically built at runtime. This
 Effect GQL separates **schema building** from **query execution**. The `R` type parameter tracks service requirements, but these are only needed when resolvers actually run—not when constructing the schema structure.
 
 ```typescript
+import { Effect, Context } from "effect"
+import * as S from "effect/Schema"
+import { GraphQLSchemaBuilder, query } from "@effect-gql/core"
 import { generateSDL } from "@effect-gql/cli"
 
+const UserSchema = S.Struct({ id: S.String, name: S.String })
+class DatabaseService extends Context.Service<DatabaseService, {
+  readonly getUsers: () => Effect.Effect<readonly S.Schema.Type<typeof UserSchema>[]>
+}>()("DatabaseService") {}
 // This works without any DatabaseService layer!
 const builder = GraphQLSchemaBuilder.empty.pipe(
   query("users", {
@@ -245,12 +258,13 @@ Create a simple generation script:
 ```typescript
 // scripts/generate-schema.ts
 import { generateSDL } from "@effect-gql/cli"
+import { Effect } from "effect"
 import { builder } from "../src/schema"
-import { writeFileSync } from "fs"
+import { writeFileSync } from "node:fs"
 
 const sdl = generateSDL(builder.buildSchema())
 writeFileSync("schema.graphql", sdl)
-console.log("Generated schema.graphql")
+Effect.runSync(Effect.logInfo("Generated schema.graphql"))
 ```
 
 Run with:

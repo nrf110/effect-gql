@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { Context, Effect, Layer } from "effect"
 import { HttpRouter, HttpServerRequest } from "effect/http"
+import type { CacheHintMap } from "@effect-gql/core/server"
 import {
   ExtensionsService,
   type GraphQLEffectContext,
@@ -48,6 +49,7 @@ const executePost = async (
     )
     return {
       status: response.status,
+      headers: response.headers,
       body: await response.json(),
     }
   } finally {
@@ -74,6 +76,7 @@ const executeGet = async (
     )
     return {
       status: response.status,
+      headers: response.headers,
       body: await response.json(),
     }
   } finally {
@@ -490,6 +493,138 @@ describe("makePersistedQueriesRouter", () => {
       expect(result.body.errors).toHaveLength(1)
       expect(result.body.errors[0].extensions.code).toBe("PERSISTED_QUERY_NOT_ALLOWED")
     })
+
+    it.each(["POST", "GET"] as const)(
+      "denies unregistered text and hashes over %s before invoking resolvers",
+      async (method) => {
+        let resolverCalls = 0
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: {
+              secret: {
+                type: GraphQLString,
+                resolve: () => {
+                  resolverCalls++
+                  return "restricted"
+                },
+              },
+            },
+          }),
+        })
+        const router = makePersistedQueriesRouter(schema, Layer.empty, {
+          mode: "safelist",
+          store: makeSafelistStore({}),
+          validateHash: false,
+        })
+        const extensionCases = [
+          undefined,
+          null,
+          "invalid",
+          { persistedQuery: null },
+          { persistedQuery: {} },
+          { persistedQuery: { version: "1", sha256Hash: "unknown" } },
+          { persistedQuery: { version: 1, sha256Hash: 123 } },
+          { persistedQuery: { version: 1, sha256Hash: "unknown" } },
+        ]
+
+        for (const extensions of extensionCases) {
+          const body = { query: "{ secret }", extensions }
+          const result =
+            method === "POST"
+              ? await executePost(router, body)
+              : await executeGet(router, {
+                  query: body.query,
+                  ...(extensions === undefined ? {} : { extensions: JSON.stringify(extensions) }),
+                })
+          expect(result.body.errors[0].extensions.code).toBe("PERSISTED_QUERY_NOT_ALLOWED")
+          expect(result.body.data).toBeUndefined()
+          expect(resolverCalls).toBe(0)
+        }
+
+        const extensions = { persistedQuery: { version: 1, sha256Hash: "unknown" } }
+        const hashOnly =
+          method === "POST"
+            ? await executePost(router, { extensions })
+            : await executeGet(router, { extensions: JSON.stringify(extensions) })
+        expect(hashOnly.body.errors[0].extensions.code).toBe("PERSISTED_QUERY_NOT_ALLOWED")
+        expect(resolverCalls).toBe(0)
+
+        const invalidVersion = {
+          query: "{ secret }",
+          extensions: { persistedQuery: { version: 2, sha256Hash: "unknown" } },
+        }
+        const versionResult =
+          method === "POST"
+            ? await executePost(router, invalidVersion)
+            : await executeGet(router, {
+                query: invalidVersion.query,
+                extensions: JSON.stringify(invalidVersion.extensions),
+              })
+        expect(versionResult.body.errors[0].extensions.code).toBe(
+          "PERSISTED_QUERY_VERSION_NOT_SUPPORTED"
+        )
+        expect(resolverCalls).toBe(0)
+      }
+    )
+
+    it.each(["POST", "GET"] as const)(
+      "checks plain text with the configured algorithm and executes only stored text over %s",
+      async (method) => {
+        let allowedCalls = 0
+        let secretCalls = 0
+        const query = "{ allowed }"
+        const hash = await Effect.runPromise(computeHash(query, "sha512"))
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: {
+              allowed: {
+                type: GraphQLString,
+                resolve: () => {
+                  allowedCalls++
+                  return "approved"
+                },
+              },
+              secret: {
+                type: GraphQLString,
+                resolve: () => {
+                  secretCalls++
+                  return "restricted"
+                },
+              },
+            },
+          }),
+        })
+        const router = makePersistedQueriesRouter(schema, Layer.empty, {
+          mode: "safelist",
+          hashAlgorithm: "sha512",
+          store: makeSafelistStore({ [hash]: query }),
+        })
+        const bodies = [
+          { query },
+          { query, extensions: { persistedQuery: null } },
+          {
+            query: "{ secret }",
+            extensions: { persistedQuery: { version: 1, sha256Hash: hash } },
+          },
+          { extensions: { persistedQuery: { version: 1, sha256Hash: hash } } },
+        ]
+        for (const body of bodies) {
+          const result =
+            method === "POST"
+              ? await executePost(router, body)
+              : await executeGet(router, {
+                  ...(body.query ? { query: body.query } : {}),
+                  ...(body.extensions ? { extensions: JSON.stringify(body.extensions) } : {}),
+                })
+          expect(result.body.data).toEqual({ allowed: "approved" })
+          expect(result.body.errors).toBeUndefined()
+        }
+        expect(allowedCalls).toBe(4)
+        expect(secretCalls).toBe(0)
+      }
+    )
   })
 
   describe("GET requests", () => {
@@ -596,6 +731,133 @@ describe("makePersistedQueriesRouter", () => {
 
       expect(result.body.errors).toBeDefined()
       expect(result.body.errors[0].message).toContain("Syntax Error")
+    })
+  })
+
+  describe("HTTP cache control", () => {
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          publicData: { type: GraphQLString, resolve: () => "public" },
+          privateData: { type: GraphQLString, resolve: () => "private" },
+          uncached: { type: GraphQLString, resolve: () => "uncached" },
+          broken: {
+            type: GraphQLString,
+            resolve: () => {
+              throw new Error("resolver failed")
+            },
+          },
+        },
+      }),
+      mutation: new GraphQLObjectType({
+        name: "Mutation",
+        fields: { update: { type: GraphQLString, resolve: () => "updated" } },
+      }),
+    })
+    const cacheHints: CacheHintMap = new Map([
+      ["Query.publicData", { maxAge: 120 }],
+      ["Query.privateData", { maxAge: 30, scope: "PRIVATE" }],
+      ["Query.broken", { maxAge: 120 }],
+      ["Mutation.update", { maxAge: 120 }],
+    ])
+
+    describe.each(["POST", "GET"] as const)("%s responses", (method) => {
+      it.each([
+        {
+          query: "{ publicData }",
+          header: "public, max-age=120",
+          data: { publicData: "public" },
+        },
+        {
+          query: "{ publicData privateData }",
+          header: "private, max-age=30",
+          data: { publicData: "public", privateData: "private" },
+        },
+        {
+          query: "{ publicData uncached }",
+          header: "no-store",
+          data: { publicData: "public", uncached: "uncached" },
+        },
+      ])("sets the effective policy for $query", async ({ query, header, data }) => {
+        const hash = await Effect.runPromise(computeHash(query))
+        const router = makePersistedQueriesRouter(schema, Layer.empty, {
+          mode: "safelist",
+          store: makeSafelistStore({ [hash]: query }),
+          cacheHints,
+        })
+        const extensions = { persistedQuery: { version: 1, sha256Hash: hash } }
+        const result =
+          method === "POST"
+            ? await executePost(router, { extensions })
+            : await executeGet(router, { extensions: JSON.stringify(extensions) })
+        expect(result.body.data).toEqual(data)
+        expect(result.headers.get("cache-control")).toBe(header)
+      })
+
+      it.each([{ enabled: false }, { calculateHttpHeaders: false }])(
+        "omits headers when cache control is disabled: %j",
+        async (cacheControl) => {
+          const router = makePersistedQueriesRouter(schema, Layer.empty, {
+            cacheHints,
+            cacheControl,
+          })
+          const query = "{ publicData }"
+          const result =
+            method === "POST"
+              ? await executePost(router, { query })
+              : await executeGet(router, { query })
+          expect(result.body.data).toEqual({ publicData: "public" })
+          expect(result.headers.get("cache-control")).toBeNull()
+        }
+      )
+
+      it("honors the selected operation rather than other definitions", async () => {
+        const router = makePersistedQueriesRouter(schema, Layer.empty, { cacheHints })
+        const query =
+          "query Public { publicData } query Private { privateData } mutation Update { update }"
+        for (const [operationName, header, data] of [
+          ["Private", "private, max-age=30", { privateData: "private" }],
+          ["Update", null, { update: "updated" }],
+          ["Public", "public, max-age=120", { publicData: "public" }],
+        ] as const) {
+          const result =
+            method === "POST"
+              ? await executePost(router, { query, operationName })
+              : await executeGet(router, { query, operationName })
+          expect(result.body.data).toEqual(data)
+          expect(result.headers.get("cache-control")).toBe(header)
+        }
+      })
+
+      it("does not cache resolver failures or ambiguous operation selection", async () => {
+        const router = makePersistedQueriesRouter(schema, Layer.empty, { cacheHints })
+        for (const [query, data] of [
+          ["{ publicData broken }", { publicData: "public", broken: null }],
+          ["query One { publicData } query Two { privateData }", undefined],
+        ] as const) {
+          const result =
+            method === "POST"
+              ? await executePost(router, { query })
+              : await executeGet(router, { query })
+          expect(result.body.errors).toHaveLength(1)
+          expect(result.body.data).toEqual(data)
+          expect(result.headers.get("cache-control")).toBe("no-store")
+        }
+      })
+
+      it("uses configured default age and scope for fields without hints", async () => {
+        const router = makePersistedQueriesRouter(schema, Layer.empty, {
+          cacheControl: { defaultMaxAge: 45, defaultScope: "PRIVATE" },
+        })
+        const query = "{ uncached }"
+        const result =
+          method === "POST"
+            ? await executePost(router, { query })
+            : await executeGet(router, { query })
+        expect(result.body.data).toEqual({ uncached: "uncached" })
+        expect(result.headers.get("cache-control")).toBe("private, max-age=45")
+      })
     })
   })
 

@@ -18,7 +18,7 @@ npm install @effect-gql/federation
 ```typescript
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { FederatedSchemaBuilder, entity, query, key } from "@effect-gql/federation"
+import { FederatedSchemaBuilder, entity, query } from "@effect-gql/federation"
 import { serve } from "@effect-gql/node"
 
 // Define your entity schema
@@ -36,10 +36,10 @@ const { schema, sdl } = FederatedSchemaBuilder.empty.pipe(
   entity({
     name: "User",
     schema: UserSchema,
-    keys: [key({ fields: "id" })],
+    keys: [{ fields: "id" }],
     resolveReference: (ref) => Effect.gen(function* () {
       const userService = yield* UserService
-      return yield* userService.findById(ref.id)
+      return typeof ref.id === "string" ? yield* userService.findById(ref.id) : null
     }),
   }),
 
@@ -54,7 +54,7 @@ const { schema, sdl } = FederatedSchemaBuilder.empty.pipe(
 ).buildFederatedSchema()
 
 // The schema is ready to serve with Apollo Router
-console.log("Federation SDL:\n", sdl)
+await Effect.runPromise(Effect.logInfo("Federation SDL", sdl))
 ```
 
 ## Core Concepts
@@ -64,22 +64,26 @@ console.log("Federation SDL:\n", sdl)
 Entities are the building blocks of Apollo Federation. They're types that can be referenced and resolved across subgraph boundaries.
 
 ```typescript
-import { entity, key } from "@effect-gql/federation"
+import { entity } from "@effect-gql/federation"
 
 FederatedSchemaBuilder.empty.pipe(
   entity({
     name: "Product",
     schema: ProductSchema,
-    keys: [key({ fields: "id" })],
+    keys: [{ fields: "id" }],
     resolveReference: (ref) => Effect.gen(function* () {
       const productService = yield* ProductService
-      return yield* productService.findById(ref.id)
+      return typeof ref.id === "string" ? yield* productService.findById(ref.id) : null
     }),
   }),
 )
 ```
 
 The `resolveReference` function is called by the Apollo Router when another subgraph references this entity. It receives the entity representation (key fields) and must return the full entity.
+
+`entity.keys` accepts `{ fields, resolvable? }` objects. Use these directly:
+the current `key()` factory's declared union return type is broader than
+`KeyDirective` and is not accepted here without narrowing.
 
 ### Multiple Keys
 
@@ -90,15 +94,15 @@ entity({
   name: "User",
   schema: UserSchema,
   keys: [
-    key({ fields: "id" }),
-    key({ fields: "email" }),
+    { fields: "id" },
+    { fields: "email" },
   ],
   resolveReference: (ref) => Effect.gen(function* () {
     const userService = yield* UserService
-    if ("id" in ref) {
+    if (typeof ref.id === "string") {
       return yield* userService.findById(ref.id)
     }
-    return yield* userService.findByEmail(ref.email)
+    return typeof ref.email === "string" ? yield* userService.findByEmail(ref.email) : null
   }),
 })
 ```
@@ -111,10 +115,12 @@ Use compound keys for entities identified by multiple fields:
 entity({
   name: "Review",
   schema: ReviewSchema,
-  keys: [key({ fields: "userId productId" })],
+  keys: [{ fields: "userId productId" }],
   resolveReference: (ref) => Effect.gen(function* () {
     const reviewService = yield* ReviewService
-    return yield* reviewService.findByUserAndProduct(ref.userId, ref.productId)
+    return typeof ref.userId === "string" && typeof ref.productId === "string"
+      ? yield* reviewService.findByUserAndProduct(ref.userId, ref.productId)
+      : null
   }),
 })
 ```
@@ -128,14 +134,17 @@ entity({
 Marks a type as resolvable by multiple subgraphs:
 
 ```typescript
-import { entity, key, shareable } from "@effect-gql/federation"
+import { entity, shareable } from "@effect-gql/federation"
 
 entity({
   name: "Product",
   schema: ProductSchema,
-  keys: [key({ fields: "id" })],
+  keys: [{ fields: "id" }],
   directives: [shareable()],
-  resolveReference: (ref) => ProductService.findById(ref.id),
+  resolveReference: (ref) => Effect.gen(function* () {
+    const products = yield* ProductService
+    return typeof ref.id === "string" ? yield* products.findById(ref.id) : null
+  }),
 })
 ```
 
@@ -144,14 +153,18 @@ entity({
 Hides a type or field from the public API while keeping it available for federation:
 
 ```typescript
-import { objectType, inaccessible } from "@effect-gql/federation"
+import { objectType } from "@effect-gql/federation"
 
 objectType({
   name: "InternalMetadata",
   schema: MetadataSchema,
-  directives: [inaccessible()],
+  directives: [{ name: "inaccessible" }],
 })
 ```
+
+`entity.directives` accepts federation factory values such as `shareable()`.
+In contrast, `objectType.directives` and `field.directives` use the core
+`DirectiveApplication` shape: `{ name, args? }`.
 
 #### @tag
 
@@ -161,32 +174,45 @@ Adds metadata tags for documentation or tooling:
 entity({
   name: "Product",
   schema: ProductSchema,
-  keys: [key({ fields: "id" })],
+  keys: [{ fields: "id" }],
   directives: [tag("public"), tag("catalog")],
-  resolveReference: (ref) => ProductService.findById(ref.id),
+  resolveReference: (ref) => Effect.gen(function* () {
+    const products = yield* ProductService
+    return typeof ref.id === "string" ? yield* products.findById(ref.id) : null
+  }),
 })
 ```
 
 ### Field-Level Directives
+
+<Aside type="caution">
+  The current builder accepts directive applications on computed `field(...)`
+  registrations, but does not forward them into field metadata or generated
+  federation SDL. The following snippets illustrate the accepted configuration
+  shape only; they do **not** currently emit `@external`, `@requires`, `@provides`,
+  or `@override`. Do not rely on them for Apollo Router query planning.
+</Aside>
 
 #### @external
 
 Marks a field as defined in another subgraph:
 
 ```typescript
-import { field, external } from "@effect-gql/federation"
+import { field } from "@effect-gql/federation"
 
-// In reviews subgraph, reference the User entity
-entity({
-  name: "User",
-  schema: S.Struct({ id: S.String }),
-  keys: [key({ fields: "id", resolvable: false })],
-  resolveReference: () => Effect.succeed(null), // Stub - resolved by users subgraph
-}).pipe(
+const UserReference = S.Struct({ id: S.String })
+FederatedSchemaBuilder.empty.pipe(
+  entity({
+    name: "User",
+    schema: UserReference,
+    keys: [{ fields: "id", resolvable: false }],
+    // This subgraph never resolves references for this non-resolvable key.
+    resolveReference: () => Effect.succeed(null),
+  }),
   field("User", "id", {
     type: S.String,
-    directives: [external()],
-    resolve: (parent) => Effect.succeed(parent.id),
+    directives: [{ name: "external" }],
+    resolve: (parent: S.Schema.Type<typeof UserReference>) => Effect.succeed(parent.id),
   }),
 )
 ```
@@ -196,12 +222,12 @@ entity({
 Specifies fields needed from other subgraphs before resolution:
 
 ```typescript
-import { field, requires } from "@effect-gql/federation"
+import { field } from "@effect-gql/federation"
 
 field("Product", "shippingEstimate", {
   type: S.Int,
-  directives: [requires({ fields: "weight dimensions { height width }" })],
-  resolve: (product) => Effect.gen(function* () {
+  directives: [{ name: "requires", args: { fields: "weight dimensions { height width }" } }],
+  resolve: (product: S.Schema.Type<typeof ProductSchema>) => Effect.gen(function* () {
     const shipping = yield* ShippingService
     return yield* shipping.calculateEstimate(product.weight, product.dimensions)
   }),
@@ -213,12 +239,12 @@ field("Product", "shippingEstimate", {
 Optimization hint indicating this field provides additional data:
 
 ```typescript
-import { field, provides } from "@effect-gql/federation"
+import { field } from "@effect-gql/federation"
 
 field("Review", "author", {
-  type: UserSchema,
-  directives: [provides({ fields: "name email" })],
-  resolve: (review) => Effect.gen(function* () {
+  type: S.NullOr(UserSchema),
+  directives: [{ name: "provides", args: { fields: "name email" } }],
+  resolve: (review: S.Schema.Type<typeof ReviewSchema>) => Effect.gen(function* () {
     const userService = yield* UserService
     return yield* userService.findById(review.authorId)
   }),
@@ -230,12 +256,12 @@ field("Review", "author", {
 Transfers resolution responsibility from another subgraph:
 
 ```typescript
-import { field, override } from "@effect-gql/federation"
+import { field } from "@effect-gql/federation"
 
 field("Product", "price", {
   type: S.Number,
-  directives: [override({ from: "legacy-pricing" })],
-  resolve: (product) => Effect.gen(function* () {
+  directives: [{ name: "override", args: { from: "legacy-pricing" } }],
+  resolve: (product: S.Schema.Type<typeof ProductSchema>) => Effect.gen(function* () {
     const pricing = yield* PricingService
     return yield* pricing.getPrice(product.id)
   }),
@@ -254,7 +280,6 @@ import {
   entity,
   query,
   mutation,
-  key,
   shareable,
 } from "@effect-gql/federation"
 import { serve } from "@effect-gql/node"
@@ -287,16 +312,16 @@ const { schema, sdl } = FederatedSchemaBuilder.empty.pipe(
     name: "User",
     schema: UserSchema,
     keys: [
-      key({ fields: "id" }),
-      key({ fields: "email" }),
+      { fields: "id" },
+      { fields: "email" },
     ],
     directives: [shareable()],
     resolveReference: (ref) => Effect.gen(function* () {
       const userService = yield* UserService
-      if ("id" in ref && ref.id) {
+      if (typeof ref.id === "string") {
         return yield* userService.findById(ref.id)
       }
-      if ("email" in ref && ref.email) {
+      if (typeof ref.email === "string") {
         return yield* userService.findByEmail(ref.email)
       }
       return null
@@ -349,7 +374,7 @@ import { makeGraphQLRouter } from "@effect-gql/core/server"
 const router = makeGraphQLRouter(schema, UserServiceLive, { graphiql: true })
 serve(router, UserServiceLive, {
   port: 4001,
-  onStart: (url) => console.log(`Users subgraph running at ${url}`),
+  onStart: (url) => { Effect.runSync(Effect.logInfo(`Users subgraph running at ${url}`)) },
 })
 ```
 
@@ -417,6 +442,11 @@ During development, you can use `rover dev` for automatic supergraph composition
 | `requires({ fields })` | Fields needed before resolution |
 | `provides({ fields })` | Fields this resolver provides |
 | `override({ from, label? })` | Take over from another subgraph |
+
+Factories return `FederationDirective` values for `entity.directives`.
+Use plain key objects for `entity.keys`, and core `{ name, args? }` applications
+for non-entity type/field registrations. Computed-field directive emission is
+currently limited as described above.
 
 ## Next Steps
 

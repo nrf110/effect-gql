@@ -12,12 +12,12 @@ Effect GraphQL provides first-class OpenTelemetry integration for distributed tr
 <Tabs>
   <TabItem label="npm">
     ```bash
-    npm install @effect-gql/opentelemetry @effect/opentelemetry @opentelemetry/api @opentelemetry/sdk-trace-base
+    npm install @effect-gql/opentelemetry @effect/opentelemetry @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/exporter-trace-otlp-http
     ```
   </TabItem>
   <TabItem label="pnpm">
     ```bash
-    pnpm add @effect-gql/opentelemetry @effect/opentelemetry @opentelemetry/api @opentelemetry/sdk-trace-base
+    pnpm add @effect-gql/opentelemetry @effect/opentelemetry @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/exporter-trace-otlp-http
     ```
   </TabItem>
 </Tabs>
@@ -28,14 +28,18 @@ Effect GraphQL provides first-class OpenTelemetry integration for distributed tr
 1. **Add tracing to your schema**
 
    ```typescript
-   import { GraphQLSchemaBuilder, query } from "@effect-gql/core"
+   import { GraphQLSchemaBuilder } from "@effect-gql/core"
    import { withTracing } from "@effect-gql/opentelemetry"
+   import { Effect, Layer } from "effect"
    import * as S from "effect/Schema"
 
+   const UserSchema = S.Struct({ id: S.String, name: S.String })
+   const serviceLayer = Layer.empty
    const builder = GraphQLSchemaBuilder.empty
+     .objectType({ name: "User", schema: UserSchema })
      .query("users", {
        type: S.Array(UserSchema),
-       resolve: () => userService.getAll()
+       resolve: () => Effect.succeed([{ id: "1", name: "Alice" }])
      })
      .pipe(withTracing())
    ```
@@ -43,15 +47,12 @@ Effect GraphQL provides first-class OpenTelemetry integration for distributed tr
 2. **Configure OpenTelemetry**
 
    ```typescript
-   import { NodeSdk } from "@effect/opentelemetry"
-   import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
-   import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
+   import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
+   import { BatchSpanProcessor, ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base"
 
    const TracingLayer = NodeSdk.layer(() => ({
      resource: { serviceName: "my-graphql-api" },
-     spanProcessor: new BatchSpanProcessor(
-       new OTLPTraceExporter({ url: "http://localhost:4318/v1/traces" })
-     )
+     spanProcessor: new BatchSpanProcessor(new ConsoleSpanExporter())
    }))
    ```
 
@@ -59,28 +60,38 @@ Effect GraphQL provides first-class OpenTelemetry integration for distributed tr
 
    ```typescript
    import { serve } from "@effect-gql/node"
+   import { makeTracedGraphQLRouter } from "@effect-gql/opentelemetry"
 
-   await serve(builder, TracingLayer.pipe(Layer.merge(serviceLayer)), {
-     port: 4000
+   const router = makeTracedGraphQLRouter(builder.buildSchema(), serviceLayer, {
+     extensions: builder.getExtensions(),
+     fieldComplexities: builder.getFieldComplexities(),
+     cacheHints: builder.getCacheHints()
    })
+   serve(router, Layer.merge(TracingLayer, serviceLayer), { port: 4000 })
    ```
 </Steps>
 
 ## Span Hierarchy
 
-When tracing is enabled, your GraphQL requests produce a span hierarchy like this:
+With the traced router, tracing extension, resolver middleware, and an SDK layer
+installed, requests produce spans such as:
 
 ```
 graphql.http (HTTP request span)
-├── graphql.parse (parsing phase)
-├── graphql.validate (validation phase)
-└── graphql.execute
-    ├── graphql.resolve Query.users
-    ├── graphql.resolve User.posts
-    │   ├── graphql.resolve Post.author
-    │   └── graphql.resolve Post.comments
-    └── graphql.resolve User.followers
+├── graphql.parse (parse hook)
+├── graphql.validate (validation hook)
+├── graphql.resolve Query.users
+└── graphql.resolve User.posts
 ```
+
+Resolver spans wrap each registered resolver Effect; they do not enclose
+GraphQL's subsequent traversal of child fields. There is no separate
+`graphql.execute` span. Parse/validate spans cover their extension hooks, not
+the entire graphql-js parsing/validation call.
+
+Pass `builder.getExtensions()` explicitly when constructing the router: the
+current `toRouter` helper forwards cache hints and field complexities, but not
+builder extensions. Resolver middleware is installed in the built schema.
 
 ## Configuration
 
@@ -98,7 +109,7 @@ withTracing({
     // Security: don't include variables in spans
     includeVariables: false,
 
-    // Add custom attributes to all spans
+    // Custom attributes on the parse-hook span
     customAttributes: {
       "service.version": "1.0.0",
       "deployment.environment": "production"
@@ -117,7 +128,7 @@ withTracing({
     // Security: don't include resolver args
     includeArgs: false,
 
-    // Include parent type in span name
+    // Include parent type in span attributes
     includeParentType: true
   }
 })
@@ -130,7 +141,7 @@ withTracing({
 | `includeQuery` | `boolean` | `false` | Include GraphQL query in span attributes |
 | `includeVariables` | `boolean` | `false` | Include variables in span attributes |
 | `exposeTraceIdInResponse` | `boolean` | `false` | Add traceId/spanId to response extensions |
-| `customAttributes` | `Record<string, string \| number \| boolean>` | - | Custom attributes for all spans |
+| `customAttributes` | `Record<string, string \| number \| boolean>` | - | Custom attributes on the parse-hook span; use `rootSpanAttributes` for HTTP spans |
 
 ### Resolver Configuration
 
@@ -163,7 +174,7 @@ Each resolver span includes:
 | Attribute | Description |
 |-----------|-------------|
 | `graphql.field.name` | Field name |
-| `graphql.field.path` | Full path (e.g., `Query.users.0.name`) |
+| `graphql.field.path` | Response path (e.g., `users.0.posts`) |
 | `graphql.field.type` | Return type |
 | `graphql.parent.type` | Parent type name |
 | `graphql.operation.name` | Operation name |
@@ -221,6 +232,7 @@ import { makeTracedGraphQLRouter } from "@effect-gql/opentelemetry"
 const router = makeTracedGraphQLRouter(schema, serviceLayer, {
   path: "/graphql",
   graphiql: { path: "/graphiql" },
+  extensions: builder.getExtensions(),
   rootSpanName: "graphql.http",
   rootSpanAttributes: {
     "service.name": "my-api"
@@ -271,7 +283,7 @@ It does not disable propagation performed by the HTTP server itself.
      jaegertracing/all-in-one:latest
    ```
 
-2. **Configure OTLP exporter**
+2. **Replace the console-exporting SDK layer with an OTLP exporter**
 
    ```typescript
    import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
@@ -279,6 +291,11 @@ It does not disable propagation performed by the HTTP server itself.
    const exporter = new OTLPTraceExporter({
      url: "http://localhost:4318/v1/traces"
    })
+
+   const TracingLayer = NodeSdk.layer(() => ({
+     resource: { serviceName: "my-graphql-api" },
+     spanProcessor: new BatchSpanProcessor(exporter)
+   }))
    ```
 
 3. **Open Jaeger UI**
@@ -289,6 +306,8 @@ It does not disable propagation performed by the HTTP server itself.
 ### Production with Grafana Tempo
 
 ```typescript
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
+
 const TracingLayer = NodeSdk.layer(() => ({
   resource: {
     serviceName: "graphql-api",
@@ -345,8 +364,8 @@ If you enable `includeQuery` or `includeVariables`:
 
 The tracing integration is designed for minimal overhead:
 
-- **When disabled**: Zero overhead - spans are Effect no-ops without a tracer
-- **When enabled**: ~0.1-0.5ms per span creation
+- **Without an SDK tracer**: No spans are exported
+- **With tracing**: Overhead depends on resolver count, processors, and exporter; measure your workload
 - **Batching**: Use `BatchSpanProcessor` to avoid blocking on export
 - **Sampling**: Configure sampling in your tracer for high-traffic services
 
@@ -360,7 +379,7 @@ const sampler = process.env.NODE_ENV === "production"
 
 const TracingLayer = NodeSdk.layer(() => ({
   resource: { serviceName: "my-api" },
-  sampler,
+  tracerConfig: { sampler },
   spanProcessor: new BatchSpanProcessor(exporter)
 }))
 ```

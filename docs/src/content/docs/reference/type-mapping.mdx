@@ -11,11 +11,11 @@ Effect GraphQL automatically converts Effect Schema definitions to GraphQL types
 
 | Effect Schema | GraphQL Type | Notes |
 |--------------|--------------|-------|
-| `S.String` | `GraphQLString` | Non-null by default |
-| `S.Number` | `GraphQLFloat` | JavaScript numbers are floats |
+| `S.String` | `GraphQLString` | Required struct fields are non-null; root/computed fields remain nullable |
+| `S.Number` | `GraphQLFloat` | Use `S.Int` for `GraphQLInt` |
 | `S.Boolean` | `GraphQLBoolean` | |
-| `S.BigInt` | `GraphQLString` | Serialized as string |
-| `S.Date` | `GraphQLString` | ISO 8601 format |
+| `S.BigInt` | Falls back to `GraphQLString` | No automatic bigint serialization; expose an explicit string instead |
+| `S.Date` | Falls back to `GraphQLString` | No automatic ISO serialization; expose an explicit ISO string instead |
 
 ### Examples
 
@@ -36,6 +36,11 @@ S.Struct({ active: S.Boolean })
 ```
 
 ## Nullability
+
+These types describe **fields inside a struct** (and corresponding required
+argument keys), not registered query, mutation, subscription, or computed fields.
+Those registered fields are nullable even when their schema is `S.String` or
+`S.Array(...)`: for example, `hello: String` and `users: [User]`.
 
 | Effect Schema | GraphQL Type |
 |--------------|--------------|
@@ -62,23 +67,23 @@ GraphQL doesn't distinguish between `null` and `undefined`. Both `NullOr` and `o
 
 | Effect Schema | GraphQL Type |
 |--------------|--------------|
-| `S.Array(S.String)` | `[String!]!` |
-| `S.NullOr(S.Array(S.String))` | `[String!]` |
+| `S.Array(S.String)` | `[String]!` |
+| `S.NullOr(S.Array(S.String))` | `[String]` |
 | `S.Array(S.NullOr(S.String))` | `[String]!` |
 
 ### Examples
 
 ```typescript
 S.Struct({
-  // Non-null array of non-null strings
-  tags: S.Array(S.String)
-  // → tags: [String!]!
+  // Required list; GraphQL still permits null elements
+  tags: S.Array(S.String),
+  // → tags: [String]!
 
-  // Nullable array of non-null strings
-  categories: S.NullOr(S.Array(S.String))
-  // → categories: [String!]
+  // Nullable list, also with nullable elements
+  categories: S.NullOr(S.Array(S.String)),
+  // → categories: [String]
 
-  // Non-null array of nullable strings
+  // Required list with explicitly nullable element schema
   aliases: S.Array(S.NullOr(S.String))
   // → aliases: [String]!
 })
@@ -103,7 +108,9 @@ const UserSchema = S.Struct({
   age: S.optional(S.Number)
 })
 
-// Becomes:
+GraphQLSchemaBuilder.empty.objectType({ name: "User", schema: UserSchema })
+
+// With this explicit registration:
 // type User {
 //   id: String!
 //   name: String!
@@ -125,7 +132,11 @@ const UserSchema = S.Struct({
   address: AddressSchema
 })
 
-// Becomes:
+GraphQLSchemaBuilder.empty
+  .objectType({ name: "Address", schema: AddressSchema })
+  .objectType({ name: "User", schema: UserSchema })
+
+// With both types explicitly registered:
 // type Address {
 //   street: String!
 //   city: String!
@@ -136,6 +147,11 @@ const UserSchema = S.Struct({
 //   address: Address!
 // }
 ```
+
+Plain struct variable names are not runtime schema metadata. Register an explicit
+name as above or use a schema identifier annotation. Unregistered plain structs
+receive generated names such as `Object_<suffix>`; `objectType({ schema })`
+requires an explicit name unless the schema carries an inferred name.
 
 ## Tagged Types
 
@@ -236,21 +252,18 @@ unionType({
 
 ## Input Types
 
-For input types (arguments), the mapping uses the encoded representation of transformations. Automatically inferred input object names append `Input` to the schema's output name: a tagged `User` schema produces `User` for output and `UserInput` for input. An explicit `inputType({ name, schema })` registration takes precedence.
+For input types (arguments), mapping uses the encoded representation of
+transformations. Schemas with an inferred metadata name append `Input`: a tagged
+`User` produces `User` for output and `UserInput` for input. Unnamed plain structs
+receive generated input names, not names derived from their JavaScript variables.
+An explicit `inputType({ name, schema })` registration takes precedence.
 
 ```typescript
-// Output: Returns Date object
-// Input: Accepts string, transforms to Date
-const DateSchema = S.Date
-
+// The encoded input is a string; the decoded argument is a Date.
 query("events", {
-  type: S.Array(EventSchema),
-  args: {
-    after: DateSchema  // Client sends ISO string
-  },
-  resolve: ({ after }) => {
-    // `after` is a Date object (transformed from string)
-  }
+  type: S.Array(S.String), // Explicit ISO strings for output
+  args: S.Struct({ after: S.DateFromString }),
+  resolve: ({ after }) => Effect.succeed([after.toISOString()]),
 })
 ```
 
@@ -272,9 +285,9 @@ inputType({
 
 mutation("createUser", {
   type: UserSchema,
-  args: {
+  args: S.Struct({
     input: CreateUserInputSchema
-  },
+  }),
   resolve: ({ input }) => { ... }
 })
 ```
@@ -306,18 +319,22 @@ Effect Schema transformations are handled differently for input vs output:
 
 ### Output Types (Query/Field Results)
 
-Uses the decoded type (the transformed result):
+Mapping follows the decoded type, but resolver results are **not generally run
+through the schema's encoder**. In particular, `S.DateFromString` does not promise
+ISO output and `S.BigIntFromString` does not serialize bigint results automatically.
+Return an explicit GraphQL-compatible representation:
 
 ```typescript
-const DateSchema = S.DateFromString
-
-// Output: Returns JavaScript Date → serialized as String
 query("now", {
-  type: DateSchema,
-  resolve: () => Effect.succeed(new Date())
+  type: S.String,
+  resolve: () => Effect.sync(() => new Date().toISOString()),
 })
-// Returns: "2024-01-15T10:30:00.000Z"
+// Returns an ISO string, e.g. "2024-01-15T10:30:00.000Z"
 ```
+
+Top-level Option results receive special handling to expose `None` as `null` and
+`Some` as its value. That handling is not a general-purpose output codec encoder,
+nor a recursive encoder for every property in returned objects.
 
 ### Input Types (Arguments)
 
@@ -330,19 +347,22 @@ Uses the encoded type (what the client sends):
 
 ## Custom Scalars
 
-For custom scalar types, use transformations:
+Transformations are useful for **input decoding**, not for registering a new
+GraphQL scalar or automatically serializing custom output values:
 
 ```typescript
-// BigInt as string
-const BigIntSchema = S.BigIntFromString
-
-// JSON as string
-const JsonSchema = S.fromJsonString(S.Unknown)
+query("increment", {
+  type: S.String,
+  args: S.Struct({ value: S.BigIntFromString }),
+  resolve: ({ value }) => Effect.succeed((value + 1n).toString()),
+})
 ```
 
-<Aside type="tip">
-Custom scalars are serialized using the "to" function of the transformation when sending responses, and deserialized using the "from" function when receiving arguments.
-</Aside>
+Clients send a string, the resolver receives a bigint, and the resolver explicitly
+returns a string. JSON can similarly be accepted with
+`S.fromJsonString(S.Unknown)` as an argument decoder. For JSON responses, use a
+string output schema and explicit `JSON.stringify`, rather than relying on codec
+encoding.
 
 ## Type Resolution Order
 
@@ -391,20 +411,22 @@ Some Schema features don't have direct GraphQL equivalents:
 |--------------|----------|
 | `S.Tuple` / `S.TupleWithRest` | Homogeneous list using the first fixed element, or the rest element when no fixed elements exist; loses positional info |
 | `S.Record` | Not directly supported |
-| `S.Map` | Not directly supported |
-| `S.Set` | Converted to array |
-| Refinements | Validation runs, no schema change |
+| `S.ReadonlyMap` / `S.HashMap` | No automatic GraphQL map representation |
+| `S.ReadonlySet` / `S.HashSet` | No automatic conversion to GraphQL lists; expose arrays explicitly |
+| Refinements | Argument validation runs; most checks do not change SDL (`S.Int` is recognized) |
 | Brands | Ignored at GraphQL level |
 
 ### Workarounds
 
-For unsupported types, use transformations:
+An array-to-Record transformation works for **input decoding only**. Its encoded
+side is a GraphQL list; the decoded Record is not a valid GraphQL object output.
 
 ```typescript
-// Record as array of key-value pairs
+// Accept key-value pairs as input, decode them into a Record.
 import * as SchemaGetter from "effect/SchemaGetter"
 
-const MetadataSchema = S.Array(S.Struct({ key: S.String, value: S.String })).pipe(
+const MetadataEntries = S.Array(S.Struct({ key: S.String, value: S.String }))
+const MetadataInput = MetadataEntries.pipe(
   S.decodeTo(S.Record(S.String, S.String), {
     decode: SchemaGetter.transform((arr) =>
       Object.fromEntries(arr.map(({ key, value }) => [key, value]))),
@@ -412,4 +434,13 @@ const MetadataSchema = S.Array(S.Struct({ key: S.String, value: S.String })).pip
       Object.entries(obj).map(([key, value]) => ({ key, value }))),
   })
 )
+
+// For responses use the actual list schema and convert explicitly.
+const metadata: Record<string, string> = { theme: "dark" }
+query("metadata", {
+  type: MetadataEntries,
+  resolve: () => Effect.succeed(
+    Object.entries(metadata).map(([key, value]) => ({ key, value }))
+  ),
+})
 ```

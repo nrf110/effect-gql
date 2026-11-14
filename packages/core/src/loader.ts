@@ -188,7 +188,10 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
     const self = this
     return Effect.gen(function* () {
       const loaders = yield* self.Service
-      return yield* Effect.promise(() => fn(loaders))
+      return yield* Effect.tryPromise({
+        try: () => fn(loaders),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      })
     })
   }
 
@@ -208,7 +211,10 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
       const loaders = yield* self.Service
       // Safe cast: LoaderInstances maps name to the correctly-typed DataLoader
       const loader = loaders[name] as DataLoader<LoaderKey<Defs[Name]>, LoaderValue<Defs[Name]>>
-      return yield* Effect.promise(() => loader.load(key))
+      return yield* Effect.tryPromise({
+        try: () => loader.load(key),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      })
     })
   }
 
@@ -228,7 +234,10 @@ class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
       const loaders = yield* self.Service
       // Safe cast: LoaderInstances maps name to the correctly-typed DataLoader
       const loader = loaders[name] as DataLoader<LoaderKey<Defs[Name]>, LoaderValue<Defs[Name]>>
-      const results = yield* Effect.promise(() => loader.loadMany(keys))
+      const results = yield* Effect.tryPromise({
+        try: () => loader.loadMany(keys),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      })
       // Convert any errors to a failure
       for (const result of results) {
         if (result instanceof Error) {

@@ -28,13 +28,13 @@ function single<K, V, R = never>(config: {
 
 | Name | Type | Description |
 |------|------|-------------|
-| `batch` | `(keys: K[]) => Effect<V[]>` | Function to load multiple values |
+| `batch` | `(keys: readonly K[]) => Effect<readonly V[], Error, R>` | Function to load multiple values |
 | `key` | `(value: V) => K` | Extract key from a value |
 
 **Example:**
 
 ```typescript
-Loader.single<string, User>({
+Loader.single<string, User, Database>({
   batch: (ids) => Effect.gen(function* () {
     const db = yield* Database
     return yield* db.getUsersByIds(ids)
@@ -58,13 +58,13 @@ function grouped<K, V, R = never>(config: {
 
 | Name | Type | Description |
 |------|------|-------------|
-| `batch` | `(keys: K[]) => Effect<V[]>` | Function to load values for multiple keys |
+| `batch` | `(keys: readonly K[]) => Effect<readonly V[], Error, R>` | Function to load values for multiple keys |
 | `groupBy` | `(value: V) => K` | Extract grouping key from a value |
 
 **Example:**
 
 ```typescript
-Loader.grouped<string, Post>({
+Loader.grouped<string, Post, Database>({
   batch: (authorIds) => Effect.gen(function* () {
     const db = yield* Database
     return yield* db.getPostsByAuthorIds(authorIds)
@@ -72,6 +72,10 @@ Loader.grouped<string, Post>({
   groupBy: (post) => post.authorId
 })
 ```
+
+If you supply `K` and `V`, include the batch service requirements as `R`;
+otherwise `R` defaults to `never`. Alternatively omit all type arguments
+and annotate callback parameters so all three can be inferred.
 
 ### `Loader.define(definitions)`
 
@@ -87,12 +91,12 @@ function define<Defs extends Record<string, LoaderDef<any, any, any>>>(
 
 ```typescript
 const loaders = Loader.define({
-  UserById: Loader.single<string, User>({
-    batch: (ids) => db.getUsersByIds(ids),
+  UserById: Loader.single<string, User, Database>({
+    batch: (ids) => Effect.flatMap(Database, (db) => db.getUsersByIds(ids)),
     key: (user) => user.id
   }),
-  PostsByAuthorId: Loader.grouped<string, Post>({
-    batch: (authorIds) => db.getPostsByAuthorIds(authorIds),
+  PostsByAuthorId: Loader.grouped<string, Post, Database>({
+    batch: (ids) => Effect.flatMap(Database, (db) => db.getPostsByAuthorIds(ids)),
     groupBy: (post) => post.authorId
   })
 })
@@ -101,6 +105,12 @@ const loaders = Loader.define({
 ## LoaderRegistry
 
 The registry returned by `Loader.define()` provides methods for creating layers and loading data.
+
+`load`, `loadMany`, and `use` fail through the typed `Error` channel when a load
+or callback promise rejects. Recover with `Effect.catch`. Existing `Error`
+objects are preserved; non-Error callback rejections or throws are converted to
+`Error` values. A missing key fails a single-value load, while a grouped loader
+returns an empty array for a key with no matches.
 
 ### `registry.toLayer()`
 
@@ -118,11 +128,9 @@ const loaders = Loader.define({ ... })
 // Create layer (typically once per request)
 const loaderLayer = loaders.toLayer()
 
-// Merge with other service layers
-const serviceLayer = Layer.mergeAll(
-  DatabaseLive,
-  loaderLayer
-)
+// Provide dependencies while retaining Database for other resolvers.
+// Layer.mergeAll does not provide one sibling's services to another.
+const serviceLayer = loaderLayer.pipe(Layer.provideMerge(DatabaseLive))
 ```
 
 ### `registry.load(name, key)`
@@ -130,7 +138,7 @@ const serviceLayer = Layer.mergeAll(
 Load a single value by its key.
 
 ```typescript
-load<Name extends keyof Defs>(
+load<Name extends keyof Defs & string>(
   name: Name,
   key: LoaderKey<Defs[Name]>
 ): Effect.Effect<LoaderValue<Defs[Name]>, Error, LoaderInstances<Defs>>
@@ -155,7 +163,7 @@ const posts = yield* loaders.load("PostsByAuthorId", "123")
 Load multiple values by their keys. All keys are batched into a single request.
 
 ```typescript
-loadMany<Name extends keyof Defs>(
+loadMany<Name extends keyof Defs & string>(
   name: Name,
   keys: readonly LoaderKey<Defs[Name]>[]
 ): Effect.Effect<readonly LoaderValue<Defs[Name]>[], Error, LoaderInstances<Defs>>
@@ -224,14 +232,10 @@ function mapByKey<K, V>(
 **Example:**
 
 ```typescript
-batch: (ids) => Effect.gen(function* () {
-  const db = yield* Database
-  const users = yield* db.getUsersByIds(ids)
-
-  // Ensure results match key order
-  // Missing items become Error instances
-  return Loader.mapByKey(ids, users, (user) => user.id)
-})
+const ordered = Loader.mapByKey(ids, users, (user) => user.id)
+// (User | Error)[] in the same order as ids.
+// Do not return this from a single loader's batch: it expects User[],
+// and the registry already performs the key matching.
 ```
 
 ### `Loader.groupByKey(keys, items, keyFn)`
@@ -305,38 +309,55 @@ type LoaderDef<K, V, R> = SingleLoaderDef<K, V, R> | GroupedLoaderDef<K, V, R>
 The registry class returned by `Loader.define()`.
 
 ```typescript
-class LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
+interface LoaderRegistry<Defs extends Record<string, LoaderDef<any, any, any>>> {
   readonly definitions: Defs
-  readonly Service: Context.Service<LoaderInstances<Defs>>
-
+  readonly Service: Context.Service<LoaderInstances<Defs>, LoaderInstances<Defs>>
   toLayer(): Layer.Layer<LoaderInstances<Defs>, never, LoaderRequirements<Defs>>
-  load<Name>(name: Name, key: K): Effect.Effect<V, Error, LoaderInstances<Defs>>
-  loadMany<Name>(name: Name, keys: K[]): Effect.Effect<V[], Error, LoaderInstances<Defs>>
-  use<A>(fn: (loaders) => Promise<A>): Effect.Effect<A, Error, LoaderInstances<Defs>>
+  load<Name extends keyof Defs & string>(
+    name: Name, key: LoaderKey<Defs[Name]>
+  ): Effect.Effect<LoaderValue<Defs[Name]>, Error, LoaderInstances<Defs>>
+  loadMany<Name extends keyof Defs & string>(
+    name: Name, keys: readonly LoaderKey<Defs[Name]>[]
+  ): Effect.Effect<readonly LoaderValue<Defs[Name]>[], Error, LoaderInstances<Defs>>
+  use<A>(fn: (loaders: LoaderInstances<Defs>) => Promise<A>): Effect.Effect<A, Error, LoaderInstances<Defs>>
 }
 ```
 
 ## Complete Example
 
 ```typescript
-import { GraphQLSchemaBuilder, query, field, Loader } from "@effect-gql/core"
+import { GraphQLSchemaBuilder, query, objectType, field, Loader, execute } from "@effect-gql/core"
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
 
+const UserSchema = S.Struct({ id: S.String, name: S.String })
+const PostSchema = S.Struct({ id: S.String, title: S.String, authorId: S.String })
+type User = S.Schema.Type<typeof UserSchema>
+type Post = S.Schema.Type<typeof PostSchema>
+
 // Database service
 class Database extends Context.Service<Database, {
+  getAllUsers: () => Effect.Effect<User[]>
   getUsersByIds: (ids: readonly string[]) => Effect.Effect<User[]>
   getPostsByAuthorIds: (ids: readonly string[]) => Effect.Effect<Post[]>
 }>()("Database") {}
 
+const users: User[] = [{ id: "1", name: "Alice" }]
+const posts: Post[] = [{ id: "p1", title: "Hello", authorId: "1" }]
+const DatabaseLive = Layer.succeed(Database, {
+  getAllUsers: () => Effect.succeed(users),
+  getUsersByIds: (ids) => Effect.succeed(users.filter((user) => ids.includes(user.id))),
+  getPostsByAuthorIds: (ids) => Effect.succeed(posts.filter((post) => ids.includes(post.authorId)))
+})
+
 // Define loaders
 const loaders = Loader.define({
-  UserById: Loader.single<string, User>({
+  UserById: Loader.single<string, User, Database>({
     batch: (ids) => Effect.flatMap(Database, (db) => db.getUsersByIds(ids)),
     key: (user) => user.id
   }),
 
-  PostsByAuthorId: Loader.grouped<string, Post>({
+  PostsByAuthorId: Loader.grouped<string, Post, Database>({
     batch: (ids) => Effect.flatMap(Database, (db) => db.getPostsByAuthorIds(ids)),
     groupBy: (post) => post.authorId
   })
@@ -344,6 +365,8 @@ const loaders = Loader.define({
 
 // Build schema using loaders
 const builder = GraphQLSchemaBuilder.empty.pipe(
+  objectType({ name: "User", schema: UserSchema }),
+  objectType({ name: "Post", schema: PostSchema }),
   query("users", {
     type: S.Array(UserSchema),
     resolve: () => Effect.flatMap(Database, (db) => db.getAllUsers())
@@ -351,18 +374,18 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 
   field("User", "posts", {
     type: S.Array(PostSchema),
-    resolve: (user) => loaders.load("PostsByAuthorId", user.id)
+    resolve: (user: User) => loaders.load("PostsByAuthorId", user.id)
   }),
 
   field("Post", "author", {
     type: UserSchema,
-    resolve: (post) => loaders.load("UserById", post.authorId)
+    resolve: (post: Post) => loaders.load("UserById", post.authorId)
   })
 )
 
 // Create layer with loaders
-const serviceLayer = Layer.mergeAll(
-  DatabaseLive,
-  loaders.toLayer()
+const serviceLayer = loaders.toLayer().pipe(Layer.provideMerge(DatabaseLive))
+const result = await Effect.runPromise(
+  execute(builder.buildSchema(), serviceLayer)("{ users { name posts { title author { name } } } }")
 )
 ```

@@ -42,9 +42,6 @@ For input validation failures:
 new ValidationError({
   message: "Invalid email format",
   field: "email",
-  extensions: {
-    code: "VALIDATION_ERROR",
-  },
 })
 ```
 
@@ -55,10 +52,6 @@ For access control violations:
 ```typescript
 new AuthorizationError({
   message: "You don't have permission to access this resource",
-  extensions: {
-    code: "FORBIDDEN",
-    requiredRole: "ADMIN",
-  },
 })
 ```
 
@@ -69,13 +62,13 @@ For missing resources:
 ```typescript
 new NotFoundError({
   message: "User not found",
-  resourceType: "User",
-  resourceId: "123",
-  extensions: {
-    code: "NOT_FOUND",
-  },
+  resource: "User",
 })
 ```
+
+Specialized errors carry typed application metadata, not automatic GraphQL
+extensions. Their `_tag`, `field`, and `resource` are not serialized to clients.
+Use `GraphQLError` with explicit `extensions` when clients need a code or metadata.
 
 ## Using Errors in Resolvers
 
@@ -93,8 +86,7 @@ Return errors using `Effect.fail`:
       return yield* Effect.fail(
         new NotFoundError({
           message: `User with id ${args.id} not found`,
-          resourceType: "User",
-          resourceId: args.id,
+          resource: "User",
         })
       )
     }
@@ -201,7 +193,7 @@ resolve: (args) => Effect.gen(function* () {
 
 ## Validation Errors
 
-Arguments are validated automatically using Effect Schema. Validation errors are returned as GraphQL errors:
+Arguments are decoded automatically using Effect Schema. Decode failures become GraphQL errors, but are not converted to the library's `ValidationError` and have no automatic extension code:
 
 ```typescript
 .mutation("createUser", {
@@ -217,20 +209,9 @@ Arguments are validated automatically using Effect Schema. Validation errors are
 })
 ```
 
-If validation fails, the client receives:
-
-```json
-{
-  "errors": [
-    {
-      "message": "Invalid argument: email must match pattern /@/",
-      "extensions": {
-        "code": "VALIDATION_ERROR"
-      }
-    }
-  ]
-}
-```
+For example, passing `age: -5` produces a schema decoding message such as
+`Expected a value greater than 0` with a path to `age`. Exact wording is
+controlled by Effect Schema; no `extensions.code` or `extensions.field` is added.
 
 ## Error Response Format
 
@@ -238,20 +219,20 @@ Errors are formatted according to the GraphQL spec:
 
 ```json
 {
-  "data": null,
+  "data": { "user": null },
   "errors": [
     {
       "message": "User not found",
-      "path": ["user"],
-      "extensions": {
-        "code": "NOT_FOUND",
-        "resourceType": "User",
-        "resourceId": "123"
-      }
+      "path": ["user"]
     }
   ]
 }
 ```
+
+This illustrates `NotFoundError({ message: "User not found", resource: "User" })`
+on a nullable root field (locations omitted). For a client-visible `NOT_FOUND`
+code, instead fail with
+`new GraphQLError({ message: "User not found", extensions: { code: "NOT_FOUND" } })`.
 
 ## Partial Errors
 
@@ -278,8 +259,8 @@ GraphQL supports partial responses where some fields succeed while others fail:
 ```
 
 <Aside type="tip">
-  Use `Effect.catch` or `Effect.option` to convert errors to null values
-  when you want partial responses instead of full failures.
+  Use `Effect.catch` to return `null` when the output schema allows it.
+  `Effect.option` returns an `Option`; unwrap it before returning a nullable value.
 </Aside>
 
 ## Global Error Handler
@@ -354,12 +335,10 @@ type ErrorHandler = (
 
 ### When the Error Handler is Called
 
-The global error handler catches errors that escape normal GraphQL error handling:
-
-- Malformed JSON in request body
-- Missing required fields in request
-- Errors during request parsing
-- Uncaught exceptions in resolver execution
+The global error handler catches failures that escape the HTTP request pipeline,
+including malformed JSON, missing required request-body fields, and unexpected
+request-processing failures. GraphQL document parse, validation, and resolver
+errors are normally returned as GraphQL results instead (including resolver defects).
 
 <Aside type="note">
   Resolver errors that are returned via `Effect.fail()` are handled by GraphQL's normal error system and appear in the response's `errors` array with a 200 status code. The global error handler only catches truly unexpected errors.
@@ -393,7 +372,7 @@ Use specific error types rather than generic ones:
 
 ```typescript
 // Good
-new NotFoundError({ message: "User not found", resourceType: "User" })
+new NotFoundError({ message: "User not found", resource: "User" })
 
 // Less helpful
 new GraphQLError({ message: "Not found" })
@@ -404,7 +383,7 @@ new GraphQLError({ message: "Not found" })
 Add relevant information to error extensions:
 
 ```typescript
-new AuthorizationError({
+new GraphQLError({
   message: "Access denied",
   extensions: {
     code: "FORBIDDEN",
@@ -420,37 +399,42 @@ new AuthorizationError({
 Transform internal errors before returning to clients:
 
 ```typescript
-Effect.catch((error) => {
-  // Log the full error internally
-  console.error("Internal error:", error)
-
-  // Return sanitized error to client
-  return Effect.fail(new GraphQLError({
-    message: "An error occurred processing your request",
-    extensions: { code: "INTERNAL_ERROR" },
-  }))
-})
+Effect.catch((error) =>
+  Effect.gen(function* () {
+    yield* Effect.logError("Internal error", error)
+    return yield* Effect.fail(new GraphQLError({
+      message: "An error occurred processing your request",
+      extensions: { code: "INTERNAL_ERROR" },
+    }))
+  })
+)
 ```
 
 ### 4. Use Error Boundaries
 
 Create error handling layers for different concerns:
 
+Here `AuthError` and `DatabaseError` are your application's error classes.
+
 ```typescript
 const withAuthErrors = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
-    Effect.catchTag("AuthError", (e) =>
-      Effect.fail(new AuthorizationError({ message: e.message }))
+    Effect.mapError((error) =>
+      error instanceof AuthError
+        ? new AuthorizationError({ message: error.message })
+        : error
     )
   )
 
 const withDatabaseErrors = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
-    Effect.catchTag("DatabaseError", (e) =>
-      Effect.fail(new GraphQLError({
-        message: "Database error",
-        extensions: { code: "DATABASE_ERROR" },
-      }))
+    Effect.mapError((error) =>
+      error instanceof DatabaseError
+        ? new GraphQLError({
+            message: "Database error",
+            extensions: { code: "DATABASE_ERROR" },
+          })
+        : error
     )
   )
 

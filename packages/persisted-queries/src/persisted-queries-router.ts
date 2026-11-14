@@ -7,6 +7,7 @@ import {
   specifiedRules,
   NoSchemaIntrospectionCustomRule,
   execute as graphqlExecute,
+  getOperationAST,
   type DocumentNode,
 } from "graphql"
 import {
@@ -17,6 +18,8 @@ import {
   type FieldComplexityMap,
   type ErrorHandler,
   defaultErrorHandler,
+  computeCachePolicy,
+  toCacheControlHeader,
 } from "@effect-gql/core/server"
 import type { GraphQLEffectContext } from "@effect-gql/core"
 import {
@@ -109,6 +112,7 @@ export const makePersistedQueriesRouter = <R>(
   // Core router config
   const resolvedConfig = normalizeConfig(options)
   const fieldComplexities: FieldComplexityMap = options.fieldComplexities ?? new Map()
+  const cacheHints = options.cacheHints ?? new Map()
   const extensions: readonly GraphQLExtension<R>[] = options.extensions ?? []
   const errorHandler: ErrorHandler = options.errorHandler ?? defaultErrorHandler
 
@@ -133,8 +137,18 @@ export const makePersistedQueriesRouter = <R>(
       const persistedQuery = parsePersistedQueryExtension(body.extensions)
 
       if (!persistedQuery) {
-        // No persisted query extension - pass through unchanged
-        return body
+        if (mode !== "safelist" || !body.query) {
+          return body
+        }
+
+        // Plain text (including malformed APQ extensions) must also be safelisted.
+        const hash = yield* computeHash(body.query, hashAlgorithm)
+        const store = yield* PersistedQueryStore
+        const storedQuery = yield* store.get(hash)
+        if (Option.isNone(storedQuery)) {
+          return yield* Effect.fail(new PersistedQueryNotAllowedError({ hash }))
+        }
+        return { ...body, query: storedQuery.value }
       }
 
       // Validate version
@@ -158,16 +172,13 @@ export const makePersistedQueriesRouter = <R>(
         }
       }
 
-      // Query not found in store
-      if (!body.query) {
-        // No query provided - client needs to send it
-        return yield* Effect.fail(new PersistedQueryNotFoundError({ hash }))
+      // Safelist misses never trigger the APQ registration/retry protocol.
+      if (mode === "safelist") {
+        return yield* Effect.fail(new PersistedQueryNotAllowedError({ hash }))
       }
 
-      // Query provided - check mode
-      if (mode === "safelist") {
-        // Safelist mode: reject unknown queries
-        return yield* Effect.fail(new PersistedQueryNotAllowedError({ hash }))
+      if (!body.query) {
+        return yield* Effect.fail(new PersistedQueryNotFoundError({ hash }))
       }
 
       // APQ mode: validate hash and store
@@ -355,7 +366,27 @@ export const makePersistedQueriesRouter = <R>(
             }
           : resolvedResult
 
-      return yield* HttpServerResponse.json(finalResult)
+      let cacheControlHeader: string | undefined
+      const cacheControl = resolvedConfig.cacheControl
+      if (cacheControl?.enabled !== false && cacheControl?.calculateHttpHeaders !== false) {
+        const operation = getOperationAST(document, body.operationName)
+        if (resolvedResult.errors?.length) {
+          cacheControlHeader = "no-store"
+        } else if (operation?.operation === "query") {
+          const policy = yield* computeCachePolicy({
+            document,
+            operation,
+            schema,
+            cacheHints,
+            config: cacheControl ?? {},
+          })
+          cacheControlHeader = toCacheControlHeader(policy)
+        }
+      }
+
+      return yield* HttpServerResponse.json(finalResult, {
+        headers: cacheControlHeader ? { "cache-control": cacheControlHeader } : undefined,
+      })
     }).pipe(
       Effect.catch((error) => {
         if (error instanceof ComplexityLimitExceededError) {

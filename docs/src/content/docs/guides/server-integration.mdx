@@ -47,11 +47,11 @@ serve(router, Layer.empty, {
 
 ### The Router
 
-The `HttpRouter` from `effect/http` is the central abstraction for HTTP handling. Effect GraphQL provides two ways to create a GraphQL router:
+The `HttpRouter` from `effect/http` is the central abstraction for HTTP handling. Effect GraphQL's helpers return **route-registration layers**, not router objects. Merge these layers with other routes, then pass the result to a platform adapter.
 
 #### Using `toRouter` (Recommended)
 
-Converts a `GraphQLSchemaBuilder` directly to an `HttpRouter`:
+Converts a `GraphQLSchemaBuilder` directly to a route-registration layer:
 
 ```typescript
 import { GraphQLSchemaBuilder, toRouter } from "@effect-gql/core"
@@ -175,25 +175,19 @@ serve(router, serviceLayer, {
 ```typescript
 import { HttpRouter } from "effect/http"
 import { Layer } from "effect"
+import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import { createServer } from "node:http"
-import { createGraphQLWSServer } from "@effect-gql/node"
 
-const schema = builder.buildSchema()
-const { handler, dispose } = HttpRouter.toWebHandler(
+// router and serviceLayer are defined above.
+const app = HttpRouter.serve(
   router.pipe(Layer.provideMerge(serviceLayer))
+).pipe(
+  Layer.provide(serviceLayer),
+  Layer.provide(NodeHttpServer.layer(() => createServer(), { port: 4000 }))
 )
 
-const httpServer = createServer(async (req, res) => {
-  // Handle HTTP requests with Effect router
-  const response = await handler(new Request(...))
-  // Write response...
-})
-
-// Add WebSocket support
-const { handleUpgrade, close } = createGraphQLWSServer(schema, serviceLayer)
-httpServer.on("upgrade", (req, socket, head) => handleUpgrade(req, socket, head))
-
-httpServer.listen(4000)
+// NodeRuntime owns the server scope and releases it on shutdown.
+NodeRuntime.runMain(Layer.launch(app))
 ```
   </TabItem>
 </Tabs>
@@ -216,15 +210,24 @@ serve(router, serviceLayer, {
 
 ```typescript
 import express from "express"
-import { graphqlMiddleware } from "@effect-gql/express"
+import { toRouter } from "@effect-gql/core"
+import { toMiddleware } from "@effect-gql/express"
 
 const app = express()
+const router = toRouter(builder, serviceLayer)
+const middleware = toMiddleware(router, serviceLayer)
 
-const schema = builder.buildSchema()
+// The router already registers /graphql; mount without rewriting its path.
+app.use(middleware)
+const server = app.listen(4000)
 
-app.use("/graphql", graphqlMiddleware(schema, serviceLayer))
-
-app.listen(4000)
+// Call from the host's shutdown lifecycle.
+async function shutdown() {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve())
+  })
+  await middleware.dispose()
+}
 ```
 
 For route-layer composition, `toMiddleware(routes, serviceLayer)` creates an
@@ -302,7 +305,7 @@ import { toHandler } from "@effect-gql/web"
 import { Layer } from "effect"
 
 const router = toRouter(builder, serviceLayer, { graphiql: true })
-const { handler } = toHandler(router, serviceLayer)
+export const { handler, dispose } = toHandler(router, serviceLayer)
 
 export default {
   async fetch(request: Request): Promise<Response> {
@@ -318,9 +321,12 @@ import { toHandler } from "@effect-gql/web"
 import { Layer } from "effect"
 
 const router = toRouter(builder, serviceLayer, { graphiql: true })
-const { handler } = toHandler(router, serviceLayer)
+const { handler, dispose } = toHandler(router, serviceLayer)
 
-Deno.serve({ port: 4000 }, (request) => handler(request))
+const server = Deno.serve({ port: 4000 }, (request) => handler(request))
+// In the host shutdown lifecycle:
+// await server.shutdown()
+// await dispose()
 ```
   </TabItem>
   <TabItem label="With Custom Routes">
@@ -338,7 +344,7 @@ const app = Layer.mergeAll(
   graphqlRouter
 )
 
-const { handler } = toHandler(app, serviceLayer)
+export const { handler, dispose } = toHandler(app, serviceLayer)
 
 export default {
   async fetch(request: Request): Promise<Response> {
@@ -349,9 +355,11 @@ export default {
   </TabItem>
 </Tabs>
 
-`toHandler` also returns `dispose(): Promise<void>`. Retain it and await it when
-your host shuts down the handler to release scoped services. Do not dispose a
-shared handler after each request.
+`toHandler` returns `{ handler, dispose }`, not a callable function. Retain
+`dispose(): Promise<void>` and await it after the host stops serving requests to
+release scoped services. Workers have no guaranteed process-shutdown callback;
+keep one handler per isolate, and only dispose it when your host explicitly
+retires that handler. Do not dispose a shared handler after each request.
 
 ## Environment Configuration
 
@@ -420,13 +428,19 @@ Health checks verify your server is running and can serve requests. Rather than 
 
 ### GraphQL-Level Health Check
 
-The simplest approach is using a GraphQL query as your health check. Every GraphQL server supports:
+The default router supports GraphQL over **POST**, not GET. Probe execution with:
 
-```
-GET /graphql?query={__typename}
+```bash
+curl --fail-with-body http://localhost:4000/graphql \
+  -H 'Content-Type: application/json' \
+  --data '{"query":"{ __typename }"}'
 ```
 
-This verifies the entire GraphQL execution pipeline is working. Add the `apollo-require-preflight: true` header if using CSRF protection.
+Check the JSON body for `data.__typename` and the absence of `errors`, not just
+the HTTP status. This verifies schema execution without querying application
+data. If using a safelist, register this probe or use an already-allowed query.
+With CSRF protection, also send `Apollo-Require-Preflight: true`.
+Kubernetes and ALB GET probes should use a separate `/health` or `/ready` route.
 
 ### Platform-Specific Patterns
 
@@ -471,7 +485,8 @@ Add health routes directly to your Express app:
 
 ```typescript
 import express from "express"
-import { graphqlMiddleware } from "@effect-gql/express"
+import { toRouter } from "@effect-gql/core"
+import { toMiddleware } from "@effect-gql/express"
 
 const app = express()
 
@@ -491,18 +506,23 @@ app.get("/ready", async (req, res) => {
 })
 
 // GraphQL endpoint
-app.use("/graphql", graphqlMiddleware(schema, serviceLayer))
+const router = toRouter(builder, serviceLayer)
+const middleware = toMiddleware(router, serviceLayer)
+app.use(middleware)
 
-app.listen(4000)
+const server = app.listen(4000)
+// Stop the server and await middleware.dispose() using the shutdown pattern above.
 ```
   </TabItem>
   <TabItem label="Web Standards">
 For Cloudflare Workers, Deno, or other web-standard environments:
 
 ```typescript
+import { toRouter } from "@effect-gql/core"
 import { toHandler } from "@effect-gql/web"
 
-const graphqlHandler = toHandler(builder, serviceLayer)
+const router = toRouter(builder, serviceLayer)
+export const { handler: graphqlHandler, dispose } = toHandler(router, serviceLayer)
 
 export default {
   async fetch(request: Request): Promise<Response> {
@@ -576,7 +596,7 @@ const app = Layer.merge(
       allowedOrigins: ["https://myapp.com", "https://studio.apollographql.com"],
       allowedMethods: ["GET", "POST", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization", "Apollo-Require-Preflight"],
-      allowCredentials: true,
+      credentials: true,
       maxAge: 86400, // 24 hours
     })
   ))
@@ -605,7 +625,8 @@ npm install cors @types/cors
 ```typescript
 import express from "express"
 import cors from "cors"
-import { graphqlMiddleware } from "@effect-gql/express"
+import { toRouter } from "@effect-gql/core"
+import { toMiddleware } from "@effect-gql/express"
 
 const app = express()
 
@@ -619,18 +640,23 @@ app.use(cors({
 }))
 
 // GraphQL endpoint
-app.use("/graphql", graphqlMiddleware(schema, serviceLayer))
+const router = toRouter(builder, serviceLayer)
+const middleware = toMiddleware(router, serviceLayer)
+app.use(middleware)
 
-app.listen(4000)
+const server = app.listen(4000)
+// Stop the server and await middleware.dispose() using the shutdown pattern above.
 ```
   </TabItem>
   <TabItem label="Web Standards">
 Handle CORS manually for Cloudflare Workers, Deno, etc.:
 
 ```typescript
+import { toRouter } from "@effect-gql/core"
 import { toHandler } from "@effect-gql/web"
 
-const graphqlHandler = toHandler(builder, serviceLayer)
+const router = toRouter(builder, serviceLayer)
+export const { handler: graphqlHandler, dispose } = toHandler(router, serviceLayer)
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "https://myapp.com",
@@ -761,10 +787,14 @@ are rejected.
 
 HTTP-level errors are handled automatically:
 
-- **Parse errors** → 400 Bad Request
-- **Validation errors** → 400 Bad Request
-- **Resolver errors** → 200 OK with `errors` array (per GraphQL spec)
-- **Unexpected errors** → 400 Bad Request with generic message
+- **GraphQL syntax/parse errors** → 200 OK with an `errors` array
+- **GraphQL validation and complexity-limit errors** → 400 Bad Request
+- **Resolver errors** → 200 OK with an `errors` array
+- **Malformed JSON, invalid request bodies (such as a missing `query`), and uncaught errors** → 500 Internal Server Error with a generic message
+
+These are the default `makeGraphQLRouter`/`toRouter` statuses, not a guarantee
+that every GraphQL error is a 400. A custom `errorHandler` may change uncaught-error
+responses. Clients should always inspect the GraphQL response body.
 
 For application-level errors, see the [Error Handling guide](/effect-gql/guides/error-handling).
 

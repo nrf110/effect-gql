@@ -88,14 +88,15 @@ Tagged schemas keep their literal `_tag` discriminators even though GraphQL does
 
 ### Field Resolvers
 
-Field resolvers on object types receive the parent value:
+Field resolvers on object types receive the parent value. For separately
+registered fields, annotate the parent explicitly; the `"User"` string does not
+infer its type. Inline `objectType` fields infer it from their schema.
 
 ```typescript
-.field("User", "fullName", {
+.field("User", "displayName", {
   type: S.String,
-  resolve: (parent) => Effect.succeed(
-    `${parent.firstName} ${parent.lastName}`
-  ),
+  resolve: (parent: S.Schema.Type<typeof UserSchema>) =>
+    Effect.succeed(parent.name.toUpperCase()),
 })
 ```
 
@@ -108,11 +109,14 @@ With arguments:
     limit: S.optional(S.Int),
     offset: S.optional(S.Int),
   }),
-  resolve: (parent, args) => Effect.succeed(
-    posts
-      .filter(p => p.authorId === parent.id)
-      .slice(args.offset ?? 0, args.limit)
-  ),
+  resolve: (parent: S.Schema.Type<typeof UserSchema>, args) => {
+    const offset = args.offset ?? 0
+    return Effect.succeed(
+      posts
+        .filter(p => p.authorId === parent.id)
+        .slice(offset, args.limit === undefined ? undefined : offset + args.limit)
+    )
+  },
 })
 ```
 
@@ -245,9 +249,7 @@ resolve: (args) => Effect.gen(function* () {
 
   return user
 }).pipe(
-  Effect.catchTag("DatabaseError", (e) =>
-    Effect.fail(new GraphQLError({ message: "Database unavailable" }))
-  )
+  Effect.tapError((error) => Effect.logError("User lookup failed", error))
 )
 ```
 
@@ -302,7 +304,7 @@ Access request-scoped data using `GraphQLRequestContext`:
 import { GraphQLRequestContext, makeRequestContextLayer } from "@effect-gql/core"
 
 .query("me", {
-  type: UserSchema,
+  type: S.NullOr(UserSchema),
   resolve: () => Effect.gen(function* () {
     const ctx = yield* GraphQLRequestContext
     const authHeader = ctx.request.headers["authorization"]
@@ -359,4 +361,8 @@ const withBoth = withUserQuery.query("posts", {
 })
 ```
 
-When you call `execute(schema, layer)`, TypeScript verifies that `layer` provides all required services.
+Pass `withBoth` to `toRouter(withBoth, layer)` to check that the layer supplies
+the builder's application services. After `buildSchema()`, the bare
+`GraphQLSchema` no longer carries those requirements: `execute(schema, layer)`
+cannot verify that its layer is complete. Missing services become execution
+errors, so bare-schema callers must supply every resolver and decoder dependency.

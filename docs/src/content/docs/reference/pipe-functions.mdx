@@ -37,7 +37,7 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
   }),
   field("User", "posts", {
     type: S.Array(PostSchema),
-    resolve: (user) => Effect.succeed([...])
+    resolve: (user: S.Schema.Type<typeof UserSchema>) => Effect.succeed([...])
   })
 )
 ```
@@ -51,25 +51,30 @@ Add a Query field to the builder.
 ```typescript
 query("users", {
   type: S.Array(UserSchema),
-  args: { limit: S.optional(S.Number) },
+  args: S.Struct({ limit: S.optional(S.Number) }),
   description: "Get all users",
   resolve: ({ limit }) => Effect.succeed([...])
 })
 ```
 
-**Signature:**
+**Core signature** (additional field options are shared with the builder method):
 ```typescript
-function query<A, E, R>(
+declare function query<A, E, R, Args = void, RArgs = never>(
   name: string,
   config: {
-    type: Schema<A>
-    args?: Record<string, Schema<any>>
+    type: S.Schema<A>
+    args?: S.Decoder<Args, RArgs>
     description?: string
-    deprecationReason?: string
-    resolve: (args: Args) => Effect<A, E, R>
+    resolve: (args: Args) => Effect.Effect<A, E, R>
   }
-): (builder: GraphQLSchemaBuilder<R0>) => GraphQLSchemaBuilder<R0 | R>
+): SchemaOperation<R | RArgs>
 ```
+
+
+`SchemaOperation<R>` is exported from `@effect-gql/core`. It accepts a
+`GraphQLSchemaBuilder<RIn>` and returns `GraphQLSchemaBuilder<RIn | R>`.
+Arguments are whole-schema decoders, normally `S.Struct({...})`; callbacks receive
+decoded values, and decoder services accumulate alongside resolver services.
 
 ### `mutation(name, config)`
 
@@ -78,10 +83,10 @@ Add a Mutation field to the builder.
 ```typescript
 mutation("createUser", {
   type: UserSchema,
-  args: {
+  args: S.Struct({
     name: S.String,
     email: S.String
-  },
+  }),
   resolve: ({ name, email }) => Effect.gen(function* () {
     const db = yield* Database
     return yield* db.createUser({ name, email })
@@ -91,16 +96,18 @@ mutation("createUser", {
 
 ### `subscription(name, config)`
 
-Add a Subscription field to the builder. The resolver must return a Stream.
+Add a Subscription field. `subscribe(args)` sets up a Stream; optional
+`resolve(value, args)` runs an Effect per event using the same decoded arguments.
 
 ```typescript
 subscription("messageAdded", {
   type: MessageSchema,
-  args: { channelId: S.String },
-  resolve: ({ channelId }) => Effect.gen(function* () {
+  args: S.Struct({ channelId: S.String }),
+  subscribe: ({ channelId }) => Effect.gen(function* () {
     const pubsub = yield* PubSubService
     return pubsub.subscribe(`channel:${channelId}`)
-  })
+  }),
+  resolve: (message, _args) => Effect.succeed(message),
 })
 ```
 
@@ -139,8 +146,7 @@ interfaceType({
   name: "Node",
   schema: S.Struct({
     id: S.String
-  }),
-  description: "An object with a global ID"
+  })
 })
 ```
 
@@ -171,14 +177,11 @@ enumType({
   values: ["ACTIVE", "INACTIVE", "PENDING"]
 })
 
-// With value descriptions
+// Type-level descriptions are supported; per-value configuration is not.
 enumType({
   name: "Priority",
-  values: {
-    LOW: { description: "Low priority" },
-    MEDIUM: { description: "Medium priority" },
-    HIGH: { description: "High priority" }
-  }
+  values: ["LOW", "MEDIUM", "HIGH"],
+  description: "Task priority"
 })
 ```
 
@@ -206,65 +209,70 @@ Add a field to an existing object type.
 ```typescript
 field("User", "posts", {
   type: S.Array(PostSchema),
-  args: {
+  args: S.Struct({
     limit: S.optional(S.Number),
     offset: S.optional(S.Number)
-  },
+  }),
   description: "Posts authored by this user",
-  resolve: (user, { limit, offset }) => Effect.gen(function* () {
+  resolve: (user: S.Schema.Type<typeof UserSchema>, { limit, offset }) => Effect.gen(function* () {
     const db = yield* Database
     return yield* db.getPostsByUserId(user.id, { limit, offset })
   })
 })
 ```
 
-**Signature:**
+**Core signature:**
 ```typescript
-function field<Parent, A, E, R>(
+declare function field<Parent, A, E, R, Args = void, RArgs = never>(
   typeName: string,
   fieldName: string,
   config: {
-    type: Schema<A>
-    args?: Record<string, Schema<any>>
+    type: S.Schema<A>
+    args?: S.Decoder<Args, RArgs>
     description?: string
-    deprecationReason?: string
-    resolve: (parent: Parent, args: Args) => Effect<A, E, R>
+    resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
   }
-): (builder: GraphQLSchemaBuilder<R0>) => GraphQLSchemaBuilder<R0 | R>
+): SchemaOperation<R | RArgs>
 ```
+
+Separate `field` calls require an explicit parent annotation; a type-name string
+does not infer it. Inline `objectType({ fields: ... })` fields infer the parent.
+Both `query` and `field` also support `directives`, `complexity`, and `cacheControl`.
+Neither supports a `deprecationReason` option.
 
 ## Directives
 
-### `directive(name, config)`
+### `directive(config)`
 
 Register a custom directive.
 
 ```typescript
-directive("auth", {
-  locations: ["FIELD_DEFINITION"],
-  args: {
-    roles: S.optional(S.Array(S.String))
-  },
-  description: "Require authentication with optional role check",
-  transformer: (next, { roles }, info) => Effect.gen(function* () {
-    const auth = yield* AuthContext
+import { DirectiveLocation } from "graphql"
 
-    if (!auth.user) {
-      return yield* Effect.fail(new AuthorizationError({
-        message: "Authentication required"
-      }))
-    }
-
-    if (roles && !roles.includes(auth.user.role)) {
-      return yield* Effect.fail(new AuthorizationError({
-        message: `Required role: ${roles.join(" or ")}`
-      }))
-    }
-
-    return yield* next
-  })
+const withTrace = directive({
+  name: "trace",
+  locations: [DirectiveLocation.FIELD_DEFINITION],
+  args: S.Struct({ label: S.String }),
+  description: "Log selected field resolutions",
+  apply: ({ label }) => (effect) =>
+    Effect.logInfo(label).pipe(Effect.andThen(effect)),
 })
+
+const tracedBuilder = GraphQLSchemaBuilder.empty.pipe(
+  withTrace,
+  query("hello", {
+    type: S.String,
+    directives: [{ name: "trace", args: { label: "Resolving hello" } }],
+    resolve: () => Effect.succeed("world"),
+  }),
+)
 ```
+
+The curried `apply(args)(effect)` wrapper runs only where the directive is
+explicitly applied. Its generic signature preserves the wrapped effect's error
+type; it cannot introduce a new typed error. Put fallible authorization in the
+resolver. For service-dependent wrappers, explicit `directive<Args, Services>`
+type arguments may be necessary.
 
 **Directive Locations:**
 - `QUERY`, `MUTATION`, `SUBSCRIPTION`
@@ -296,7 +304,7 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 
 ```typescript
 // users.ts
-export const userModule = (builder: GraphQLSchemaBuilder<any>) =>
+export const userModule = <R>(builder: GraphQLSchemaBuilder<R>) =>
   builder.pipe(
     objectType({ name: "User", schema: UserSchema }),
     query("users", { ... }),
@@ -305,7 +313,7 @@ export const userModule = (builder: GraphQLSchemaBuilder<any>) =>
   )
 
 // posts.ts
-export const postModule = (builder: GraphQLSchemaBuilder<any>) =>
+export const postModule = <R>(builder: GraphQLSchemaBuilder<R>) =>
   builder.pipe(
     objectType({ name: "Post", schema: PostSchema }),
     query("posts", { ... }),
@@ -324,15 +332,16 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 ```typescript
 const withAdminFeatures = process.env.ENABLE_ADMIN === "true"
 
-const builder = GraphQLSchemaBuilder.empty.pipe(
+const base = GraphQLSchemaBuilder.empty.pipe(
   query("users", { ... }),
-
-  // Conditionally add admin features
-  ...(withAdminFeatures ? [
-    query("adminStats", { ... }),
-    mutation("deleteUser", { ... })
-  ] : [])
 )
+
+const builder = withAdminFeatures
+  ? base.pipe(
+      query("adminStats", { ... }),
+      mutation("deleteUser", { ... }),
+    )
+  : base
 ```
 
 ## Type Inference

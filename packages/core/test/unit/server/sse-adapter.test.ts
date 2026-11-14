@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { Context, Deferred, Effect, Fiber, References, Stream, Layer } from "effect"
+import { Context, Deferred, Effect, Exit, Fiber, References, Stream, Layer } from "effect"
 import * as S from "effect/Schema"
 import * as SchemaGetter from "effect/SchemaGetter"
 import {
@@ -384,6 +384,7 @@ describe("sse-adapter.ts", () => {
       "frames %s serialization errors and finalizes resources",
       async (mode) => {
         const lifecycle: string[] = []
+        const reportedErrors: unknown[] = []
         const Resource = Context.Service<string>("sse/SerializationResource")
         const layer = Layer.effect(
           Resource,
@@ -427,6 +428,15 @@ describe("sse-adapter.ts", () => {
             { query: "subscription { value }" },
             new Headers(),
             {
+              onError: (_ctx, error) =>
+                Effect.map(Resource, (resource) => {
+                  reportedErrors.push(error)
+                  lifecycle.push(`error:${resource}`)
+                }),
+              onDisconnect: () =>
+                Effect.sync(() => {
+                  lifecycle.push("unexpected disconnect")
+                }),
               onComplete: () =>
                 Effect.map(Resource, (resource) => {
                   lifecycle.push(`complete:${resource}`)
@@ -444,7 +454,9 @@ describe("sse-adapter.ts", () => {
             },
           ],
         })
-        expect(lifecycle).toEqual(["iterator", "complete:open", "release"])
+        expect(reportedErrors).toHaveLength(1)
+        expect(reportedErrors[0]).toBeInstanceOf(TypeError)
+        expect(lifecycle).toEqual(["iterator", "error:open", "complete:open", "release"])
       }
     )
   })
@@ -675,6 +687,120 @@ describe("sse-adapter.ts", () => {
       expect(events.some((e) => e.event === "error")).toBe(true)
       expect(events.some((e) => e.event === "complete")).toBe(true)
     })
+
+    it.each([
+      ["parse", "subscription {", "Syntax Error", false],
+      ["validation", "subscription { missing }", "Cannot query field", false],
+      ["operation", "{ hello }", "SSE endpoint only supports subscriptions", false],
+      ["connect", "subscription { value }", "Connection denied", false],
+      ["subscribe", "subscription { value }", "Subscribe hook failed", false],
+      ["setup", "subscription { value }", "Source setup failed", false],
+      ["execution", "subscription { value }", "Resolver failed", true],
+      ["iterator", "subscription { value }", "Iterator failed", true],
+    ] as const)(
+      "reports %s failures once without treating them as disconnects",
+      async (mode, source, message, streaming) => {
+        const observedErrors: unknown[] = []
+        const observedUsers: unknown[] = []
+        const lifecycle: string[] = []
+        const schema = new GraphQLSchema({
+          query: new GraphQLObjectType({
+            name: "Query",
+            fields: { hello: { type: GraphQLString } },
+          }),
+          subscription: new GraphQLObjectType({
+            name: "Subscription",
+            fields: {
+              value: {
+                type: GraphQLInt,
+                subscribe: () => {
+                  if (mode === "setup") throw new Error("Source setup failed")
+                  return (async function* () {
+                    if (mode === "iterator") throw new Error("Iterator failed")
+                    yield { value: 1 }
+                  })()
+                },
+                resolve: (value) => {
+                  if (mode === "execution") throw new Error("Resolver failed")
+                  return value.value
+                },
+              },
+            },
+          }),
+        })
+        const events = await Effect.runPromise(
+          makeSSESubscriptionStream(schema, Layer.empty, { query: source }, new Headers(), {
+            onConnect: () =>
+              mode === "connect"
+                ? Effect.fail(new Error("Connection denied"))
+                : Effect.succeed({ userId: "user-123" }),
+            onSubscribe: () => {
+              if (mode === "subscribe") throw new Error("Subscribe hook failed")
+              return Effect.void
+            },
+            onError: (ctx, error) =>
+              Effect.sync(() => {
+                observedUsers.push(ctx.connectionContext.userId)
+                observedErrors.push(error)
+                lifecycle.push("error")
+              }),
+            onDisconnect: () =>
+              Effect.sync(() => {
+                lifecycle.push("disconnect")
+              }),
+            onComplete: () =>
+              Effect.sync(() => {
+                lifecycle.push("complete")
+              }),
+          }).pipe(Stream.runCollect)
+        )
+
+        expect(events.map((event) => event.event)).toEqual([
+          mode === "execution" ? "next" : "error",
+          "complete",
+        ])
+        expect(events[0].data).toContain(message)
+        expect(observedErrors).toHaveLength(1)
+        expect(observedUsers).toEqual([mode === "connect" ? undefined : "user-123"])
+        const reported = observedErrors[0]
+        expect(
+          Array.isArray(reported)
+            ? reported.map((error: Error) => error.message).join("; ")
+            : (reported as Error).message
+        ).toContain(message)
+        expect(lifecycle).toEqual(streaming ? ["error", "complete"] : ["error"])
+      }
+    )
+
+    it("keeps error hooks best-effort without changing error and complete events", async () => {
+      const lifecycle: string[] = []
+      const events = await Effect.runPromise(
+        makeSSESubscriptionStream(
+          createTestSchema(),
+          Layer.empty,
+          { query: "subscription { error }" },
+          new Headers(),
+          {
+            onError: () => {
+              lifecycle.push("error")
+              throw new Error("Hook construction failed")
+            },
+            onComplete: () =>
+              Effect.sync(() => lifecycle.push("complete")).pipe(
+                Effect.andThen(Effect.die(new Error("Hook effect failed")))
+              ),
+            onDisconnect: () =>
+              Effect.sync(() => {
+                lifecycle.push("disconnect")
+              }),
+          }
+        ).pipe(Stream.runCollect)
+      )
+
+      expect(events.map((event) => event.event)).toEqual(["error", "complete"])
+      expect(events[0].data).toContain("Subscription error")
+      expect(lifecycle).toEqual(["error", "complete"])
+    })
   })
 
   describe("SSE Complexity Validation", () => {
@@ -900,11 +1026,23 @@ describe("sse-adapter.ts", () => {
           {
             onComplete: () => {
               lifecycle.push("construct")
-              return Effect.map(Resource, (resource) => {
+              return Effect.gen(function* () {
+                const resource = yield* Resource
+                yield* Effect.promise(() => Promise.resolve())
                 lifecycle.push("effect")
                 hookOpen = resource.isOpen()
               })
             },
+            onDisconnect: () =>
+              Effect.gen(function* () {
+                const resource = yield* Resource
+                yield* Effect.promise(() => Promise.resolve())
+                lifecycle.push(resource.isOpen() ? "disconnect" : "closed disconnect")
+              }),
+            onError: () =>
+              Effect.sync(() => {
+                lifecycle.push("unexpected error")
+              }),
           }
         )
 
@@ -924,12 +1062,133 @@ describe("sse-adapter.ts", () => {
         )
         expect(lifecycle).toEqual(
           mode === "cancellation"
-            ? ["next", "construct", "effect", "release"]
+            ? ["next", "disconnect", "construct", "effect", "release"]
             : ["next", "complete", "construct", "effect", "release"]
         )
         expect(hookOpen).toBe(true)
         expect(open).toBe(false)
         expect(releases).toBe(1)
+      }
+    )
+
+    it.each(["cancellation", "failure", "resolver cancellation", "setup cancellation"] as const)(
+      "awaits resolver cleanup and failing lifecycle hooks before releasing services on %s",
+      async (mode) => {
+        const cancelled = mode !== "failure"
+        const lifecycle: string[] = []
+        const events: SSEEvent[] = []
+        const sourceStarted = Effect.runSync(Deferred.make<void>())
+        const cleanupStarted = Effect.runSync(Deferred.make<void>())
+        const finishCleanup = Effect.runSync(Deferred.make<void>())
+        let open = false
+        const Resource = Context.Service<{ readonly isOpen: () => boolean }>("sse/SlowCleanup")
+        const layer = Layer.effect(
+          Resource,
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              open = true
+              return { isOpen: () => open }
+            }),
+            () =>
+              Effect.sync(() => {
+                open = false
+                lifecycle.push("release")
+              })
+          )
+        )
+        const cleanup = Effect.gen(function* () {
+          yield* Deferred.succeed(cleanupStarted, undefined)
+          yield* Deferred.await(finishCleanup)
+          const resource = yield* Resource
+          lifecycle.push(resource.isOpen() ? "resolver cleanup" : "closed resolver")
+        })
+        const schema = GraphQLSchemaBuilder.empty
+          .query("hello", { type: S.String, resolve: () => Effect.succeed("world") })
+          .subscription("value", {
+            type: S.Boolean,
+            subscribe: () =>
+              mode === "setup cancellation"
+                ? Effect.gen(function* () {
+                    yield* Deferred.succeed(sourceStarted, undefined)
+                    return yield* Effect.never
+                  }).pipe(Effect.ensuring(cleanup))
+                : Effect.succeed(
+                    mode === "resolver cancellation"
+                      ? Stream.make(true)
+                      : Stream.fromEffect(Deferred.succeed(sourceStarted, undefined)).pipe(
+                          Stream.flatMap(() =>
+                            mode === "cancellation"
+                              ? Stream.never
+                              : Stream.fail(new Error("Source failed"))
+                          ),
+                          Stream.ensuring(cleanup)
+                        )
+                  ),
+            resolve: (value) =>
+              mode === "resolver cancellation"
+                ? Effect.gen(function* () {
+                    yield* Deferred.succeed(sourceStarted, undefined)
+                    return yield* Effect.never
+                  }).pipe(Effect.ensuring(cleanup))
+                : Effect.succeed(value),
+          })
+          .buildSchema()
+        const hook = (name: string) =>
+          Effect.gen(function* () {
+            const resource = yield* Resource
+            yield* Effect.promise(() => Promise.resolve())
+            lifecycle.push(resource.isOpen() ? name : `closed ${name}`)
+            yield* Effect.die(new Error("Cleanup hook failed"))
+          })
+        const stream = makeSSESubscriptionStream(
+          schema,
+          layer,
+          { query: "subscription { value }" },
+          new Headers(),
+          {
+            onError: () => hook("onError"),
+            onDisconnect: () => hook("onDisconnect"),
+            onComplete: () => hook("onComplete"),
+          }
+        ).pipe(
+          Stream.tap((event) =>
+            Effect.sync(() => {
+              events.push(event)
+              lifecycle.push(event.event)
+            })
+          )
+        )
+
+        let beforeCleanup: string[] = []
+        let openBeforeCleanup = false
+        const exit = await Effect.runPromise(
+          Effect.gen(function* () {
+            const consumer = yield* Effect.forkChild(Stream.runDrain(stream))
+            yield* Deferred.await(sourceStarted)
+            const interruption = cancelled
+              ? yield* Effect.forkChild(Fiber.interrupt(consumer))
+              : undefined
+            yield* Deferred.await(cleanupStarted)
+            beforeCleanup = [...lifecycle]
+            openBeforeCleanup = open
+            yield* Deferred.succeed(finishCleanup, undefined)
+            if (interruption) yield* Fiber.join(interruption)
+            return yield* Fiber.await(consumer)
+          }).pipe(Effect.timeout("2 seconds"))
+        )
+
+        expect(beforeCleanup).toEqual([])
+        expect(openBeforeCleanup).toBe(true)
+        expect(Exit.hasInterrupts(exit)).toBe(cancelled)
+        expect(events.map((event) => event.event)).toEqual(cancelled ? [] : ["error", "complete"])
+        expect(lifecycle).toEqual(
+          mode === "setup cancellation"
+            ? ["resolver cleanup", "onDisconnect", "release"]
+            : cancelled
+              ? ["resolver cleanup", "onDisconnect", "onComplete", "release"]
+              : ["resolver cleanup", "onError", "error", "complete", "onComplete", "release"]
+        )
+        expect(open).toBe(false)
       }
     )
   })

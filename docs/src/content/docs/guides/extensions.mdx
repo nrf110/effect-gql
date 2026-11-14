@@ -35,10 +35,11 @@ Extensions provide hooks into the GraphQL request lifecycle, allowing you to cap
          Effect.gen(function* () {
            const ext = yield* ExtensionsService
            const data = yield* ext.get()
-           const startTime = (data.tracing as any)?.startTime
+           const startTime = typeof data.tracing === "object" && data.tracing !== null
+             && "startTime" in data.tracing ? data.tracing.startTime : undefined
            yield* ext.merge("tracing", {
              endTime: Date.now(),
-             durationMs: Date.now() - startTime,
+             durationMs: typeof startTime === "number" ? Date.now() - startTime : 0,
            })
          }),
      }),
@@ -81,16 +82,16 @@ extension({
   name: "lifecycle",
 
   // Called after parsing succeeds
-  onParse: (source, document) => Effect.Effect<void>,
+  onParse: (source, document) => Effect.logInfo(`Parsed ${source.length} characters`),
 
   // Called after validation (with any errors)
-  onValidate: (document, errors) => Effect.Effect<void>,
+  onValidate: (document, errors) => Effect.logInfo(`Validation errors: ${errors.length}`),
 
   // Called before resolver execution begins
-  onExecuteStart: (args) => Effect.Effect<void>,
+  onExecuteStart: (args) => Effect.logInfo(`Executing ${args.operationName ?? "anonymous"}`),
 
   // Called after execution completes (with result)
-  onExecuteEnd: (result) => Effect.Effect<void>,
+  onExecuteEnd: (result) => Effect.logInfo(`Execution errors: ${result.errors?.length ?? 0}`),
 })
 ```
 
@@ -110,7 +111,7 @@ Parse → onParse → Validate → onValidate → onExecuteStart → Execute →
 ```
 
 <Aside type="note">
-  If parsing fails, only parse-related extensions run. If validation fails, `onExecuteStart` and `onExecuteEnd` are not called.
+  If parsing fails, no extension lifecycle hooks run. If validation fails, `onParse` and `onValidate` run, but `onExecuteStart` and `onExecuteEnd` are not called.
 </Aside>
 
 ## ExtensionsService API
@@ -134,7 +135,7 @@ yield* ext.set("tracing", { startTime: Date.now() })
 
 ### `merge(key, value)`
 
-Deep merge an object into an existing key:
+Deep merge an object's properties into an existing key:
 
 ```typescript
 yield* ext.set("tracing", { startTime: 100 })
@@ -148,7 +149,10 @@ Get all accumulated extension data:
 
 ```typescript
 const data = yield* ext.get()
-const startTime = (data.tracing as any)?.startTime
+const startTime = data.startTime
+if (typeof startTime === "number") {
+  yield* Effect.logInfo(`Started at ${startTime}`)
+}
 ```
 
 ## Common Patterns
@@ -169,10 +173,11 @@ extension({
     Effect.gen(function* () {
       const ext = yield* ExtensionsService
       const data = yield* ext.get()
-      const timing = data.timing as { startTime: number }
+      const startTime = typeof data.timing === "object" && data.timing !== null
+        && "startTime" in data.timing ? data.timing.startTime : undefined
       yield* ext.merge("timing", {
         endTime: Date.now(),
-        durationMs: Date.now() - timing.startTime,
+        durationMs: typeof startTime === "number" ? Date.now() - startTime : 0,
       })
     }),
 })
@@ -183,6 +188,8 @@ extension({
 Report complexity metrics in the response:
 
 ```typescript
+import type { SelectionNode } from "graphql"
+
 extension({
   name: "complexity",
   onValidate: (document, errors) =>
@@ -191,10 +198,10 @@ extension({
 
       // Calculate complexity from AST
       let complexity = 0
-      const visit = (selections: any, depth: number) => {
+      const visit = (selections: readonly SelectionNode[], depth: number) => {
         for (const sel of selections ?? []) {
           complexity += depth
-          if (sel.selectionSet) {
+          if (sel.kind !== "FragmentSpread" && sel.selectionSet) {
             visit(sel.selectionSet.selections, depth + 1)
           }
         }
@@ -214,6 +221,9 @@ extension({
     }),
 })
 ```
+
+This illustrative score counts inline selections across operations; it is not
+the framework's complexity enforcement and does not expand fragment spreads.
 
 ### Request Metadata
 
@@ -243,9 +253,10 @@ extension({
 })
 ```
 
-### Apollo Tracing Compatible
+### Apollo Tracing Metadata
 
-Build Apollo Tracing compatible output:
+Request hooks can record top-level tracing metadata. They do not measure
+individual resolvers; an empty resolver list alone is not a full Apollo trace.
 
 ```typescript
 extension({
@@ -253,6 +264,7 @@ extension({
   onExecuteStart: () =>
     Effect.gen(function* () {
       const ext = yield* ExtensionsService
+      yield* ext.set("traceStartMs", Date.now())
       yield* ext.set("tracing", {
         version: 1,
         startTime: new Date().toISOString(),
@@ -262,9 +274,11 @@ extension({
   onExecuteEnd: () =>
     Effect.gen(function* () {
       const ext = yield* ExtensionsService
+      const data = yield* ext.get()
+      const startTime = data.traceStartMs
       yield* ext.merge("tracing", {
         endTime: new Date().toISOString(),
-        duration: /* calculated duration in nanoseconds */,
+        duration: typeof startTime === "number" ? (Date.now() - startTime) * 1_000_000 : 0,
       })
     }),
 })
@@ -309,7 +323,7 @@ class TracingService extends Context.Service<
   { readonly createSpan: (name: string) => Effect.Effect<Span> }
 >()("TracingService") {}
 
-extension<TracingService>({
+extension({
   name: "openTelemetry",
   onExecuteStart: (args) =>
     Effect.gen(function* () {
@@ -322,7 +336,7 @@ extension<TracingService>({
 
 ## Using with Router
 
-Pass the builder's registered extensions to the HTTP router:
+`toRouter` automatically uses the builder's registered extensions:
 
 ```typescript
 import { toRouter } from "@effect-gql/core/server"
@@ -332,9 +346,7 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
   query("hello", { ... }),
 )
 
-const router = toRouter(builder, serviceLayer, {
-  extensions: builder.getExtensions(),
-})
+const router = toRouter(builder, serviceLayer)
 ```
 
 Or with `makeGraphQLRouter`:
@@ -376,10 +388,11 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
       Effect.gen(function* () {
         const ext = yield* ExtensionsService
         const data = yield* ext.get()
-        const startTime = (data.tracing as any)?.startTime ?? Date.now()
+        const startTime = typeof data.tracing === "object" && data.tracing !== null
+          && "startTime" in data.tracing ? data.tracing.startTime : undefined
         yield* ext.merge("tracing", {
           endTime: Date.now(),
-          durationMs: Date.now() - startTime,
+          durationMs: typeof startTime === "number" ? Date.now() - startTime : 0,
         })
       }),
   }),
@@ -399,7 +412,7 @@ const result = await Effect.runPromise(
   execute(schema, Layer.empty, extensions)("{ hello }")
 )
 
-console.log(JSON.stringify(result, null, 2))
+await Effect.runPromise(Effect.logInfo(JSON.stringify(result, null, 2)))
 // {
 //   "data": { "hello": "Hello, World!" },
 //   "extensions": {

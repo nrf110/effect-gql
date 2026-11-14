@@ -35,7 +35,7 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
   field("User", "email", {
     type: S.String,
     cacheControl: { maxAge: 60, scope: "PRIVATE" },
-    resolve: (user) => Effect.succeed(user.email),
+    resolve: (user: typeof UserSchema.Type) => Effect.succeed(user.email),
   }),
 
   // Query with cache hint
@@ -105,7 +105,7 @@ query("publicData", {
 field("User", "recommendations", {
   type: S.Array(ProductSchema),
   cacheControl: { maxAge: 300, scope: "PRIVATE" },  // User-specific
-  resolve: (user) => getRecommendations(user.id),
+  resolve: (user: typeof UserSchema.Type) => getRecommendations(user.id),
 })
 ```
 
@@ -196,11 +196,12 @@ import { makePersistedQueriesRouter } from "@effect-gql/persisted-queries"
 const router = makePersistedQueriesRouter(schema, layer, {
   mode: "apq",
   enableGet: true,  // Enable GET requests for CDN caching
+  cacheHints: builder.getCacheHints(),
   cacheControl: { enabled: true },
 })
 ```
 
-When a client sends a GET request with a persisted query hash, CDNs can cache the response based on the URL:
+For a public query with `maxAge: 3600`, a persisted GET request can produce:
 
 ```
 GET /graphql?extensions={"persistedQuery":{"version":1,"sha256Hash":"abc123"}}
@@ -208,34 +209,137 @@ GET /graphql?extensions={"persistedQuery":{"version":1,"sha256Hash":"abc123"}}
 Cache-Control: public, max-age=3600
 ```
 
+Pass `cacheHints` from your builder when creating a persisted-query router from a
+GraphQL schema. The router computes the policy for the selected operation on both
+GET and POST requests: the shortest field lifetime wins, and any private field
+makes the response private. Without cache hints or a positive `defaultMaxAge`,
+queries receive `Cache-Control: no-store`.
+
+`cacheControl.enabled: false` or `cacheControl.calculateHttpHeaders: false` omits
+these headers. Mutations do not receive cacheable headers, and execution responses
+containing GraphQL errors receive `no-store` when header calculation is enabled.
+
 ### CDN Configuration
+Only cache anonymous, explicitly public GET queries. Keep the entire query string
+in the cache key, including `extensions`, `variables`, `operationName`, and any
+full `query` text. Include every other response-varying input (for example,
+`Origin` for reflected CORS), or make that input constant at the public endpoint.
+Do not forward unkeyed identity/tenant headers to a cacheable origin.
+
+**Authenticated and cookie-bearing traffic must bypass shared caches before
+cache lookup**, not just on an origin miss. Use an uncached endpoint/behavior for
+that traffic, and do not strip credentials to make it look anonymous. Public
+endpoints must never personalize results or set cookies. Continue marking
+user-specific fields `PRIVATE` (or use `maxAge: 0`); cache hints do not perform
+authorization. Private browser caches also need account-change invalidation;
+use `no-store` for sensitive data that must not survive logout.
+
 
 <Tabs>
   <TabItem label="Cloudflare">
-```typescript
-// Cloudflare respects Cache-Control headers by default
-// Configure cache rules in dashboard or via Page Rules
-```
+Cloudflare does not cache GraphQL JSON by default. Create a narrowly scoped
+Cache Rule for your anonymous public GET endpoint, retaining the full query
+string in the cache key and honoring origin Cache-Control. Add a higher-priority
+bypass rule for `Authorization` or any `Cookie` header and all other GraphQL
+traffic. Do not use an Edge Cache TTL override that ignores origin `private`,
+`no-store`, or `no-cache`, and do not enable caching for responses with
+`Set-Cookie`. See Cloudflare's [default cache behavior](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/)
+and [origin cache-control guidance](https://developers.cloudflare.com/cache/concepts/cache-control/).
   </TabItem>
   <TabItem label="Fastly">
-```vcl
-# Fastly VCL snippet
-sub vcl_fetch {
-  # Only cache GET requests
-  if (req.method == "GET") {
-    # Use Cache-Control header from origin
-    set beresp.ttl = std.integer(regsub(
-      beresp.http.Cache-Control, ".*max-age=(\d+).*", "\1"), 0);
-  }
-}
-```
+Configure `pass` before lookup for authenticated/cookie-bearing requests,
+non-GET methods, and non-public GraphQL endpoints. Preserve the full URL/query
+string cache key. At response time, pass `private`, `no-store`, `no-cache`,
+`Set-Cookie`, non-success responses, and responses without explicit positive
+public cache lifetime. Keep the origin's parsed TTL rather than extracting
+`max-age` with a regex: that can accidentally cache `private, max-age=60`.
+
+Fastly's standard boilerplate handles `private` and `Set-Cookie`, but custom VCL
+and fallback TTLs can change these protections. Apply the explicit pass rules
+above and do not override them with `Surrogate-Control` or a forced TTL.
+See [Fastly's HTTP caching semantics](https://www.fastly.com/documentation/guides/concepts/cache/cache-freshness/).
   </TabItem>
   <TabItem label="AWS CloudFront">
+Use a **custom query-aware cache policy** with minimum and default TTLs of zero.
+This CloudFormation resource is for a separate anonymous `/graphql/public`
+endpoint; configure that path in `makePersistedQueriesRouter` as well:
+
+Use pre-registered/safelist operations on this GET-only behavior; it is not an
+APQ registration endpoint.
+
 ```yaml
-# CloudFront behavior settings
-CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
-OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3  # AllViewer
+Resources:
+  PublicGraphQLCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: PublicGraphQLQueries
+        MinTTL: 0
+        DefaultTTL: 0
+        MaxTTL: 3600
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers: [Origin]
+          CookiesConfig:
+            CookieBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: all
+  RejectPublicGraphQLCredentials:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: RejectPublicGraphQLCredentials
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Reject credentials before public cache lookup
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          if (request.headers.authorization || Object.keys(request.cookies).length > 0) {
+            return {
+              statusCode: 403,
+              headers: { "cache-control": { value: "no-store" } }
+            };
+          }
+          return request;
+        }
 ```
+
+Attach both resources to the public cache behavior in your distribution
+(`GraphQLOrigin` below is the ID of your existing origin):
+
+```yaml
+PathPattern: /graphql/public
+TargetOriginId: GraphQLOrigin
+ViewerProtocolPolicy: https-only
+AllowedMethods: [GET, HEAD, OPTIONS]
+CachedMethods: [GET, HEAD]
+CachePolicyId: !Ref PublicGraphQLCachePolicy
+FunctionAssociations:
+  - EventType: viewer-request
+    FunctionARN: !GetAtt RejectPublicGraphQLCredentials.FunctionMetadata.FunctionARN
+```
+
+The viewer-request function rejects credentials **even on cache hits**. If your
+application uses other identity headers, reject those too. Send authenticated
+and cookie-bearing requests to a separate uncached `/graphql` behavior with
+minimum/default/maximum TTLs all `0`, forwarding authorization, cookies, and all
+GraphQL query parameters to the origin. An origin-request policy forwards values;
+it does not make them part of a public cache key. Do not share this public policy
+with an authenticated route.
+
+AWS documents that [a minimum TTL above zero overrides `private` and `no-store`](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Expiration.html).
+`MinTTL: 0` respects those directives, while `DefaultTTL: 0` avoids caching
+responses that omit a lifetime. The managed
+[`CachingOptimized` policy](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html#managed-cache-caching-optimized)
+is not suitable: it ignores query strings and has a positive minimum TTL.
+See the [cache-policy specification](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-cloudfront-cachepolicy-cachepolicyconfig.html),
+[cache-key parameters](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-cloudfront-cachepolicy-parametersincachekeyandforwardedtoorigin.html),
+[function request/cookie structure](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/functions-event-structure.html),
+and [authorization-forwarding warning](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/add-origin-custom-headers.html#add-origin-custom-headers-forward-authorization).
   </TabItem>
 </Tabs>
 
@@ -297,7 +401,7 @@ query("me", {
 field("User", "settings", {
   type: SettingsSchema,
   cacheControl: { scope: "PRIVATE" },  // Even with inheritance
-  resolve: (user) => getSettings(user.id),
+  resolve: (user: typeof UserSchema.Type) => getSettings(user.id),
 })
 ```
 
@@ -315,7 +419,7 @@ objectType({
 field("Product", "inventory", {
   type: S.Number,
   cacheControl: { maxAge: 60 },  // More volatile
-  resolve: (product) => getInventory(product.id),
+  resolve: (product: typeof ProductSchema.Type) => getInventory(product.id),
 })
 ```
 
