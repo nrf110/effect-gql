@@ -14,31 +14,31 @@ const unwrapNonNull = (type: any): any => (isNonNullType(type) ? type.ofType : t
 
 describe("User reported issues with schema mapping", () => {
   describe("Integer type refinements", () => {
-    it("should map S.NonNegativeInt to GraphQLInt (not Float)", () => {
-      const result = toGraphQLInputType(S.NonNegativeInt)
+    it("should map non-negative integers to GraphQLInt (not Float)", () => {
+      const result = toGraphQLInputType(S.Int.check(S.isGreaterThanOrEqualTo(0)))
       expect(result).toBe(GraphQLInt)
     })
 
-    it("should map S.Int.pipe(S.positive()) to GraphQLInt", () => {
-      const PositiveInt = S.Int.pipe(S.positive())
+    it("should map positive integers to GraphQLInt", () => {
+      const PositiveInt = S.Int.check(S.isGreaterThan(0))
       const result = toGraphQLInputType(PositiveInt)
       expect(result).toBe(GraphQLInt)
     })
 
-    it("should map S.Int.pipe(S.nonPositive()) to GraphQLInt", () => {
-      const NonPositiveInt = S.Int.pipe(S.nonPositive())
+    it("should map non-positive integers to GraphQLInt", () => {
+      const NonPositiveInt = S.Int.check(S.isLessThanOrEqualTo(0))
       const result = toGraphQLInputType(NonPositiveInt)
       expect(result).toBe(GraphQLInt)
     })
 
-    it("should map S.Int.pipe(S.negative()) to GraphQLInt", () => {
-      const NegativeInt = S.Int.pipe(S.negative())
+    it("should map negative integers to GraphQLInt", () => {
+      const NegativeInt = S.Int.check(S.isLessThan(0))
       const result = toGraphQLInputType(NegativeInt)
       expect(result).toBe(GraphQLInt)
     })
 
     it("should map custom int refinements to GraphQLInt", () => {
-      const CustomInt = S.Int.pipe(S.greaterThan(0), S.lessThan(100))
+      const CustomInt = S.Int.check(S.isGreaterThan(0), S.isLessThan(100))
       const result = toGraphQLInputType(CustomInt)
       expect(result).toBe(GraphQLInt)
     })
@@ -47,7 +47,7 @@ describe("User reported issues with schema mapping", () => {
   describe("Option transformations in struct fields", () => {
     it("should map S.OptionFromNullOr(S.Int) fields to nullable Int (not Int!)", () => {
       const Cursor = S.Struct({
-        pageSize: S.NonNegativeInt,
+        pageSize: S.Int.check(S.isGreaterThanOrEqualTo(0)),
         offset: S.OptionFromNullOr(S.Int),
       })
 
@@ -66,7 +66,7 @@ describe("User reported issues with schema mapping", () => {
     it("should handle OptionFromNullOr in output types", () => {
       const User = S.Struct({
         id: S.String,
-        age: S.OptionFromNullOr(S.NonNegativeInt),
+        age: S.OptionFromNullOr(S.Int.check(S.isGreaterThanOrEqualTo(0))),
       })
 
       const result = toGraphQLType(User) as GraphQLObjectType
@@ -83,7 +83,7 @@ describe("User reported issues with schema mapping", () => {
 
     it("should handle OptionFromNullOr in GraphQL arguments", () => {
       const Args = S.Struct({
-        limit: S.NonNegativeInt,
+        limit: S.Int.check(S.isGreaterThanOrEqualTo(0)),
         cursor: S.OptionFromNullOr(S.String),
       })
 
@@ -101,7 +101,7 @@ describe("User reported issues with schema mapping", () => {
     it("should handle OptionFromUndefinedOr in struct fields", () => {
       const Schema = S.Struct({
         required: S.String,
-        optional: S.OptionFromUndefinedOr(S.NonNegativeInt),
+        optional: S.OptionFromUndefinedOr(S.Int.check(S.isGreaterThanOrEqualTo(0))),
       })
 
       const result = toGraphQLInputType(Schema) as GraphQLInputObjectType
@@ -119,7 +119,7 @@ describe("User reported issues with schema mapping", () => {
   describe("Combined refinements and options", () => {
     it("should handle the exact user-reported schema", () => {
       const Cursor = S.Struct({
-        pageSize: S.NonNegativeInt,
+        pageSize: S.Int.check(S.isGreaterThanOrEqualTo(0)),
         offset: S.OptionFromNullOr(S.Int),
       })
 

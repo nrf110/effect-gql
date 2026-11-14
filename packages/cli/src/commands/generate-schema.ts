@@ -202,16 +202,16 @@ const watch = (options: GenerateOptions): Effect.Effect<void, Error> =>
     yield* Console.log(`Watching for changes in ${dir}...`)
 
     // Initial generation
-    yield* run(options).pipe(Effect.catchAll((error) => Console.error(`Error: ${error.message}`)))
+    yield* run(options).pipe(Effect.catch((error) => Console.error(`Error: ${error.message}`)))
 
     // Watch for changes
-    yield* Effect.async<void, Error>(() => {
+    yield* Effect.callback<void, Error>(() => {
       const watcher = fs.watch(dir, { recursive: true }, (_, filename) => {
         if (filename?.endsWith(".ts") || filename?.endsWith(".js")) {
           Effect.runPromise(
             run(options).pipe(
               Effect.tap(() => Console.log(`\nRegenerated at ${new Date().toLocaleTimeString()}`)),
-              Effect.catchAll((error) => Console.error(`Error: ${error.message}`))
+              Effect.catch((error) => Console.error(`Error: ${error.message}`))
             )
           )
         }

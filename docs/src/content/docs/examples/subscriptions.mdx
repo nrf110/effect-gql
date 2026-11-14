@@ -28,7 +28,7 @@ pnpm example:subscriptions
 Subscriptions in Effect GQL use Effect Streams to emit values over time:
 
 ```typescript
-import { Stream, Duration, Schedule } from "effect"
+import { Effect, Stream, Duration, Schedule } from "effect"
 
 subscription("tick", {
   type: Tick,
@@ -52,8 +52,8 @@ Subscriptions can accept arguments just like queries:
 
 ```typescript
 subscription("countdown", {
-  type: S.Number,
-  args: S.Struct({ from: S.Number }),
+  type: S.Int,
+  args: S.Struct({ from: S.Int }),
   description: "Counts down from a number to zero",
   subscribe: ({ from }) =>
     Effect.succeed(
@@ -70,7 +70,7 @@ subscription("countdown", {
 For real-time messaging, use Effect's PubSub to broadcast to all subscribers:
 
 ```typescript
-import { PubSub, Ref } from "effect"
+import { Effect, PubSub } from "effect"
 
 // Create a PubSub for messages
 const messagePubSub = Effect.runSync(PubSub.unbounded<Message>())
@@ -102,7 +102,7 @@ subscription("newMessage", {
   subscribe: () =>
     Effect.gen(function* () {
       const queue = yield* PubSub.subscribe(messagePubSub)
-      return Stream.fromQueue(queue)
+      return Stream.fromSubscription(queue)
     }),
 })
 ```
@@ -119,7 +119,7 @@ subscription("messagesByAuthor", {
   subscribe: ({ author }) =>
     Effect.gen(function* () {
       const queue = yield* PubSub.subscribe(messagePubSub)
-      return Stream.fromQueue(queue).pipe(
+      return Stream.fromSubscription(queue).pipe(
         Stream.filter((msg) => msg.author === author)
       )
     }),
@@ -140,14 +140,24 @@ serve(app, Layer.empty, {
     path: "/graphql",
   },
   onStart: (url) => {
-    console.log(`Server ready at ${url}`)
-    console.log(`WebSocket: ws://localhost:4002/graphql`)
+    Effect.runSync(Effect.logInfo("Subscription server ready", {
+      url,
+      websocket: "ws://localhost:4002/graphql",
+    }))
   },
 })
 ```
 
 <Aside type="note">
-WebSocket subscriptions require the `ws` package. It's included as a peer dependency of `@effect-gql/node`.
+WebSocket subscriptions require the optional `ws` peer dependency. Install it with
+`npm install ws` when using `@effect-gql/node` subscriptions.
+</Aside>
+
+<Aside type="caution">
+The current Node.js adapter has a
+[WebSocket initialization limitation](/effect-gql/guides/subscriptions/#websocket-transport):
+an immediate first connection can close with code `4408`, even while the HTTP
+endpoint is healthy. Subsequent connections can succeed after initialization.
 </Aside>
 
 ## Complete Code
@@ -155,7 +165,7 @@ WebSocket subscriptions require the `ws` package. It's included as a peer depend
 ```typescript
 import { Effect, Stream, Layer, Duration, PubSub, Schedule } from "effect"
 import * as S from "effect/Schema"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import {
   GraphQLSchemaBuilder,
   query,
@@ -163,6 +173,7 @@ import {
   subscription,
   makeGraphQLRouter,
 } from "@effect-gql/core"
+import { graphiqlHtml } from "@effect-gql/core/server"
 import { serve } from "@effect-gql/node"
 
 // Domain models
@@ -177,6 +188,7 @@ const Message = S.Struct({
   author: S.String,
   createdAt: S.Number,
 })
+type Message = S.Schema.Type<typeof Message>
 
 // PubSub for broadcasting messages
 let messageIdCounter = 0
@@ -218,14 +230,36 @@ const schema = GraphQLSchemaBuilder.empty
         ),
     }),
 
+    subscription("countdown", {
+      type: S.Int,
+      args: S.Struct({ from: S.Int }),
+      subscribe: ({ from }) => Effect.succeed(
+        Stream.range(0, from).pipe(
+          Stream.map((i) => from - i),
+          Stream.schedule(Schedule.spaced(Duration.seconds(1)))
+        )
+      ),
+    }),
+
     // New message subscription
     subscription("newMessage", {
       type: Message,
       subscribe: () =>
         Effect.gen(function* () {
           const queue = yield* PubSub.subscribe(messagePubSub)
-          return Stream.fromQueue(queue)
+          return Stream.fromSubscription(queue)
         }),
+    }),
+
+    subscription("messagesByAuthor", {
+      type: Message,
+      args: S.Struct({ author: S.String }),
+      subscribe: ({ author }) => Effect.gen(function* () {
+        const queue = yield* PubSub.subscribe(messagePubSub)
+        return Stream.fromSubscription(queue).pipe(
+          Stream.filter((message) => message.author === author)
+        )
+      }),
     }),
   )
   .buildSchema()
@@ -233,12 +267,15 @@ const schema = GraphQLSchemaBuilder.empty
 // Router and server setup
 const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
   path: "/graphql",
-  graphiql: { path: "/graphiql", endpoint: "/graphql" },
+  graphiql: false,
 })
 
-const app = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const app = Layer.mergeAll(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  HttpRouter.add("GET", "/graphiql", HttpServerResponse.html(
+    graphiqlHtml("/graphql", "ws://localhost:4002/graphql")
+  )),
+  graphqlRouter
 )
 
 serve(app, Layer.empty, {
@@ -246,6 +283,12 @@ serve(app, Layer.empty, {
   subscriptions: { schema, path: "/graphql" },
 })
 ```
+
+The broker is created once at process startup, outside request and connection
+layers, so HTTP mutations and WebSocket subscriptions share the same PubSub.
+The explicit GraphiQL route sets its WebSocket URL directly; use `wss://` when
+serving behind HTTPS. The built-in GraphiQL configuration currently ignores a
+custom `subscriptionEndpoint`, so use this route when setting that URL explicitly.
 
 ## Testing Subscriptions
 

@@ -1,8 +1,53 @@
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect, Layer, Tracer } from "effect"
+import {
+  HttpRouter,
+  HttpServerError,
+  HttpServerRequest,
+  HttpServerRespondable,
+  HttpServerResponse,
+} from "effect/http"
+import { Cause, Effect, Layer, Schema, Tracer } from "effect"
 import type { GraphQLSchema } from "graphql"
 import { makeGraphQLRouter, type MakeGraphQLRouterOptions } from "@effect-gql/core/server"
 import { extractTraceContext, type TraceContext } from "./context-propagation"
+
+// Inspect only known HTTP errors: Respondable conversion can run user effects.
+const failureStatus = (cause: Cause.Cause<unknown>): number | undefined => {
+  let error: unknown
+  let hasFailure = false
+  let isDefect = false
+  let responseStatus: number | undefined
+  for (const reason of cause.reasons) {
+    if (reason._tag === "Fail") {
+      hasFailure = true
+      error = reason.error
+      isDefect = false
+    } else if (reason._tag === "Die") {
+      hasFailure = true
+      if (HttpServerResponse.isHttpServerResponse(reason.defect)) {
+        responseStatus = reason.defect.status
+      } else {
+        error = reason.defect
+        isDefect = true
+      }
+    }
+  }
+  if (responseStatus !== undefined) return responseStatus
+  if (!hasFailure) return undefined
+  if (HttpServerResponse.isHttpServerResponse(error)) return error.status
+  if (HttpServerError.isHttpServerError(error)) {
+    if (error.reason._tag === "RouteNotFound") return 404
+    if (error.reason._tag === "RequestParseError") {
+      return error.reason.reason === "BodyTooLarge" ? 413 : 400
+    }
+    return 500
+  }
+  if (HttpServerRespondable.isRespondable(error)) return undefined
+  if (!isDefect) {
+    if (Schema.isSchemaError(error)) return 400
+    if (Cause.isNoSuchElementError(error)) return 404
+  }
+  return 500
+}
 
 /**
  * Options for the traced GraphQL router
@@ -105,64 +150,17 @@ export const makeTracedGraphQLRouter = <R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
   options: TracedRouterOptions = {}
-): HttpRouter.HttpRouter<never, never> => {
-  const rootSpanName = options.rootSpanName ?? "graphql.http"
-
-  // Create the base router (handles GraphQL logic)
-  const baseRouter = makeGraphQLRouter(schema, layer, options)
-
-  // Convert base router to an HttpApp for Effect-based handling
-  const baseApp = HttpRouter.toHttpApp(baseRouter)
-
-  // Wrap with tracing
-  return HttpRouter.empty.pipe(
-    HttpRouter.all(
-      "*",
-      Effect.gen(function* () {
-        const request = yield* HttpServerRequest.HttpServerRequest
-
-        // Extract trace context from headers (if enabled)
-        const traceContext =
-          options.propagateContext !== false
-            ? yield* extractTraceContext.pipe(Effect.catchAll(() => Effect.succeed(null)))
-            : null
-
-        // Create span options with parent context if available
-        const spanOptions = createSpanOptions(traceContext, request, options)
-
-        // Execute the request inside a root span
-        return yield* Effect.withSpan(
-          rootSpanName,
-          spanOptions
-        )(
-          Effect.gen(function* () {
-            // Delegate to the base app (which handles the request from context)
-            const app = yield* baseApp
-            const response = yield* app.pipe(
-              Effect.catchTag("RouteNotFound", () =>
-                HttpServerResponse.text(JSON.stringify({ errors: [{ message: "Not Found" }] }), {
-                  status: 404,
-                  headers: { "content-type": "application/json" },
-                })
-              )
-            )
-
-            // Annotate span with response info
-            yield* Effect.annotateCurrentSpan("http.status_code", response.status)
-
-            return response
-          })
-        )
-      })
-    )
-  )
-}
+): Layer.Layer<never, never, HttpRouter.HttpRouter> =>
+  withTracedRouter(makeGraphQLRouter(schema, layer, options), options)
 
 /**
  * Wrap an existing HttpRouter with OpenTelemetry tracing.
  *
  * This is useful when you already have a router and want to add
  * request-level tracing without recreating it.
+ *
+ * Tracing wraps dispatch for the shared HttpRouter, including unmatched requests
+ * and routes merged alongside this layer. Install it once per router.
  *
  * @example
  * ```typescript
@@ -175,66 +173,33 @@ export const makeTracedGraphQLRouter = <R>(
  * })
  * ```
  */
-export const withTracedRouter = (
-  router: HttpRouter.HttpRouter<any, any>,
+export const withTracedRouter = <A, E, R>(
+  router: Layer.Layer<A, E, R>,
   options: {
     rootSpanName?: string
     rootSpanAttributes?: Record<string, string | number | boolean>
     propagateContext?: boolean
   } = {}
-): HttpRouter.HttpRouter<any, any> => {
-  const rootSpanName = options.rootSpanName ?? "graphql.http"
-
-  // Convert router to an HttpApp for Effect-based handling
-  const baseApp = HttpRouter.toHttpApp(router)
-
-  return HttpRouter.empty.pipe(
-    HttpRouter.all(
-      "*",
+): Layer.Layer<A, E, R | HttpRouter.HttpRouter> => {
+  const tracing = HttpRouter.middleware(
+    (httpEffect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
+        const traceContext = options.propagateContext !== false ? yield* extractTraceContext : null
+        const spanOptions = createSpanOptions(traceContext, request, options)
 
-        // Extract trace context from headers
-        const traceContext =
-          options.propagateContext !== false
-            ? yield* extractTraceContext.pipe(Effect.catchAll(() => Effect.succeed(null)))
-            : null
-
-        const spanOptions: {
-          attributes: Record<string, unknown>
-          parent?: Tracer.ExternalSpan
-        } = {
-          attributes: {
-            "http.method": request.method,
-            "http.url": request.url,
-            ...options.rootSpanAttributes,
-          },
-        }
-
-        if (traceContext && options.propagateContext !== false) {
-          spanOptions.parent = Tracer.externalSpan({
-            traceId: traceContext.traceId,
-            spanId: traceContext.parentSpanId,
-            sampled: (traceContext.traceFlags & 0x01) === 0x01,
-          })
-        }
-
-        return yield* Effect.withSpan(
-          rootSpanName,
-          spanOptions
-        )(
-          Effect.gen(function* () {
-            // Delegate to the base app (which handles the request from context)
-            const app = yield* baseApp
-            const response = yield* app
-
-            // Annotate span with response info
-            yield* Effect.annotateCurrentSpan("http.status_code", response.status)
-
-            return response
-          })
+        return yield* httpEffect.pipe(
+          Effect.onExit((exit) => {
+            const status = exit._tag === "Success" ? exit.value.status : failureStatus(exit.cause)
+            return status === undefined
+              ? Effect.void
+              : Effect.annotateCurrentSpan("http.status_code", status)
+          }),
+          Effect.withSpan(options.rootSpanName ?? "graphql.http", spanOptions)
         )
-      })
-    )
+      }),
+    { global: true }
   )
+
+  return Layer.merge(router, tracing)
 }

@@ -10,7 +10,6 @@ export default defineConfig({
   treeshake: true,
   external: [
     "effect",
-    "@effect/platform",
     "@effect/platform-bun",
     "@effect-gql/core",
     "graphql",

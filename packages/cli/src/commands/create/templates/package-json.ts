@@ -9,15 +9,14 @@ import type { ServerType, TemplateContext } from "../types"
  * Keep in sync with the main packages
  */
 const VERSIONS = {
-  core: "^1.5.0",
-  node: "^1.5.0",
-  bun: "^1.5.0",
-  express: "^1.5.0",
-  web: "^1.5.0",
-  effect: "^3.19.0",
-  platform: "^0.94.0",
-  platformNode: "^0.104.0",
-  platformBun: "^0.87.0",
+  core: "^2.0.0",
+  node: "^2.0.0",
+  bun: "^2.0.0",
+  express: "^2.0.0",
+  web: "^2.0.0",
+  effect: "^4.1.1",
+  platformNode: "^4.1.1",
+  platformBun: "^4.1.1",
   graphql: "^16.0.0",
   expressLib: "^5.0.0",
   tsx: "^4.19.0",
@@ -36,7 +35,6 @@ const getDependencies = (serverType: ServerType, _isMonorepo: boolean): Dependen
   // Always use published versions - workspace:* is only for effect-gql internal development
   const baseDeps: Record<string, string> = {
     "@effect-gql/core": VERSIONS.core,
-    "@effect/platform": VERSIONS.platform,
     effect: VERSIONS.effect,
     graphql: VERSIONS.graphql,
   }
@@ -145,6 +143,7 @@ export const generatePackageJson = (ctx: TemplateContext): string => {
     version: "0.0.1",
     private: true,
     type: "module",
+    engines: ctx.serverType === "bun" ? { bun: ">=1.4.2" } : { node: ">=22.19.0" },
     scripts: getScripts(ctx.serverType),
     dependencies: deps.dependencies,
     devDependencies: deps.devDependencies,

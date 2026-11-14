@@ -11,11 +11,11 @@ Effect GraphQL automatically converts Effect Schema definitions to GraphQL types
 
 | Effect Schema | GraphQL Type | Notes |
 |--------------|--------------|-------|
-| `S.String` | `GraphQLString` | Non-null by default |
-| `S.Number` | `GraphQLFloat` | JavaScript numbers are floats |
+| `S.String` | `GraphQLString` | Required struct fields are non-null; root/computed fields remain nullable |
+| `S.Number` | `GraphQLFloat` | Use `S.Int` for `GraphQLInt` |
 | `S.Boolean` | `GraphQLBoolean` | |
-| `S.BigInt` | `GraphQLString` | Serialized as string |
-| `S.Date` | `GraphQLString` | ISO 8601 format |
+| `S.BigInt` | Falls back to `GraphQLString` | No automatic bigint serialization; expose an explicit string instead |
+| `S.Date` | Falls back to `GraphQLString` | No automatic ISO serialization; expose an explicit ISO string instead |
 
 ### Examples
 
@@ -36,6 +36,11 @@ S.Struct({ active: S.Boolean })
 ```
 
 ## Nullability
+
+These types describe **fields inside a struct** (and corresponding required
+argument keys), not registered query, mutation, subscription, or computed fields.
+Those registered fields are nullable even when their schema is `S.String` or
+`S.Array(...)`: for example, `hello: String` and `users: [User]`.
 
 | Effect Schema | GraphQL Type |
 |--------------|--------------|
@@ -62,27 +67,34 @@ GraphQL doesn't distinguish between `null` and `undefined`. Both `NullOr` and `o
 
 | Effect Schema | GraphQL Type |
 |--------------|--------------|
-| `S.Array(S.String)` | `[String!]!` |
-| `S.NullOr(S.Array(S.String))` | `[String!]` |
+| `S.Array(S.String)` | `[String]!` |
+| `S.NullOr(S.Array(S.String))` | `[String]` |
 | `S.Array(S.NullOr(S.String))` | `[String]!` |
 
 ### Examples
 
 ```typescript
 S.Struct({
-  // Non-null array of non-null strings
-  tags: S.Array(S.String)
-  // → tags: [String!]!
+  // Required list; GraphQL still permits null elements
+  tags: S.Array(S.String),
+  // → tags: [String]!
 
-  // Nullable array of non-null strings
-  categories: S.NullOr(S.Array(S.String))
-  // → categories: [String!]
+  // Nullable list, also with nullable elements
+  categories: S.NullOr(S.Array(S.String)),
+  // → categories: [String]
 
-  // Non-null array of nullable strings
+  // Required list with explicitly nullable element schema
   aliases: S.Array(S.NullOr(S.String))
   // → aliases: [String]!
 })
 ```
+
+Tuples also map to homogeneous GraphQL lists, not positional GraphQL types. The first fixed element determines the list item type; the rest element is used only when there are no fixed elements. For example, `S.TupleWithRest(S.Tuple([S.Number]), [S.Int])` maps to a list of `Float`, preserving the valid value `[1.5, 2]` for both output and input. Effect Schema still validates the fixed and rest positions when decoding resolver arguments.
+
+For tuples with required elements after a variadic segment, input restoration
+uses each trailing schema at its position relative to the end of the list.
+Hidden tags and Options are restored with that position's schema before full
+Effect decoding; missing positions and invalid trailing values are still rejected.
 
 ## Structs (Object Types)
 
@@ -96,7 +108,9 @@ const UserSchema = S.Struct({
   age: S.optional(S.Number)
 })
 
-// Becomes:
+GraphQLSchemaBuilder.empty.objectType({ name: "User", schema: UserSchema })
+
+// With this explicit registration:
 // type User {
 //   id: String!
 //   name: String!
@@ -118,7 +132,11 @@ const UserSchema = S.Struct({
   address: AddressSchema
 })
 
-// Becomes:
+GraphQLSchemaBuilder.empty
+  .objectType({ name: "Address", schema: AddressSchema })
+  .objectType({ name: "User", schema: UserSchema })
+
+// With both types explicitly registered:
 // type Address {
 //   street: String!
 //   city: String!
@@ -129,6 +147,11 @@ const UserSchema = S.Struct({
 //   address: Address!
 // }
 ```
+
+Plain struct variable names are not runtime schema metadata. Register an explicit
+name as above or use a schema identifier annotation. Unregistered plain structs
+receive generated names such as `Object_<suffix>`; `objectType({ schema })`
+requires an explicit name unless the schema carries an inferred name.
 
 ## Tagged Types
 
@@ -172,7 +195,7 @@ objectType({ schema: User })  // Name "User" is inferred
 ### String Literals
 
 ```typescript
-const StatusSchema = S.Literal("ACTIVE", "INACTIVE", "PENDING")
+const StatusSchema = S.Literals(["ACTIVE", "INACTIVE", "PENDING"])
 
 // Register as enum:
 enumType({
@@ -181,7 +204,11 @@ enumType({
 })
 ```
 
-### Using S.Enums
+For input arguments, a literal union matches a registered enum only when its non-null literal values exactly match that enum's values. For example, registering `Status` with `["ACTIVE", "INACTIVE"]` maps `S.Literals(["ACTIVE", "INACTIVE"])` to `Status`, including nullable and optional forms. A different union such as `S.Literals(["ACTIVE", "PENDING"])` falls back to `String`, even though it shares `ACTIVE` with `Status`. Clients send `"PENDING"` as a string; Effect Schema still validates the original literal union before passing the decoded value to the resolver. The same matching applies inside arrays and to the encoded side of transformations.
+
+Unmatched multi-member input unions use the automatic converter's first-member fallback without looking up that member as an enum. This also applies to mixed unions: `S.Union([S.Literal("ACTIVE"), S.Number])` falls back to `String`, not a registered enum containing `ACTIVE`. Effect Schema still validates the original union after GraphQL input coercion.
+
+### Using S.Enum
 
 ```typescript
 enum Status {
@@ -189,7 +216,7 @@ enum Status {
   INACTIVE = "INACTIVE"
 }
 
-const StatusSchema = S.Enums(Status)
+const StatusSchema = S.Enum(Status)
 
 // Register as enum:
 enumType({
@@ -211,7 +238,7 @@ const DogSchema = S.TaggedStruct("Dog", {
   barks: S.Boolean
 })
 
-const PetSchema = S.Union(CatSchema, DogSchema)
+const PetSchema = S.Union([CatSchema, DogSchema])
 
 // Register types and union:
 objectType({ schema: CatSchema })
@@ -225,21 +252,18 @@ unionType({
 
 ## Input Types
 
-For input types (arguments), the mapping uses the "from" side of transformations:
+For input types (arguments), mapping uses the encoded representation of
+transformations. Schemas with an inferred metadata name append `Input`: a tagged
+`User` produces `User` for output and `UserInput` for input. Unnamed plain structs
+receive generated input names, not names derived from their JavaScript variables.
+An explicit `inputType({ name, schema })` registration takes precedence.
 
 ```typescript
-// Output: Returns Date object
-// Input: Accepts string, transforms to Date
-const DateSchema = S.Date
-
+// The encoded input is a string; the decoded argument is a Date.
 query("events", {
-  type: S.Array(EventSchema),
-  args: {
-    after: DateSchema  // Client sends ISO string
-  },
-  resolve: ({ after }) => {
-    // `after` is a Date object (transformed from string)
-  }
+  type: S.Array(S.String), // Explicit ISO strings for output
+  args: S.Struct({ after: S.DateFromString }),
+  resolve: ({ after }) => Effect.succeed([after.toISOString()]),
 })
 ```
 
@@ -251,7 +275,7 @@ Complex input structures:
 const CreateUserInputSchema = S.Struct({
   name: S.String,
   email: S.String,
-  role: S.optional(S.Literal("ADMIN", "USER"))
+  role: S.optional(S.Literals(["ADMIN", "USER"]))
 })
 
 inputType({
@@ -261,12 +285,33 @@ inputType({
 
 mutation("createUser", {
   type: UserSchema,
-  args: {
+  args: S.Struct({
     input: CreateUserInputSchema
-  },
+  }),
   resolve: ({ input }) => { ... }
 })
 ```
+
+### Composing Low-Level Helpers
+
+The configuration-free helpers `toGraphQLType`, `toGraphQLInputType`, and `toGraphQLArgs` reuse GraphQL types by directional schema identity, so repeated conversions compose without changing inferred names:
+
+```typescript
+import { toGraphQLType, toGraphQLInputType, toGraphQLObjectType, toGraphQLArgs } from "@effect-gql/core"
+
+const User = S.TaggedStruct("User", { id: S.String })
+const output = toGraphQLType(User)       // User
+const input = toGraphQLInputType(User)   // UserInput
+const firstArgs = toGraphQLArgs(S.Struct({ user: User }))
+const secondArgs = toGraphQLArgs(S.Struct({ user: User }))
+// Both argument maps reuse UserInput and can be composed in one GraphQL schema.
+
+const A = toGraphQLObjectType("A", S.Struct({ user: User }))
+const B = toGraphQLObjectType("B", S.Struct({ user: User }))
+// Nested types are scoped to their explicit root: A_User and B_User.
+```
+
+Only configuration-free conversions share their input/output caches. Each `toGraphQLObjectType` call owns its conversion state and additional fields; its configured GraphQL type is never shared globally. Explicit root names remain unchanged and scope their nested names, so independently configured helpers can coexist without leaking computed fields. Recursive references reuse one type within their conversion graph. Use the schema builder when registered names and computed fields should apply throughout the schema.
 
 ## Transformations
 
@@ -274,27 +319,26 @@ Effect Schema transformations are handled differently for input vs output:
 
 ### Output Types (Query/Field Results)
 
-Uses the "to" type (the transformed result):
+Mapping follows the decoded type, but resolver results are **not generally run
+through the schema's encoder**. In particular, `S.DateFromString` does not promise
+ISO output and `S.BigIntFromString` does not serialize bigint results automatically.
+Return an explicit GraphQL-compatible representation:
 
 ```typescript
-const DateSchema = S.transform(
-  S.String,     // "from" type
-  S.Date,       // "to" type
-  (s) => new Date(s),
-  (d) => d.toISOString()
-)
-
-// Output: Returns JavaScript Date → serialized as String
 query("now", {
-  type: DateSchema,
-  resolve: () => Effect.succeed(new Date())
+  type: S.String,
+  resolve: () => Effect.sync(() => new Date().toISOString()),
 })
-// Returns: "2024-01-15T10:30:00.000Z"
+// Returns an ISO string, e.g. "2024-01-15T10:30:00.000Z"
 ```
+
+Top-level Option results receive special handling to expose `None` as `null` and
+`Some` as its value. That handling is not a general-purpose output codec encoder,
+nor a recursive encoder for every property in returned objects.
 
 ### Input Types (Arguments)
 
-Uses the "from" type (what client sends):
+Uses the encoded type (what the client sends):
 
 ```typescript
 // Client sends: { after: "2024-01-15T00:00:00.000Z" }
@@ -303,29 +347,22 @@ Uses the "from" type (what client sends):
 
 ## Custom Scalars
 
-For custom scalar types, use transformations:
+Transformations are useful for **input decoding**, not for registering a new
+GraphQL scalar or automatically serializing custom output values:
 
 ```typescript
-// BigInt as string
-const BigIntSchema = S.transform(
-  S.String,
-  S.BigInt,
-  (s) => BigInt(s),
-  (n) => n.toString()
-)
-
-// JSON as string
-const JsonSchema = S.transform(
-  S.String,
-  S.Unknown,
-  (s) => JSON.parse(s),
-  (v) => JSON.stringify(v)
-)
+query("increment", {
+  type: S.String,
+  args: S.Struct({ value: S.BigIntFromString }),
+  resolve: ({ value }) => Effect.succeed((value + 1n).toString()),
+})
 ```
 
-<Aside type="tip">
-Custom scalars are serialized using the "to" function of the transformation when sending responses, and deserialized using the "from" function when receiving arguments.
-</Aside>
+Clients send a string, the resolver receives a bigint, and the resolver explicitly
+returns a string. JSON can similarly be accepted with
+`S.fromJsonString(S.Unknown)` as an argument decoder. For JSON responses, use a
+string output schema and explicit `JSON.stringify`, rather than relying on codec
+encoding.
 
 ## Type Resolution Order
 
@@ -348,29 +385,62 @@ objectType({
 // instead of automatic conversion
 ```
 
+Registrations match schema identity, not structural similarity. `S.optionalKey(UserSchema)` changes field nullability without losing the registered object's computed fields, interface identity, or input type. A separate `S.Struct` with the same properties remains a separate type.
+
+Exact schema and original-AST registrations take precedence over directional projection aliases. Distinct transformation wrappers can therefore have separate object, interface, or input registrations even when they share a decoded or encoded representation. Their registered names and computed fields are preserved at root fields and nested references, including optional keys and lists. Use the original registered wrapper when its identity matters: a projection alone cannot distinguish wrappers that share that projection.
+
+This includes separate `X.pipe(S.decodeTo(Y))` wrappers that reuse the same `X` and `Y` schemas and the default transformation. `S.optionalKey`, `S.mutableKey`, and their combinations retain the originating wrapper's registration rather than merging wrappers with shared transformations.
+
+Input key codecs preserve this exact-registration precedence before projecting
+to their encoded representation. In particular, `S.OptionFromOptionalKey(codec)`
+keeps the input name registered for `codec`. Two registered codecs sharing an
+encoded schema still expose their own input names when wrapped this way,
+independent of registration order.
+
+Output Option wrappers retain the registration of their original value codec, including when `S.toType(codec)` was registered first under a different name. This applies to object and interface registrations in root and nested fields: `S.Option(codec)`, `S.OptionFromNullOr(codec)`, the undefined/nullish variants, and the optional-key variants select the original codec's registered type and computed fields rather than its projection's registration. Option fields remain nullable; for example, `S.OptionFromNullOr(codec)` exposes `None` as GraphQL `null`.
+
+Output registrations apply only to the decoded representation. Registering an object decoded from a string does not turn unrelated string fields into that object. Input registrations apply to the encoded representation. Recursive input references reuse the registered input object, and inferred output types share one conversion context across registered fields and root operations.
+
+Within a builder, inferred types also share their directional projection identity: using a schema alongside `S.toType(schema)` for outputs, or alongside `S.toEncoded(schema)` for inputs, reuses the corresponding GraphQL type. Projection does not merge unrelated schemas with the same shape or schemas with different annotations, and optional keys retain their field nullability.
+
 ## Limitations
 
 Some Schema features don't have direct GraphQL equivalents:
 
 | Effect Schema | Handling |
 |--------------|----------|
-| `S.Tuple` | Converted to `[T!]!` (loses positional info) |
+| `S.Tuple` / `S.TupleWithRest` | Homogeneous list using the first fixed element, or the rest element when no fixed elements exist; loses positional info |
 | `S.Record` | Not directly supported |
-| `S.Map` | Not directly supported |
-| `S.Set` | Converted to array |
-| Refinements | Validation runs, no schema change |
+| `S.ReadonlyMap` / `S.HashMap` | No automatic GraphQL map representation |
+| `S.ReadonlySet` / `S.HashSet` | No automatic conversion to GraphQL lists; expose arrays explicitly |
+| Refinements | Argument validation runs; most checks do not change SDL (`S.Int` is recognized) |
 | Brands | Ignored at GraphQL level |
 
 ### Workarounds
 
-For unsupported types, use transformations:
+An array-to-Record transformation works for **input decoding only**. Its encoded
+side is a GraphQL list; the decoded Record is not a valid GraphQL object output.
 
 ```typescript
-// Record as array of key-value pairs
-const MetadataSchema = S.transform(
-  S.Array(S.Struct({ key: S.String, value: S.String })),
-  S.Record(S.String, S.String),
-  (arr) => Object.fromEntries(arr.map(({ key, value }) => [key, value])),
-  (obj) => Object.entries(obj).map(([key, value]) => ({ key, value }))
+// Accept key-value pairs as input, decode them into a Record.
+import * as SchemaGetter from "effect/SchemaGetter"
+
+const MetadataEntries = S.Array(S.Struct({ key: S.String, value: S.String }))
+const MetadataInput = MetadataEntries.pipe(
+  S.decodeTo(S.Record(S.String, S.String), {
+    decode: SchemaGetter.transform((arr) =>
+      Object.fromEntries(arr.map(({ key, value }) => [key, value]))),
+    encode: SchemaGetter.transform((obj) =>
+      Object.entries(obj).map(([key, value]) => ({ key, value }))),
+  })
 )
+
+// For responses use the actual list schema and convert explicitly.
+const metadata: Record<string, string> = { theme: "dark" }
+query("metadata", {
+  type: MetadataEntries,
+  resolve: () => Effect.succeed(
+    Object.entries(metadata).map(([key, value]) => ({ key, value }))
+  ),
+})
 ```

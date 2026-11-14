@@ -23,7 +23,7 @@ import * as S from "effect/Schema"
 
 ### With Arguments
 
-Arguments are passed to the resolver function and are automatically validated:
+Arguments are decoded and validated with the entire Effect Schema before the resolver runs:
 
 ```typescript
 .query("greet", {
@@ -33,18 +33,70 @@ Arguments are passed to the resolver function and are automatically validated:
 })
 ```
 
-The `args` object is fully typed based on your schema.
+The `args` object is fully typed based on the **decoded** schema. GraphQL inputs use the schema's encoded representation, while resolvers receive its decoded values, including transformations and decoding defaults:
+
+```typescript
+.query("double", {
+  type: S.Number,
+  args: S.Struct({ amount: S.NumberFromString }),
+  resolve: ({ amount }) => Effect.succeed(amount + amount),
+})
+```
+
+The GraphQL query `{ double(amount: "21") }` returns `42`, not `"2121"`.
+
+This decoding applies to query, mutation, and object-field resolvers, as well as subscription `subscribe` and custom `resolve` callbacks. A subscription decodes its arguments **once when the operation starts**: every event's custom resolver and middleware receives that operation's same decoded argument object. Decoding defaults and transformations do not run again for each event. Concurrent subscriptions may share services and documents, but each must use a **fresh context returned by `makeSubscriptionContext({ services, ...extraProperties })`**, imported from `@effect-gql/core`. The built-in transports call this factory per operation, not per connection; direct callers must follow the [native subscription context contract](/guides/subscriptions/#native-graphql-subscriptions).
+
+Middleware receives the same decoded arguments as the callback it wraps. Decoders run with the request's services, so effectful schema transformations can use request-scoped dependencies. Invalid inputs produce GraphQL errors without invoking the callback. Fields without an `args` schema skip decoding.
+
+Argument schemas preserve their decoding-service requirements in the builder's
+type parameter, even when the resolver itself requires no services. This applies
+to method and pipe APIs, inline object fields, and federated builders. `toRouter`
+requires a layer supplying both decoder and resolver dependencies.
+
+Reusable configurations annotated with `FieldRegistration`,
+`ObjectFieldRegistration`, or `SubscriptionFieldRegistration` default their
+argument-decoder services to `never`. Pure typed configurations therefore add no
+decoder requirements. When explicitly annotating a configuration with an
+effectful argument decoder, supply its services in the final generic parameter;
+those requirements accumulate alongside the resolver's services.
+
+For subscription events, `info.rootValue` is the original emitted payload throughout GraphQL execution: middleware `match(info)` and `apply(effect, context)`, nested computed fields, native GraphQL resolvers, and abstract-type callbacks all see that same root. Object payload identity is preserved, even when the custom subscription resolver transforms the value used as nested fields' parent. Primitive, null, and undefined payloads are not wrapped. Subscription setup middleware still sees the operation's initial root value, before any events are emitted.
+
+Async resolver wrappers may delay or reorder event resolution without changing which decoded arguments an operation receives. They must forward the exact factory-returned operation context to the wrapped resolver. Ordinary objects and spread copies are rejected, while freezing the actual returned object is supported. A context is claimed once before argument decoding and cannot be reused even after setup fails, the operation completes, or it is cancelled. The factory creates only a shallow wrapper: services and extra values retain their references without rebuilding service layers. Arguments are associated with that context, not the payload, document, or event timing.
+
+`S.Option(inner)` inputs use GraphQL's nullable representation, not an Effect `Option` object. A supplied value is decoded through `inner` and delivered as `Option.some(value)`; `null` or an omitted required Option argument becomes `Option.none()`. This also works inside nested objects, lists, classes, and recursive inputs. Codecs such as `S.OptionFromNullOr(inner)` retain their existing null encoding rather than being wrapped twice. Genuinely optional keys remain absent when omitted, so schema decoding defaults and optional-key codecs keep their normal behavior.
+Argument presence is determined by own properties: legal names such as `toString`
+and `constructor` follow the same omission rules, without treating inherited
+JavaScript properties as supplied values. This includes omitted optional and
+defaulted keys: optional keys stay absent, and decoding defaults still apply,
+both at the argument root and in nested inputs.
+
+For `S.optional(S.Option(S.String))`, omission leaves the key absent, an explicit
+`null` becomes `Option.none()`, and a string becomes `Option.some(value)`. This
+applies to query, computed-field, and subscription arguments. If the schema has
+an explicit null branch, such as `S.NullOr(S.Option(S.String))`, `null` remains
+`null` instead.
+
+Omitting a required `S.OptionFromUndefinedOr(inner)` input restores its encoded
+`undefined` value before decoding, producing `Option.none()`. Required encodings
+that explicitly include `undefined` or `void` behave similarly; genuinely optional
+keys remain absent, and defaults still apply. Other required keys are not filled
+with `undefined`.
+
+Tagged schemas keep their literal `_tag` discriminators even though GraphQL does not expose those fields as inputs. The framework restores those encoded discriminator literals before decoding, including inside Option values. All normalized inputs still pass through the entire argument schema's validation and transformations before any typed callback runs.
 
 ### Field Resolvers
 
-Field resolvers on object types receive the parent value:
+Field resolvers on object types receive the parent value. For separately
+registered fields, annotate the parent explicitly; the `"User"` string does not
+infer its type. Inline `objectType` fields infer it from their schema.
 
 ```typescript
-.field("User", "fullName", {
+.field("User", "displayName", {
   type: S.String,
-  resolve: (parent) => Effect.succeed(
-    `${parent.firstName} ${parent.lastName}`
-  ),
+  resolve: (parent: S.Schema.Type<typeof UserSchema>) =>
+    Effect.succeed(parent.name.toUpperCase()),
 })
 ```
 
@@ -57,30 +109,33 @@ With arguments:
     limit: S.optional(S.Int),
     offset: S.optional(S.Int),
   }),
-  resolve: (parent, args) => Effect.succeed(
-    posts
-      .filter(p => p.authorId === parent.id)
-      .slice(args.offset ?? 0, args.limit)
-  ),
+  resolve: (parent: S.Schema.Type<typeof UserSchema>, args) => {
+    const offset = args.offset ?? 0
+    return Effect.succeed(
+      posts
+        .filter(p => p.authorId === parent.id)
+        .slice(offset, args.limit === undefined ? undefined : offset + args.limit)
+    )
+  },
 })
 ```
 
 ## Service Injection
 
-The real power of Effect resolvers is service injection. Define services with Effect's `Context.Tag`:
+The real power of Effect resolvers is service injection. Define services with Effect's `Context.Service`:
 
 ```typescript
 import { Context, Layer } from "effect"
 
 // Define a service interface
-class UserService extends Context.Tag("UserService")<
+class UserService extends Context.Service<
   UserService,
   {
     readonly getAll: () => Effect.Effect<User[]>
     readonly getById: (id: string) => Effect.Effect<User | null>
     readonly create: (name: string, email: string) => Effect.Effect<User>
   }
->() {}
+>()("UserService") {}
 ```
 
 Use services in resolvers with `Effect.gen`:
@@ -132,8 +187,12 @@ const result = await Effect.runPromise(
 ```
 
 <Aside>
-  The builder's type parameter `R` accumulates all service requirements as you add resolvers.
-  TypeScript will error if you forget to provide a required service at execution time.
+  The builder's type parameter `R` accumulates resolver and argument-decoder service requirements.
+  `toRouter(builder, layer)` requires those application services from the layer,
+  while `GraphQLRequestContext` and `HttpRouter.Provided` services are supplied by
+  HTTP dispatch. Calling `buildSchema()` returns a standard `GraphQLSchema`, which does not retain this
+  type information; when using `execute(schema, layer)` or another bare-schema API,
+  you must supply the required services yourself.
 </Aside>
 
 ## Effect Composition
@@ -190,9 +249,7 @@ resolve: (args) => Effect.gen(function* () {
 
   return user
 }).pipe(
-  Effect.catchTag("DatabaseError", (e) =>
-    Effect.fail(new GraphQLError({ message: "Database unavailable" }))
-  )
+  Effect.tapError((error) => Effect.logError("User lookup failed", error))
 )
 ```
 
@@ -217,22 +274,22 @@ const result = await Effect.runPromise(
 
 ### How It Works
 
-1. Creates an Effect runtime from your Layer
-2. Passes the runtime to GraphQL via context
-3. Each resolver receives the runtime and runs its Effect
+1. Builds an Effect service context from your Layer
+2. Passes the services to GraphQL via context
+3. Each resolver runs its Effect with those services
 4. Services are available throughout the request
 
 ```typescript
 // Simplified internal flow
 execute(schema, layer)(query, variables) =>
   Effect.gen(function* () {
-    const runtime = yield* Effect.runtime<R>()
+    const services = yield* Effect.context<R>()
     const result = yield* Effect.promise(() =>
       graphql({
         schema,
         source: query,
         variableValues: variables,
-        contextValue: { runtime },
+        contextValue: { services },
       })
     )
     return result
@@ -247,7 +304,7 @@ Access request-scoped data using `GraphQLRequestContext`:
 import { GraphQLRequestContext, makeRequestContextLayer } from "@effect-gql/core"
 
 .query("me", {
-  type: UserSchema,
+  type: S.NullOr(UserSchema),
   resolve: () => Effect.gen(function* () {
     const ctx = yield* GraphQLRequestContext
     const authHeader = ctx.request.headers["authorization"]
@@ -304,4 +361,8 @@ const withBoth = withUserQuery.query("posts", {
 })
 ```
 
-When you call `execute(schema, layer)`, TypeScript verifies that `layer` provides all required services.
+Pass `withBoth` to `toRouter(withBoth, layer)` to check that the layer supplies
+the builder's application services. After `buildSchema()`, the bare
+`GraphQLSchema` no longer carries those requirements: `execute(schema, layer)`
+cannot verify that its layer is complete. Missing services become execution
+errors, so bare-schema callers must supply every resolver and decoder dependency.

@@ -309,7 +309,7 @@ describe("LoaderRegistry.load (single)", () => {
         const loaders = yield* registry.Service
         return yield* Effect.tryPromise(() => loaders.UserById.load("nonexistent")).pipe(
           Effect.map(() => ({ error: null })),
-          Effect.catchAll((e) => Effect.succeed({ error: e }))
+          Effect.catch((e) => Effect.succeed({ error: e }))
         )
       }).pipe(Effect.provide(registry.toLayer()))
     )
@@ -416,7 +416,7 @@ describe("LoaderRegistry.loadMany", () => {
 
     const result = await Effect.runPromise(
       registry.loadMany("UserById", ["1", "nonexistent"]).pipe(
-        Effect.catchAll((e) => Effect.succeed({ error: e })),
+        Effect.catch((e) => Effect.succeed({ error: e })),
         Effect.provide(registry.toLayer())
       )
     )
@@ -484,6 +484,89 @@ describe("LoaderRegistry.use", () => {
     )
 
     expect(result).toEqual(["Alice", "Bob"])
+  })
+})
+
+describe("LoaderRegistry error recovery", () => {
+  it("should make a missing key recoverable through the typed error channel", async () => {
+    const registry = Loader.define({
+      UserById: Loader.single<string, User>({
+        batch: () => Effect.succeed(testUsers),
+        key: (user) => user.id,
+      }),
+    })
+
+    const result = await Effect.runPromise(
+      registry.load("UserById", "missing").pipe(
+        Effect.catch((error) => Effect.succeed({ message: error.message })),
+        Effect.provide(registry.toLayer())
+      )
+    )
+
+    expect(result).toEqual({ message: "Not found: missing" })
+  })
+
+  it.each(["load", "loadMany", "use"] as const)(
+    "should make batch failures recoverable through %s",
+    async (method) => {
+      const registry = Loader.define({
+        UserById: Loader.single<string, User>({
+          batch: () => Effect.fail(new Error("Database unavailable")),
+          key: (user) => user.id,
+        }),
+      })
+      const effect =
+        method === "load"
+          ? registry.load("UserById", "1")
+          : method === "loadMany"
+            ? registry.loadMany("UserById", ["1", "2"])
+            : registry.use((loaders) => loaders.UserById.load("1"))
+
+      const result = await Effect.runPromise(
+        effect.pipe(
+          Effect.as("loaded"),
+          Effect.catch((error) => Effect.succeed(error.message)),
+          Effect.provide(registry.toLayer())
+        )
+      )
+
+      expect(result).toBe("Database unavailable")
+    }
+  )
+
+  it("should preserve Error values rejected by use callbacks", async () => {
+    const registry = Loader.define({})
+    const failure = new Error("Callback failed")
+
+    const result = await Effect.runPromise(
+      registry
+        .use(() => Promise.reject(failure))
+        .pipe(
+          Effect.catch((error) => Effect.succeed(error)),
+          Effect.provide(registry.toLayer())
+        )
+    )
+
+    expect(result).toBe(failure)
+  })
+
+  it("should normalize synchronous callback throws into recoverable Errors", async () => {
+    const registry = Loader.define({})
+
+    const result = await Effect.runPromise(
+      registry
+        .use(() => {
+          throw "Callback failed"
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.succeed({ isError: error instanceof Error, message: error.message })
+          ),
+          Effect.provide(registry.toLayer())
+        )
+    )
+
+    expect(result).toEqual({ isError: true, message: "Callback failed" })
   })
 })
 
@@ -607,7 +690,7 @@ describe("Service integration", () => {
     getUsersByIds: (ids: readonly string[]) => Effect.Effect<readonly User[], Error>
   }
 
-  const DatabaseService = Context.GenericTag<DatabaseService>("DatabaseService")
+  const DatabaseService = Context.Service<DatabaseService>("DatabaseService")
 
   it("should integrate with Effect services", async () => {
     const registry = Loader.define({
@@ -655,7 +738,7 @@ describe("Service integration", () => {
         const loaders = yield* registry.Service
         return yield* Effect.tryPromise(() => loaders.UserById.load("1")).pipe(
           Effect.map(() => ({ error: null })),
-          Effect.catchAll((e) => Effect.succeed({ error: e }))
+          Effect.catch((e) => Effect.succeed({ error: e }))
         )
       }).pipe(Effect.provide(registry.toLayer()), Effect.provide(failingDbLayer))
     )

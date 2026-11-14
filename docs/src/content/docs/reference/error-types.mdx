@@ -5,7 +5,7 @@ description: Built-in error classes for structured error handling
 
 import { Aside } from '@astrojs/starlight/components';
 
-Effect GraphQL provides built-in error types using Effect's `Data.TaggedError`. These errors integrate with GraphQL's error handling and provide structured information in responses.
+Effect GraphQL provides tagged application errors using Effect's `Data.TaggedError`. Their messages appear in GraphQL errors; only explicit `extensions` are forwarded as response metadata.
 
 ## Import
 
@@ -22,13 +22,13 @@ import {
 
 ### `GraphQLError`
 
-The base error type for all GraphQL-related errors.
+An error type for GraphQL-related failures with explicit response extensions. The specialized errors below are independent tagged errors, not subclasses of this class.
 
 ```typescript
 class GraphQLError extends Data.TaggedError("GraphQLError")<{
   readonly message: string
   readonly extensions?: Record<string, unknown>
-}>
+}> {}
 ```
 
 **Usage:**
@@ -72,8 +72,7 @@ For input validation failures.
 class ValidationError extends Data.TaggedError("ValidationError")<{
   readonly message: string
   readonly field?: string
-  readonly extensions?: Record<string, unknown>
-}>
+}> {}
 ```
 
 **Usage:**
@@ -83,7 +82,7 @@ import { ValidationError } from "@effect-gql/core"
 
 mutation("createUser", {
   type: UserSchema,
-  args: { email: S.String },
+  args: S.Struct({ email: S.String }),
   resolve: ({ email }) => Effect.gen(function* () {
     if (!email.includes("@")) {
       return yield* Effect.fail(
@@ -103,11 +102,7 @@ mutation("createUser", {
 ```json
 {
   "errors": [{
-    "message": "Invalid email format",
-    "extensions": {
-      "code": "VALIDATION_ERROR",
-      "field": "email"
-    }
+    "message": "Invalid email format"
   }]
 }
 ```
@@ -119,8 +114,7 @@ For access control failures.
 ```typescript
 class AuthorizationError extends Data.TaggedError("AuthorizationError")<{
   readonly message: string
-  readonly extensions?: Record<string, unknown>
-}>
+}> {}
 ```
 
 **Usage:**
@@ -149,10 +143,7 @@ query("adminStats", {
 ```json
 {
   "errors": [{
-    "message": "Admin access required",
-    "extensions": {
-      "code": "AUTHORIZATION_ERROR"
-    }
+    "message": "Admin access required"
   }]
 }
 ```
@@ -164,10 +155,8 @@ For missing resources.
 ```typescript
 class NotFoundError extends Data.TaggedError("NotFoundError")<{
   readonly message: string
-  readonly resourceType?: string
-  readonly resourceId?: string
-  readonly extensions?: Record<string, unknown>
-}>
+  readonly resource?: string
+}> {}
 ```
 
 **Usage:**
@@ -177,7 +166,7 @@ import { NotFoundError } from "@effect-gql/core"
 
 query("user", {
   type: UserSchema,
-  args: { id: S.String },
+  args: S.Struct({ id: S.String }),
   resolve: ({ id }) => Effect.gen(function* () {
     const db = yield* Database
     const user = yield* db.findUser(id)
@@ -185,8 +174,7 @@ query("user", {
       return yield* Effect.fail(
         new NotFoundError({
           message: `User not found: ${id}`,
-          resourceType: "User",
-          resourceId: id
+          resource: "User"
         })
       )
     }
@@ -200,19 +188,14 @@ query("user", {
 ```json
 {
   "errors": [{
-    "message": "User not found: 123",
-    "extensions": {
-      "code": "NOT_FOUND",
-      "resourceType": "User",
-      "resourceId": "123"
-    }
+    "message": "User not found: 123"
   }]
 }
 ```
 
 ## Creating Custom Errors
 
-Extend the base error or create new tagged errors:
+Create tagged errors for application recovery. Arbitrary fields and tags are not automatically serialized:
 
 ```typescript
 import { Data } from "effect"
@@ -239,14 +222,22 @@ const resolver = () => Effect.fail(
 ```json
 {
   "errors": [{
-    "message": "Rate limit exceeded",
-    "extensions": {
-      "code": "RATE_LIMIT_ERROR",
-      "retryAfter": 60,
-      "limit": 100
-    }
+    "message": "Rate limit exceeded"
   }]
 }
+```
+
+To expose `retryAfter`, map the application error to a base `GraphQLError`:
+
+```typescript
+operation.pipe(
+  Effect.catchTag("RateLimitError", (error) =>
+    Effect.fail(new GraphQLError({
+      message: error.message,
+      extensions: { code: "RATE_LIMITED", retryAfter: error.retryAfter }
+    }))
+  )
+)
 ```
 
 ## Error Handling Patterns
@@ -259,7 +250,7 @@ import { NotFoundError } from "@effect-gql/core"
 
 query("userOrDefault", {
   type: UserSchema,
-  args: { id: S.String },
+  args: S.Struct({ id: S.String }),
   resolve: ({ id }) =>
     getUserById(id).pipe(
       Effect.catchTag("NotFoundError", () =>
@@ -274,9 +265,9 @@ query("userOrDefault", {
 ```typescript
 import { Effect } from "effect"
 
-const resolve = ({ id }) =>
+const resolve = ({ id }: { id: string }) =>
   db.findUser(id).pipe(
-    Effect.catchAll((dbError) =>
+    Effect.catch((dbError) =>
       Effect.fail(
         new GraphQLError({
           message: "Database error",
@@ -298,7 +289,7 @@ type ResolverError =
   | AuthorizationError
   | NotFoundError
 
-const resolver = (): Effect.Effect<User, ResolverError, Database> =>
+const resolver = (): Effect.Effect<User, ResolverError, Database | AuthContext> =>
   Effect.gen(function* () {
     const auth = yield* AuthContext
     if (!auth.user) {
@@ -312,43 +303,35 @@ const resolver = (): Effect.Effect<User, ResolverError, Database> =>
 
 ## Error Serialization
 
-Errors are automatically serialized to GraphQL error format:
+GraphQL reports the rejected resolver error's message and any explicit extensions:
 
 | Error Property | GraphQL Location |
 |---------------|------------------|
 | `message` | `errors[].message` |
-| `_tag` | `errors[].extensions.code` |
-| Other fields | `errors[].extensions.*` |
+| `extensions` | `errors[].extensions` (when explicitly present) |
+| `_tag`, `field`, `resource`, other fields | Not automatically serialized |
 
-<Aside type="note">
-The error's `_tag` is converted to a `code` in extensions using SCREAMING_SNAKE_CASE. For example, `NotFoundError` becomes `NOT_FOUND`.
-</Aside>
+`ValidationError`, `AuthorizationError`, and `NotFoundError` do not accept an
+`extensions` field. Use the base `GraphQLError` to send a client-facing code.
 
 ## Effect Schema Validation Errors
 
-When Effect Schema validation fails on input arguments, a `ValidationError` is automatically generated:
+Input decoding failures are returned directly as GraphQL errors, not converted to the library's `ValidationError`. For example:
 
 ```typescript
 mutation("createUser", {
   type: UserSchema,
-  args: {
-    age: S.Number.pipe(S.int(), S.positive())
-  },
-  resolve: ({ age }) => { ... }
+  args: S.Struct({
+    age: S.Int.check(S.isGreaterThan(0))
+  }),
+  resolve: ({ age }) => UserService.create({ age })
 })
 
-// Client sends: { age: -5 }
-// Response:
-{
-  "errors": [{
-    "message": "Expected positive number, got -5",
-    "extensions": {
-      "code": "VALIDATION_ERROR",
-      "field": "age"
-    }
-  }]
-}
 ```
+
+Passing `age: -5` produces an Effect Schema decoding message (for example,
+`Expected a value greater than 0` with a path to `age`), without automatic
+`extensions.code` or `extensions.field`. Message wording belongs to Effect Schema.
 
 ## Best Practices
 
@@ -358,8 +341,7 @@ mutation("createUser", {
 // Good - Specific error type
 Effect.fail(new NotFoundError({
   message: "User not found",
-  resourceType: "User",
-  resourceId: id
+  resource: "User"
 }))
 
 // Avoid - Generic error
@@ -369,10 +351,11 @@ Effect.fail(new Error("User not found"))
 ### 2. Include Helpful Extensions
 
 ```typescript
-new ValidationError({
+new GraphQLError({
   message: "Invalid email format",
-  field: "email",
   extensions: {
+    code: "VALIDATION_ERROR",
+    field: "email",
     expected: "valid email address",
     received: email,
     suggestion: "Check for missing @ symbol"
@@ -399,10 +382,10 @@ new GraphQLError({
 ```typescript
 const resolver = () =>
   internalOperation().pipe(
-    Effect.catchAll((error) =>
+    Effect.catch((error) =>
       Effect.gen(function* () {
         // Log internally
-        yield* Logger.error("Internal error", { error })
+        yield* Effect.logError("Internal error", { error })
 
         // Return sanitized error
         return yield* Effect.fail(

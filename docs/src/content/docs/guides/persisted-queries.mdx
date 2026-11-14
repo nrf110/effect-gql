@@ -38,14 +38,17 @@ Safelist mode only allows pre-registered queries (recommended for production):
 ```typescript
 import { makePersistedQueriesRouter, makeSafelistStore } from "@effect-gql/persisted-queries"
 import { serve } from "@effect-gql/node"
+import { createHash } from "node:crypto"
+
+const getUser = "query GetUser($id: ID!) { user(id: $id) { name email } }"
+const getPosts = "query GetPosts { posts { title author { name } } }"
+const hash = (query: string) => createHash("sha256").update(query).digest("hex")
 
 const router = makePersistedQueriesRouter(schema, serviceLayer, {
   mode: "safelist",
   store: makeSafelistStore({
-    "ecf4edb46db40b5132295c0291d62fb65d6759a9eedfa4d5d612dd5ec54a6b38":
-      "query GetUser($id: ID!) { user(id: $id) { name email } }",
-    "a1b2c3d4e5f6...":
-      "query GetPosts { posts { title author { name } } }",
+    [hash(getUser)]: getUser,
+    [hash(getPosts)]: getPosts,
   }),
   graphiql: { path: "/graphiql" },
 })
@@ -54,6 +57,18 @@ serve(router, serviceLayer, { port: 4000 })
 ```
   </TabItem>
 </Tabs>
+
+Resolvers and lifecycle extension hooks retain the current HTTP request and
+middleware-provided services alongside the router's service layer. These services
+remain available for both full-query registration and hash-only requests; the
+router's layer takes precedence if it provides the same service.
+
+Each executing request builds a fresh instance of the resolver layer, including
+hash-only requests. Reusing the same layer in the surrounding HTTP application
+does not share resolver caches or authentication state between requests.
+Dependencies remain memoized within a request, and scoped resources are released
+after execution and lifecycle hooks, including error responses. Application-owned
+instances remain alive until the application itself is disposed.
 
 ## How It Works
 
@@ -97,7 +112,11 @@ When `enableGet: true`, clients can send queries via GET requests:
 GET /graphql?extensions={"persistedQuery":{"version":1,"sha256Hash":"abc123"}}
 ```
 
-This enables CDN caching since the URL uniquely identifies the query.
+For safe CDN caching, the cache key must include the full query string, including
+`extensions`, `variables`, and `operationName`, and the origin must opt into public
+caching. A query hash alone does not identify the variables or the viewer's
+authorization state. See [CDN configuration](/effect-gql/guides/response-caching#cdn-configuration)
+before enabling shared caching.
 
 ## Operating Modes
 
@@ -137,9 +156,20 @@ makePersistedQueriesRouter(schema, serviceLayer, {
 })
 ```
 
+The safelist applies to both GET and POST requests, even when the APQ extension is
+absent or malformed. Plain query text is hashed with the configured `hashAlgorithm`
+and must match an entry in the store before it can execute. When a valid APQ
+extension supplies a known hash, the router executes the **stored query**, not any
+client-supplied query text.
+
+An unknown hash returns `PERSISTED_QUERY_NOT_ALLOWED` whether or not the request
+includes query text. Safelist mode never registers queries at runtime or asks the
+client to retry with query text. `validateHash: false` only affects APQ registration;
+it does not disable safelist enforcement.
+
 **Pros:**
 - Complete control over allowed queries
-- Prevents malicious queries
+- Prevents execution of unregistered query text (authorization and variable validation are still required)
 - Query complexity is known in advance
 
 **Cons:**
@@ -194,26 +224,44 @@ Implement the `PersistedQueryStore` interface for Redis, database, or other back
 
 ```typescript
 import { Context, Effect, Layer, Option } from "effect"
-import { PersistedQueryStore } from "@effect-gql/persisted-queries"
+import { PersistedQueryStore, makePersistedQueriesRouter } from "@effect-gql/persisted-queries"
 
-// Example: Redis-backed store
-const RedisStore = Layer.succeed(PersistedQueryStore, {
-  get: (hash) => Effect.gen(function* () {
+// Application adapter contract; RedisClientLive supplies your actual Redis driver.
+class RedisClient extends Context.Service<RedisClient, {
+  get: (key: string) => Effect.Effect<string | null, Error>
+  set: (key: string, value: string, options: { ex: number }) => Effect.Effect<void, Error>
+  exists: (key: string) => Effect.Effect<number, Error>
+}>()("RedisClient") {}
+
+const RedisStore = Layer.effect(
+  PersistedQueryStore,
+  Effect.gen(function* () {
+    // Capture the client once when the store layer is acquired.
     const redis = yield* RedisClient
-    const query = yield* redis.get(`pq:${hash}`)
-    return query ? Option.some(query) : Option.none()
-  }),
+    return {
+      get: (hash: string) => redis.get(`pq:${hash}`).pipe(
+        Effect.map(Option.fromNullishOr),
+        Effect.orDie
+      ),
+      set: (hash: string, query: string) =>
+        redis.set(`pq:${hash}`, query, { ex: 86400 }).pipe(Effect.orDie),
+      has: (hash: string) => redis.exists(`pq:${hash}`).pipe(
+        Effect.map((count) => count > 0),
+        Effect.orDie
+      ),
+    }
+  })
+)
 
-  set: (hash, query) => Effect.gen(function* () {
-    const redis = yield* RedisClient
-    yield* redis.set(`pq:${hash}`, query, { ex: 86400 })
-  }),
-})
-
-makePersistedQueriesRouter(schema, serviceLayer, {
-  store: RedisStore,
-})
+// RedisClientLive is your host's scoped driver layer.
+const store = RedisStore.pipe(Layer.provide(RedisClientLive))
+const router = makePersistedQueriesRouter(schema, serviceLayer, { store })
 ```
+
+All three store methods must be service-free Effects. The store contract has no
+typed error channel, so this example converts driver failures to defects with
+`Effect.orDie`; the router's error handler produces the HTTP error response.
+The host owns the Redis client's scoped acquisition/release through its layer.
 
 ## Environment Configuration
 
@@ -228,11 +276,11 @@ PERSISTED_QUERIES_VALIDATE_HASH=true
 Load with Effect Config:
 
 ```typescript
-import { Config, Effect } from "effect"
+import { Effect } from "effect"
 import { PersistedQueriesConfigFromEnv } from "@effect-gql/persisted-queries"
 
 const program = Effect.gen(function* () {
-  const config = yield* Config.unwrap(PersistedQueriesConfigFromEnv)
+  const config = yield* PersistedQueriesConfigFromEnv
   // config.mode, config.enableGet, config.validateHash
 })
 ```
@@ -260,7 +308,8 @@ Apollo clients automatically retry with the full query.
 
 ### PERSISTED_QUERY_NOT_ALLOWED
 
-Returned in safelist mode when the query isn't in the allowlist:
+Returned in safelist mode for unknown hashes, with or without query text, and for
+plain query text whose computed hash isn't in the allowlist:
 
 ```json
 {
@@ -338,6 +387,7 @@ import * as S from "effect/Schema"
 import { GraphQLSchemaBuilder } from "@effect-gql/core"
 import { makePersistedQueriesRouter, makeSafelistStore } from "@effect-gql/persisted-queries"
 import { serve } from "@effect-gql/node"
+import { createHash } from "node:crypto"
 
 // Schema
 const UserSchema = S.Struct({
@@ -347,10 +397,10 @@ const UserSchema = S.Struct({
 })
 
 // Service
-class UserService extends Context.Tag("UserService")<
+class UserService extends Context.Service<
   UserService,
   { getAll: () => Effect.Effect<S.Schema.Type<typeof UserSchema>[]> }
->() {}
+>()("UserService") {}
 
 // Build schema
 const schema = GraphQLSchemaBuilder.empty
@@ -372,13 +422,14 @@ const UserServiceLive = Layer.succeed(UserService, {
   ]),
 })
 
+const getUsers = "query GetUsers { users { id name email } }"
+const getUsersHash = createHash("sha256").update(getUsers).digest("hex")
+
 // Production: Safelist mode with pre-registered queries
 const router = makePersistedQueriesRouter(schema, UserServiceLive, {
   mode: "safelist",
   store: makeSafelistStore({
-    // Query hashes extracted at build time
-    "7c211433f02071597741e6ff5a8ea34789abbf43f78e67b7d4e5441cf3af3d0e":
-      "query GetUsers { users { id name email } }",
+    [getUsersHash]: getUsers,
   }),
   enableGet: true,  // CDN caching
   graphiql: process.env.NODE_ENV !== "production",
@@ -393,7 +444,7 @@ serve(router, UserServiceLive, {
 ## Security Considerations
 
 1. **Use safelist mode in production** - Prevents arbitrary query execution
-2. **Enable hash validation** - Prevents hash collision attacks
+2. **Enable hash validation** - Rejects APQ registrations whose query text does not match the supplied hash
 3. **Limit store size** - Prevents memory exhaustion in APQ mode
 4. **Monitor query registration** - Log new queries in APQ mode for review
 

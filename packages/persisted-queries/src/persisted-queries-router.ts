@@ -1,5 +1,5 @@
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect, Layer, Option } from "effect"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { Context, Effect, Layer, Option } from "effect"
 import {
   GraphQLSchema,
   parse,
@@ -7,6 +7,7 @@ import {
   specifiedRules,
   NoSchemaIntrospectionCustomRule,
   execute as graphqlExecute,
+  getOperationAST,
   type DocumentNode,
 } from "graphql"
 import {
@@ -17,6 +18,8 @@ import {
   type FieldComplexityMap,
   type ErrorHandler,
   defaultErrorHandler,
+  computeCachePolicy,
+  toCacheControlHeader,
 } from "@effect-gql/core/server"
 import type { GraphQLEffectContext } from "@effect-gql/core"
 import {
@@ -100,7 +103,7 @@ export const makePersistedQueriesRouter = <R>(
   schema: GraphQLSchema,
   layer: Layer.Layer<R>,
   options: PersistedQueriesRouterOptions = {}
-): HttpRouter.HttpRouter<never, never> => {
+): Layer.Layer<never, never, HttpRouter.HttpRouter> => {
   const mode: PersistedQueryMode = options.mode ?? "apq"
   const enableGet = options.enableGet ?? true
   const validateHashOption = options.validateHash ?? true
@@ -109,6 +112,7 @@ export const makePersistedQueriesRouter = <R>(
   // Core router config
   const resolvedConfig = normalizeConfig(options)
   const fieldComplexities: FieldComplexityMap = options.fieldComplexities ?? new Map()
+  const cacheHints = options.cacheHints ?? new Map()
   const extensions: readonly GraphQLExtension<R>[] = options.extensions ?? []
   const errorHandler: ErrorHandler = options.errorHandler ?? defaultErrorHandler
 
@@ -133,8 +137,18 @@ export const makePersistedQueriesRouter = <R>(
       const persistedQuery = parsePersistedQueryExtension(body.extensions)
 
       if (!persistedQuery) {
-        // No persisted query extension - pass through unchanged
-        return body
+        if (mode !== "safelist" || !body.query) {
+          return body
+        }
+
+        // Plain text (including malformed APQ extensions) must also be safelisted.
+        const hash = yield* computeHash(body.query, hashAlgorithm)
+        const store = yield* PersistedQueryStore
+        const storedQuery = yield* store.get(hash)
+        if (Option.isNone(storedQuery)) {
+          return yield* Effect.fail(new PersistedQueryNotAllowedError({ hash }))
+        }
+        return { ...body, query: storedQuery.value }
       }
 
       // Validate version
@@ -158,16 +172,13 @@ export const makePersistedQueriesRouter = <R>(
         }
       }
 
-      // Query not found in store
-      if (!body.query) {
-        // No query provided - client needs to send it
-        return yield* Effect.fail(new PersistedQueryNotFoundError({ hash }))
+      // Safelist misses never trigger the APQ registration/retry protocol.
+      if (mode === "safelist") {
+        return yield* Effect.fail(new PersistedQueryNotAllowedError({ hash }))
       }
 
-      // Query provided - check mode
-      if (mode === "safelist") {
-        // Safelist mode: reject unknown queries
-        return yield* Effect.fail(new PersistedQueryNotAllowedError({ hash }))
+      if (!body.query) {
+        return yield* Effect.fail(new PersistedQueryNotFoundError({ hash }))
       }
 
       // APQ mode: validate hash and store
@@ -192,11 +203,13 @@ export const makePersistedQueriesRouter = <R>(
   /**
    * Main GraphQL handler with APQ support
    */
-  const createHandler = <RE>(parseBody: Effect.Effect<GraphQLRequestBody, Error, RE>) =>
+  const createHandler = (
+    parseBody: Effect.Effect<GraphQLRequestBody, Error, HttpServerRequest.HttpServerRequest>
+  ) =>
     Effect.gen(function* () {
       // Parse request body
       const rawBody = yield* parseBody.pipe(
-        Effect.catchAll((error) =>
+        Effect.catch((error) =>
           Effect.succeed({
             _parseError: true,
             message: error.message,
@@ -214,18 +227,18 @@ export const makePersistedQueriesRouter = <R>(
       // Resolve persisted query
       const bodyResult = yield* resolvePersistedQuery(rawBody).pipe(
         Effect.provide(baseStoreLayer),
-        Effect.either
+        Effect.result
       )
 
-      if (bodyResult._tag === "Left") {
+      if (bodyResult._tag === "Failure") {
         // APQ error - return appropriate GraphQL error response
-        const error = bodyResult.left
+        const error = bodyResult.failure
         return yield* HttpServerResponse.json({
           errors: [error.toGraphQLError()],
         })
       }
 
-      const body = bodyResult.right
+      const body = bodyResult.success
 
       // Check if we have a query to execute
       if (!body.query) {
@@ -238,8 +251,12 @@ export const makePersistedQueriesRouter = <R>(
       // Create the ExtensionsService for this request
       const extensionsService = yield* makeExtensionsService()
 
-      // Get the runtime from the layer
-      const runtime = yield* Effect.runtime<R>()
+      // Build a fresh request root even when this layer is already present in the application.
+      const memoMap = yield* Layer.makeMemoMap
+      const scope = yield* Effect.scope
+      const baseServices = yield* Layer.buildWithMemoMap(layer, memoMap, scope)
+      const services = Context.merge(yield* Effect.context<never>(), baseServices)
+      const hookServices = Context.add(services, ExtensionsService, extensionsService)
 
       // Phase 1: Parse
       let document: DocumentNode
@@ -254,9 +271,7 @@ export const makePersistedQueriesRouter = <R>(
       }
 
       // Run onParse hooks
-      yield* runParseHooks(extensions, body.query, document).pipe(
-        Effect.provideService(ExtensionsService, extensionsService)
-      )
+      yield* runParseHooks(extensions, body.query, document).pipe(Effect.setContext(hookServices))
 
       // Phase 2: Validate
       // Add NoSchemaIntrospectionCustomRule if introspection is disabled
@@ -267,7 +282,7 @@ export const makePersistedQueriesRouter = <R>(
 
       // Run onValidate hooks
       yield* runValidateHooks(extensions, document, validationErrors).pipe(
-        Effect.provideService(ExtensionsService, extensionsService)
+        Effect.setContext(hookServices)
       )
 
       // If validation failed, return errors without executing
@@ -314,9 +329,7 @@ export const makePersistedQueriesRouter = <R>(
       }
 
       // Run onExecuteStart hooks
-      yield* runExecuteStartHooks(extensions, executionArgs).pipe(
-        Effect.provideService(ExtensionsService, extensionsService)
-      )
+      yield* runExecuteStartHooks(extensions, executionArgs).pipe(Effect.setContext(hookServices))
 
       // Execute GraphQL query
       const executeResult = yield* Effect.try({
@@ -326,7 +339,7 @@ export const makePersistedQueriesRouter = <R>(
             document,
             variableValues: body.variables,
             operationName: body.operationName,
-            contextValue: { runtime } satisfies GraphQLEffectContext<R>,
+            contextValue: { services } satisfies GraphQLEffectContext<R>,
           }),
         catch: (error) => new Error(String(error)),
       })
@@ -338,9 +351,7 @@ export const makePersistedQueriesRouter = <R>(
           : executeResult
 
       // Run onExecuteEnd hooks
-      yield* runExecuteEndHooks(extensions, resolvedResult).pipe(
-        Effect.provideService(ExtensionsService, extensionsService)
-      )
+      yield* runExecuteEndHooks(extensions, resolvedResult).pipe(Effect.setContext(hookServices))
 
       // Merge extension data into result
       const extensionData = yield* extensionsService.get()
@@ -355,10 +366,29 @@ export const makePersistedQueriesRouter = <R>(
             }
           : resolvedResult
 
-      return yield* HttpServerResponse.json(finalResult)
+      let cacheControlHeader: string | undefined
+      const cacheControl = resolvedConfig.cacheControl
+      if (cacheControl?.enabled !== false && cacheControl?.calculateHttpHeaders !== false) {
+        const operation = getOperationAST(document, body.operationName)
+        if (resolvedResult.errors?.length) {
+          cacheControlHeader = "no-store"
+        } else if (operation?.operation === "query") {
+          const policy = yield* computeCachePolicy({
+            document,
+            operation,
+            schema,
+            cacheHints,
+            config: cacheControl ?? {},
+          })
+          cacheControlHeader = toCacheControlHeader(policy)
+        }
+      }
+
+      return yield* HttpServerResponse.json(finalResult, {
+        headers: cacheControlHeader ? { "cache-control": cacheControlHeader } : undefined,
+      })
     }).pipe(
-      Effect.provide(layer),
-      Effect.catchAll((error) => {
+      Effect.catch((error) => {
         if (error instanceof ComplexityLimitExceededError) {
           return HttpServerResponse.json(
             {
@@ -379,7 +409,7 @@ export const makePersistedQueriesRouter = <R>(
         }
         return Effect.fail(error)
       }),
-      Effect.catchAllCause(errorHandler)
+      Effect.catchCause(errorHandler)
     )
 
   // POST handler
@@ -400,20 +430,26 @@ export const makePersistedQueriesRouter = <R>(
   )
 
   // Build router
-  let router = HttpRouter.empty.pipe(
-    HttpRouter.post(resolvedConfig.path as HttpRouter.PathInput, postHandler)
-  )
+  let router = HttpRouter.add("POST", resolvedConfig.path as HttpRouter.PathInput, postHandler)
 
   // Add GET handler if enabled
   if (enableGet) {
-    router = router.pipe(HttpRouter.get(resolvedConfig.path as HttpRouter.PathInput, getHandler))
+    router = Layer.merge(
+      router,
+      HttpRouter.add("GET", resolvedConfig.path as HttpRouter.PathInput, getHandler)
+    )
   }
 
   // Add GraphiQL route if enabled
   if (resolvedConfig.graphiql) {
     const { path, endpoint } = resolvedConfig.graphiql
-    router = router.pipe(
-      HttpRouter.get(path as HttpRouter.PathInput, HttpServerResponse.html(graphiqlHtml(endpoint)))
+    router = Layer.merge(
+      router,
+      HttpRouter.add(
+        "GET",
+        path as HttpRouter.PathInput,
+        HttpServerResponse.html(graphiqlHtml(endpoint))
+      )
     )
   }
 

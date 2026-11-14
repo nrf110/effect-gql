@@ -1,4 +1,4 @@
-import { Data, Effect, Runtime, Stream } from "effect"
+import { Context, Data, Effect, Stream } from "effect"
 import type { ComplexityConfig, FieldComplexityMap } from "./complexity"
 
 /**
@@ -62,10 +62,10 @@ export interface EffectWebSocket {
  */
 export interface ConnectionContext<R> {
   /**
-   * The Effect runtime for this connection.
-   * Use this to run Effects within the connection scope.
+   * Effect services available for the lifetime of this connection.
+   * Use Effect.runPromiseWith(services) to run Effects in the connection scope.
    */
-  readonly runtime: Runtime.Runtime<R>
+  readonly services: Context.Context<R>
 
   /**
    * Connection parameters sent by the client during CONNECTION_INIT.

@@ -11,6 +11,8 @@ The `GraphQLSchemaBuilder` is the core API for constructing GraphQL schemas in E
 
 ```typescript
 import { GraphQLSchemaBuilder } from "@effect-gql/core"
+import { Effect } from "effect"
+import * as S from "effect/Schema"
 
 // Start with an empty builder
 const builder = GraphQLSchemaBuilder.empty
@@ -81,6 +83,47 @@ const schema = GraphQLSchemaBuilder.empty.pipe(
 ).buildSchema()
 ```
 
+`compose` preserves the services required by every operation, including argument
+decoders, and retains services already required by its input builder. This also
+applies to nested composition and arrays passed with `compose(...operations)`.
+`compose()` with no operations leaves the builder unchanged. Pass the resulting
+builder to `toRouter` with a layer providing all accumulated services.
+
+Built-in operations and `compose` return the public `SchemaOperation<R>` type,
+available from both `@effect-gql/core` and `@effect-gql/core/builder`. Reusable
+operations can be exported with inferred types, including from libraries that
+emit TypeScript declarations:
+
+```typescript
+export const withGreeting = query("hello", {
+  type: S.String,
+  resolve: () => Effect.succeed("world"),
+})
+export const withGreetingQueries = compose(withGreeting)
+```
+
+Custom generic operations are supported without annotations:
+
+```typescript
+const withHello = <R>(builder: GraphQLSchemaBuilder<R>) =>
+  builder.query("hello", {
+    type: S.String,
+    resolve: () => Effect.succeed("world"),
+  })
+
+const withGreetings = compose(withHello)
+```
+
+Calls infer up to 20 custom operations independently. For dynamically sized,
+heterogeneous arrays of custom operations, normalize each with `compose(custom)`
+before combining them; built-in and already-composed operation arrays retain their
+individual requirements without an arity limit:
+
+```typescript
+const operations = [compose(withHello), compose(withServiceQueries)]
+const withOperations = compose(...operations)
+```
+
 ## Object Types
 
 ### Basic Registration
@@ -118,11 +161,9 @@ builder.objectType({
   name: "User",
   schema: UserSchema,
   fields: {
-    fullName: {
+    displayName: {
       type: S.String,
-      resolve: (parent) => Effect.succeed(
-        `${parent.firstName} ${parent.lastName}`
-      ),
+      resolve: (parent) => Effect.succeed(parent.name.toUpperCase()),
     },
     posts: {
       type: S.Array(PostSchema),
@@ -136,6 +177,47 @@ builder.objectType({
 })
 ```
 
+Each inline field contributes its own resolver and argument-decoder service
+requirements. `objectType` unions these requirements across all fields and keeps
+services already required by the builder, for both the method and pipe APIs.
+The resolver's `parent` is contextually typed from the registered schema; pure
+fields and empty `fields` add no services. Provide a layer containing the complete
+union when passing the builder to `toRouter`.
+
+Typed maps with optional fields, including `Partial<Record<...>>`, follow the
+same rules. Optional-property absence adds no service requirement; each declared
+field still contributes its resolver and argument-decoder services when the
+field itself requires them. Pure optional fields remain compatible with
+`Layer.empty`, whether present or omitted.
+
+Reusable union-typed field maps and individual field configurations preserve
+requirements from every branch, including branches with no `args` and maps with
+different field names. The supplied layer must cover every possible branch.
+Generic wrappers can name the inferred requirement type with
+`ObjectFieldsServices<Fields>`, exported from both `@effect-gql/core` and
+`@effect-gql/core/builder`.
+
+Registered object and interface types also survive `S.optionalKey`, `S.mutableKey`,
+and combinations of those modifiers, including structs and unencoded primitive
+schemas with computed fields. Unregistered key variants reuse the named
+registration; optional keys remain nullable without losing that type.
+If a base schema and a key-modified schema are explicitly registered under
+different names, each exact registration takes precedence over generated key
+aliases regardless of registration order. Root fields, nested references, and
+registered union member matching retain those distinct names even when the
+schemas share the same structural body.
+
+The same precedence applies when a transforming schema and `S.toType(schema)`
+have separate registrations. An unregistered wrapper such as
+`S.Struct({ value: schema })` retains the original registration's computed fields,
+while `S.toType(wrapper)` uses the projected registration's fields. Both wrappers
+can appear in the same GraphQL schema, in either conversion order. Generated
+object reuse distinguishes their original and projected identities, while harmless
+key modifiers and recursive references still reuse the corresponding object type.
+Equivalent decoded schemas and their projections still share generated named
+types when their reachable output fields resolve identically, so named fragments
+remain valid across both forms.
+
 ### Adding Fields Separately
 
 Use `.field()` to add fields after type registration:
@@ -145,9 +227,13 @@ builder
   .objectType({ name: "User", schema: UserSchema })
   .field("User", "posts", {
     type: S.Array(PostSchema),
-    resolve: (parent) => Effect.succeed([]),
+    resolve: (parent: S.Schema.Type<typeof UserSchema>) => Effect.succeed([]),
   })
 ```
+
+Separate `.field()` calls do not infer the parent from the type-name string.
+Annotate it as above, or use inline `objectType({ fields: ... })` for contextual
+parent inference.
 
 ## Root Operations
 
@@ -164,7 +250,7 @@ builder
 .query("user", {
   type: UserSchema,
   args: S.Struct({ id: S.String }),
-  resolve: (args) => Effect.succeed({ id: args.id, name: "Alice" }),
+  resolve: (args) => Effect.succeed({ id: args.id, name: "Alice", email: "alice@example.com" }),
 })
 
 // With description
@@ -193,7 +279,9 @@ builder
 
 ### Subscriptions
 
-Subscriptions return an Effect that produces a Stream:
+`subscribe(args)` returns an Effect that produces a Stream. Optional
+`resolve(value, args)` transforms each emitted value with an Effect; it does not
+create the stream.
 
 ```typescript
 import { Stream } from "effect"
@@ -219,13 +307,13 @@ Register enum types with values:
 })
 ```
 
-Use in queries with `S.Literal`:
+Use in queries with `S.Literals`:
 
 ```typescript
 .query("usersByStatus", {
   type: S.Array(UserSchema),
   args: S.Struct({
-    status: S.Literal("ACTIVE", "INACTIVE", "PENDING"),
+    status: S.Literals(["ACTIVE", "INACTIVE", "PENDING"]),
   }),
   resolve: (args) => Effect.succeed([]),
 })
@@ -268,7 +356,7 @@ Register input types for complex arguments:
 const CreateUserInput = S.Struct({
   name: S.String,
   email: S.String,
-  role: S.optional(S.Literal("USER", "ADMIN")),
+  role: S.optional(S.Literals(["USER", "ADMIN"])),
 })
 
 builder
@@ -280,6 +368,27 @@ builder
   })
 ```
 
+Input registrations follow the same exact-schema precedence. For example,
+registering `Base` as `BaseInput` and `S.optionalKey(Base)` as `KeyInput` keeps
+both names distinct in arguments and nested input fields, in either registration
+order. Declare variables using the name registered for the argument's schema:
+`BaseInput!` for a required `Base` argument and `KeyInput` for the optional key
+variant. Without an explicit registration for a key variant, it reuses the
+base schema's registered input name.
+
+Separate registrations for a codec and `S.toEncoded(codec)` also remain distinct
+inside generated wrapper inputs. A wrapper containing the codec uses its registered
+input name, while `S.toEncoded(wrapper)` uses the encoded registration, regardless
+of argument order. This also applies through Options, lists, and recursive wrappers.
+Equivalent generated inputs whose fields resolve identically still reuse their
+GraphQL input type.
+
+GraphQL has no input union type. Unless a union exactly matches a registered
+enum, input mapping falls back to its first non-null member. Registered input
+objects retain their registered name and identity through that fallback.
+Tagged inputs omit `_tag` from GraphQL and restore its encoded literal before
+Effect decoding, including when the codec transforms it to a different domain tag.
+
 ## Directives
 
 Register custom directives:
@@ -287,21 +396,25 @@ Register custom directives:
 ```typescript
 import { DirectiveLocation } from "graphql"
 
-builder.directive({
-  name: "auth",
-  description: "Requires authentication",
+const tracedBuilder = builder.directive({
+  name: "trace",
+  description: "Log resolution of selected fields",
   locations: [DirectiveLocation.FIELD_DEFINITION],
-  args: S.Struct({
-    role: S.optional(S.Literal("USER", "ADMIN")),
-  }),
-  transformer: (effect, args) =>
-    Effect.gen(function* () {
-      const auth = yield* AuthService
-      yield* auth.requireRole(args.role ?? "USER")
-      return yield* effect
-    }),
+  args: S.Struct({ label: S.String }),
+  apply: ({ label }) => (effect) =>
+    Effect.logInfo(label).pipe(Effect.andThen(effect)),
+}).query("hello", {
+  type: S.String,
+  directives: [{ name: "trace", args: { label: "Resolving hello" } }],
+  resolve: () => Effect.succeed("world"),
 })
 ```
+
+Registration alone does not execute the wrapper; apply it explicitly with
+`directives: [{ name, args }]`. `apply` preserves the wrapped effect's generic
+error type, so it cannot introduce a new typed authorization error. Perform
+fallible authorization in the resolver instead. For service-dependent wrappers,
+explicit `directive<Args, Services>(...)` type arguments may be necessary.
 
 ## Building the Schema
 
@@ -310,12 +423,19 @@ Call `.buildSchema()` to produce the final `GraphQLSchema`:
 ```typescript
 const schema = builder.buildSchema()
 
-// Use with any GraphQL server
-import { graphql } from "graphql"
-const result = await graphql({ schema, source: "{ hello }" })
+import { Effect, Layer } from "effect"
+import { execute } from "@effect-gql/core"
+
+const result = await Effect.runPromise(
+  execute(schema, Layer.empty)("{ hello }")
+)
 ```
 
 <Aside type="tip">
-  For request execution with Effect services, use the `execute` function instead of `graphql()` directly.
-  See the [Resolvers guide](/effect-gql/guides/resolvers/) for details.
+  Even pure Effect resolvers require an Effect service context. Prefer `execute`,
+  using a layer with every resolver and argument-decoder dependency.
+  Native `graphql()` callers must provide `contextValue: { services }`, obtained
+  inside the lifetime of that layer. `buildSchema()` returns a bare GraphQL schema
+  and erases the builder's service requirements; `execute` cannot check that the
+  layer is complete. Use `toRouter(builder, layer)` to retain that check.
 </Aside>

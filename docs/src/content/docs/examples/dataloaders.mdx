@@ -94,9 +94,8 @@ field("User", "posts", {
 Loaders must be request-scoped to ensure proper batching and cache isolation:
 
 ```typescript
-const AppLayer = Layer.mergeAll(
-  DatabaseServiceLive,
-  loaders.toLayer()  // Creates fresh loaders per request
+const AppLayer = loaders.toLayer().pipe(
+  Layer.provideMerge(DatabaseServiceLive)
 )
 
 const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
@@ -110,21 +109,16 @@ const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
 import { Effect, Context, Layer } from "effect"
 import * as S from "effect/Schema"
 import {
-  GraphQLSchemaBuilder,
-  query,
-  objectType,
-  field,
-  makeGraphQLRouter,
-  Loader,
+  GraphQLSchemaBuilder, query, objectType, field, makeGraphQLRouter, Loader,
 } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 
-// Domain models
 const User = S.Struct({
   id: S.String,
   name: S.String,
   email: S.String,
 })
+type User = S.Schema.Type<typeof User>
 
 const Post = S.Struct({
   id: S.String,
@@ -132,68 +126,83 @@ const Post = S.Struct({
   content: S.String,
   authorId: S.String,
 })
+type Post = S.Schema.Type<typeof Post>
 
-// Database service
-class DatabaseService extends Context.Tag("DatabaseService")<
-  DatabaseService,
-  {
-    readonly getUsersByIds: (ids: readonly string[]) => Effect.Effect<readonly User[]>
-    readonly getPostsByAuthorIds: (ids: readonly string[]) => Effect.Effect<readonly Post[]>
-    readonly getAllPosts: () => Effect.Effect<readonly Post[]>
-  }
->() {}
+const users: User[] = [
+  { id: "1", name: "Alice", email: "alice@example.com" },
+  { id: "2", name: "Bob", email: "bob@example.com" },
+  { id: "3", name: "Charlie", email: "charlie@example.com" },
+]
+const posts: Post[] = [
+  { id: "p1", title: "Alice's First Post", content: "Hello!", authorId: "1" },
+  { id: "p2", title: "Alice's Second Post", content: "More thoughts", authorId: "1" },
+  { id: "p3", title: "Bob's Post", content: "Hello!", authorId: "2" },
+  { id: "p4", title: "Alice's Third Post", content: "More news", authorId: "1" },
+  { id: "p5", title: "Charlie's Post", content: "Hello!", authorId: "3" },
+]
 
-// Define loaders
+class DatabaseService extends Context.Service<DatabaseService, {
+  readonly getUsersByIds: (ids: readonly string[]) => Effect.Effect<readonly User[]>
+  readonly getPostsByAuthorIds: (ids: readonly string[]) => Effect.Effect<readonly Post[]>
+  readonly getAllPosts: () => Effect.Effect<readonly Post[]>
+}>()("DatabaseService") {}
+
+const DatabaseServiceLive = Layer.succeed(DatabaseService, {
+  getUsersByIds: (ids) => Effect.succeed(users.filter((user) => ids.includes(user.id))),
+  getPostsByAuthorIds: (ids) => Effect.succeed(posts.filter((post) => ids.includes(post.authorId))),
+  getAllPosts: () => Effect.logInfo("[DB] Fetching all posts").pipe(
+    Effect.as(posts)
+  ),
+})
+
 const loaders = Loader.define({
   UserById: Loader.single<string, User, DatabaseService>({
-    batch: (ids) =>
-      Effect.gen(function* () {
-        const db = yield* DatabaseService
-        console.log(`📦 [Loader] Batch fetching users: [${ids.join(", ")}]`)
-        return yield* db.getUsersByIds(ids)
-      }),
+    batch: (ids) => Effect.gen(function* () {
+      const db = yield* DatabaseService
+      yield* Effect.logInfo("[Loader] Batch fetching users", { ids })
+      return yield* db.getUsersByIds(ids)
+    }),
     key: (user) => user.id,
   }),
-
   PostsByAuthorId: Loader.grouped<string, Post, DatabaseService>({
-    batch: (authorIds) =>
-      Effect.gen(function* () {
-        const db = yield* DatabaseService
-        console.log(`📦 [Loader] Batch fetching posts: [${authorIds.join(", ")}]`)
-        return yield* db.getPostsByAuthorIds(authorIds)
-      }),
+    batch: (authorIds) => Effect.gen(function* () {
+      const db = yield* DatabaseService
+      yield* Effect.logInfo("[Loader] Batch fetching posts", { authorIds })
+      return yield* db.getPostsByAuthorIds(authorIds)
+    }),
     groupBy: (post) => post.authorId,
   }),
 })
 
-// Build schema with computed fields
-const schema = GraphQLSchemaBuilder.empty
-  .pipe(
-    objectType({ name: "User", schema: User }),
-    objectType({ name: "Post", schema: Post }),
-
-    // User.posts - uses grouped loader
-    field("User", "posts", {
-      type: S.Array(Post),
-      resolve: (parent) => loaders.load("PostsByAuthorId", parent.id),
+const schema = GraphQLSchemaBuilder.empty.pipe(
+  objectType({ name: "User", schema: User }),
+  objectType({ name: "Post", schema: Post }),
+  field("User", "posts", {
+    type: S.Array(Post),
+    resolve: (parent: User) => loaders.load("PostsByAuthorId", parent.id),
+  }),
+  field("Post", "author", {
+    type: User,
+    resolve: (parent: Post) => loaders.load("UserById", parent.authorId),
+  }),
+  query("posts", {
+    type: S.Array(Post),
+    resolve: () => Effect.gen(function* () {
+      const db = yield* DatabaseService
+      return [...(yield* db.getAllPosts())]
     }),
+  }),
+).buildSchema()
 
-    // Post.author - uses single loader
-    field("Post", "author", {
-      type: User,
-      resolve: (parent) => loaders.load("UserById", parent.authorId),
-    }),
-
-    query("posts", {
-      type: S.Array(Post),
-      resolve: () =>
-        Effect.gen(function* () {
-          const db = yield* DatabaseService
-          return [...(yield* db.getAllPosts())]
-        }),
-    }),
-  )
-  .buildSchema()
+// Feed the database into loader construction, retaining both services.
+const AppLayer = loaders.toLayer().pipe(
+  Layer.provideMerge(DatabaseServiceLive)
+)
+const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
+  path: "/graphql",
+  graphiql: { path: "/graphiql", endpoint: "/graphql" },
+})
+serve(graphqlRouter, Layer.empty, { port: 4001 })
 ```
 
 ## Example Query
@@ -216,11 +225,12 @@ query {
 
 ## Console Output
 
-When you run the above query, you'll see:
+When you run the above query, structured Effect logs include these messages and
+the batched IDs in the log fields:
 
 ```
-📦 [DB] Fetching all posts
-📦 [Loader] Batch fetching users: [1, 2, 3]
+[DB] Fetching all posts
+[Loader] Batch fetching users
 ```
 
 Notice how all author IDs are batched into a single database call.

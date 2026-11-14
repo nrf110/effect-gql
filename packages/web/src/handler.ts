@@ -1,5 +1,5 @@
 import { Context, Layer } from "effect"
-import { HttpApp, HttpRouter } from "@effect/platform"
+import { HttpRouter } from "effect/http"
 
 /**
  * Result of creating a web handler
@@ -56,8 +56,17 @@ export interface WebHandler {
  * ```
  */
 export const toHandler = <E, R, RE>(
-  router: HttpRouter.HttpRouter<E, R>,
+  router: Layer.Layer<
+    never,
+    E,
+    | HttpRouter.HttpRouter
+    | NoInfer<R>
+    | HttpRouter.Request<"Requires", NoInfer<R>>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", NoInfer<R>>
+    | HttpRouter.Request<"GlobalError", unknown>
+  >,
   layer: Layer.Layer<R, RE>
 ): WebHandler => {
-  return HttpApp.toWebHandlerLayer(router, layer)
+  return HttpRouter.toWebHandler(Layer.provideMerge(router, layer))
 }

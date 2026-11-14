@@ -12,7 +12,9 @@ export type {
   MiddlewareRegistration,
   SubscriptionFieldRegistration,
   ObjectFieldRegistration,
+  ObjectFieldsServices,
   GraphQLEffectContext,
+  SubscriptionContext,
   TypeRegistries,
   CacheHint,
   CacheControlScope,
@@ -40,9 +42,12 @@ export {
   field,
   compose,
 } from "./pipe-api"
+export type { SchemaOperation } from "./pipe-api"
 
 // Re-export execute helper
 export { execute } from "./execute"
+
+export { makeSubscriptionContext } from "../subscription-context"
 
 // Re-export utilities that may be useful externally
 export { getSchemaName } from "./type-registry"

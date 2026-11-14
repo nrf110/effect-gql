@@ -1,6 +1,6 @@
 {
   "name": "@effect-gql/opentelemetry",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "description": "OpenTelemetry tracing integration for @effect-gql/core",
   "repository": {
     "url": "https://github.com/nrf110/effect-gql"
@@ -30,19 +30,17 @@
     "test:watch": "vitest"
   },
   "peerDependencies": {
-    "@effect-gql/core": "^1.5.0",
-    "@effect/opentelemetry": "^0.3.0",
-    "@effect/platform": "^0.94.2",
-    "effect": "^3.19.0",
+    "@effect-gql/core": "^2.0.0",
+    "@effect/opentelemetry": "^4.1.1",
+    "effect": "^4.1.1",
     "graphql": "^16.0.0"
   },
   "devDependencies": {
-    "@effect-gql/core": "*",
-    "@effect/opentelemetry": "^0.61.0",
-    "@effect/platform": "^0.94.2",
+    "@effect-gql/core": "workspace:*",
+    "@effect/opentelemetry": "^4.1.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/sdk-trace-base": "^2.5.0",
-    "effect": "^3.19.15",
+    "effect": "^4.1.1",
     "graphql": "^16.0.0"
   },
   "keywords": [

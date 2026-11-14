@@ -32,8 +32,8 @@ A basic user API with:
 
    // Input for creating users
    const CreateUserInput = S.Struct({
-     name: S.String.pipe(S.minLength(1)),
-     email: S.String.pipe(S.pattern(/@/)),
+     name: S.String.check(S.isMinLength(1)),
+     email: S.String.check(S.isPattern(/@/)),
    })
 
    // TypeScript types are inferred automatically
@@ -80,15 +80,15 @@ A basic user API with:
      .mutation("createUser", {
        type: UserSchema,
        args: CreateUserInput,
-       resolve: (args) => {
+       resolve: (args) => Effect.sync(() => {
          const newUser: User = {
            id: String(users.length + 1),
            name: args.name,
            email: args.email,
          }
          users.push(newUser)
-         return Effect.succeed(newUser)
-       },
+         return newUser
+       }),
      })
 
      // Build the final GraphQL schema
@@ -192,6 +192,18 @@ const schema = GraphQLSchemaBuilder.empty
         : Effect.fail(new Error("User not found"))
     },
   })
+  .mutation("createUser", {
+    type: UserSchema,
+    args: S.Struct({
+      name: S.String.check(S.isMinLength(1)),
+      email: S.String.check(S.isPattern(/@/)),
+    }),
+    resolve: (args) => Effect.sync(() => {
+      const user: User = { id: String(users.length + 1), ...args }
+      users.push(user)
+      return user
+    }),
+  })
   .buildSchema()
 
 // Execute
@@ -201,7 +213,8 @@ const main = execute(schema, Layer.empty)(`
   }
 `)
 
-Effect.runPromise(main).then(console.log)
+const result = await Effect.runPromise(main)
+console.log(JSON.stringify(result, null, 2))
 ```
 
 ## Next Steps

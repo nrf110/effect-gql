@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest"
+import { Effect, Layer, Option } from "effect"
 import * as S from "effect/Schema"
+import * as SchemaGetter from "effect/SchemaGetter"
 import {
   GraphQLObjectType,
   GraphQLInterfaceType,
@@ -8,6 +10,9 @@ import {
   GraphQLInputObjectType,
   GraphQLString,
   GraphQLInt,
+  GraphQLSchema,
+  graphql,
+  getNamedType,
   isListType,
   isNonNullType,
 } from "graphql"
@@ -20,8 +25,9 @@ import {
   toGraphQLArgsWithRegistry,
   TypeConversionContext,
   buildInputTypeLookupCache,
-  buildReverseLookups,
 } from "../../../src/builder/type-registry"
+import { GraphQLSchemaBuilder } from "../../../src/builder/schema-builder"
+import { execute } from "../../../src/builder/execute"
 
 // Helper to create a minimal context
 const createEmptyContext = (): TypeConversionContext => ({
@@ -141,7 +147,6 @@ describe("type-registry.ts", () => {
     it("should handle S.Array with registry lookup for elements", () => {
       const ctx = createEmptyContext()
 
-      // S.Array creates a Transformation with TupleType on "to" side
       const result = toGraphQLTypeWithRegistry(S.Array(S.String), ctx)
       expect(isListType(result)).toBe(true)
       expect((result as any).ofType).toBe(GraphQLString)
@@ -165,7 +170,7 @@ describe("type-registry.ts", () => {
 
     it("should handle S.Tuple with elements", () => {
       const ctx = createEmptyContext()
-      const result = toGraphQLTypeWithRegistry(S.Tuple(S.String), ctx)
+      const result = toGraphQLTypeWithRegistry(S.Tuple([S.String]), ctx)
       expect(isListType(result)).toBe(true)
     })
   })
@@ -190,7 +195,7 @@ describe("type-registry.ts", () => {
       })
       ctx.enumRegistry.set("Status", StatusEnum)
 
-      const StatusSchema = S.Literal("ACTIVE", "INACTIVE")
+      const StatusSchema = S.Literals(["ACTIVE", "INACTIVE"])
       const result = toGraphQLTypeWithRegistry(StatusSchema, ctx)
       expect(result).toBe(StatusEnum)
     })
@@ -257,10 +262,10 @@ describe("type-registry.ts", () => {
 
       // Create a union schema - this is the S.Union of the tagged structs
       // Note: In practice this happens via schema AST matching
-      const UnionSchema = S.Union(
+      const UnionSchema = S.Union([
         S.Struct({ _tag: S.Literal("Text"), body: S.String }),
-        S.Struct({ _tag: S.Literal("Image"), url: S.String })
-      )
+        S.Struct({ _tag: S.Literal("Image"), url: S.String }),
+      ])
 
       const result = toGraphQLTypeWithRegistry(UnionSchema, ctx)
       expect(result).toBe(contentUnion)
@@ -271,7 +276,7 @@ describe("type-registry.ts", () => {
   // schemaToFields
   // ==========================================================================
   describe("schemaToFields", () => {
-    it("should convert TypeLiteral to fields", () => {
+    it("should convert struct schemas to fields", () => {
       const ctx = createEmptyContext()
       const UserSchema = S.Struct({
         id: S.String,
@@ -306,7 +311,7 @@ describe("type-registry.ts", () => {
       expect(isNonNullType(fields.bio.type)).toBe(false)
     })
 
-    it("should handle TaggedStruct (Transformation)", () => {
+    it("should handle TaggedStruct", () => {
       const ctx = createEmptyContext()
       const UserSchema = S.TaggedStruct("User", {
         id: S.String,
@@ -320,7 +325,7 @@ describe("type-registry.ts", () => {
       expect(fields._tag).toBeUndefined()
     })
 
-    it("should handle Schema.Class (Transformation)", () => {
+    it("should handle Schema.Class", () => {
       const ctx = createEmptyContext()
       class User extends S.Class<User>("User")({
         id: S.String,
@@ -356,7 +361,7 @@ describe("type-registry.ts", () => {
       expect(isNonNullType(fields.email.type)).toBe(false)
     })
 
-    it("should return empty object for non-TypeLiteral", () => {
+    it("should return empty object for a non-object schema", () => {
       const ctx = createEmptyContext()
       const fields = schemaToFields(S.String, ctx)
       expect(Object.keys(fields)).toHaveLength(0)
@@ -391,7 +396,7 @@ describe("type-registry.ts", () => {
   // schemaToInputFields
   // ==========================================================================
   describe("schemaToInputFields", () => {
-    it("should convert TypeLiteral to input fields", () => {
+    it("should convert struct schemas to input fields", () => {
       const InputSchema = S.Struct({
         name: S.String,
         email: S.String,
@@ -440,7 +445,7 @@ describe("type-registry.ts", () => {
       expect(isNonNullType(fields.email.type)).toBe(false)
     })
 
-    it("should return empty object for non-TypeLiteral", () => {
+    it("should return empty object for a non-object schema", () => {
       const fields = schemaToInputFields(S.String, new Map(), new Map(), new Map(), new Map())
       expect(Object.keys(fields)).toHaveLength(0)
     })
@@ -501,6 +506,39 @@ describe("type-registry.ts", () => {
       expect(result).toBe(inputType)
     })
 
+    it.each(["AInput", "CustomInput"])(
+      "reuses the registered first union member as %s",
+      async (name) => {
+        const A = S.TaggedStruct("A", { id: S.String })
+        const B = S.TaggedStruct("B", { name: S.String })
+        const schema = GraphQLSchemaBuilder.empty
+          .inputType({ name, schema: A })
+          .query("echo", {
+            type: S.String,
+            args: S.Struct({ direct: A, input: S.Union([A, B]) }),
+            resolve: ({ direct, input }) =>
+              Effect.succeed(
+                `${direct._tag}:${direct.id}:${input._tag}:${input._tag === "A" ? input.id : input.name}`
+              ),
+          })
+          .buildSchema()
+        const args = schema.getQueryType()!.getFields().echo.args
+
+        expect(getNamedType(args[0].type)).toBe(schema.getType(name))
+        expect(getNamedType(args[1].type)).toBe(schema.getType(name))
+
+        const result = await Effect.runPromise(
+          execute(schema, Layer.empty)(
+            `query($direct: ${name}!, $input: ${name}!) { echo(direct: $direct, input: $input) }`,
+            { direct: { id: "direct" }, input: { id: "union" } }
+          )
+        )
+
+        expect(result.errors).toBeUndefined()
+        expect(result.data).toEqual({ echo: "A:direct:A:union" })
+      }
+    )
+
     it("should find registered enum for literal union", () => {
       const StatusEnum = new GraphQLEnumType({
         name: "Status",
@@ -516,7 +554,7 @@ describe("type-registry.ts", () => {
       const enums = new Map()
       enums.set("Status", { name: "Status", values: ["ACTIVE", "INACTIVE"] })
 
-      const StatusSchema = S.Literal("ACTIVE", "INACTIVE")
+      const StatusSchema = S.Literals(["ACTIVE", "INACTIVE"])
       const result = toGraphQLInputTypeWithRegistry(
         StatusSchema,
         enumRegistry,
@@ -526,6 +564,71 @@ describe("type-registry.ts", () => {
       )
 
       expect(result).toBe(StatusEnum)
+    })
+
+    it("decodes unmatched literal unions without narrowing them to an overlapping enum", async () => {
+      const status = S.Literals(["ACTIVE", "PENDING"]).pipe(
+        S.decodeTo(S.String, {
+          decode: SchemaGetter.transform((value) => value.toLowerCase()),
+          encode: SchemaGetter.transform((value) => value.toUpperCase() as "ACTIVE" | "PENDING"),
+        })
+      )
+      const received: string[] = []
+      const schema = GraphQLSchemaBuilder.empty
+        .enumType({ name: "Status", values: ["ACTIVE", "INACTIVE"] })
+        .query("echo", {
+          type: S.String,
+          args: S.Struct({
+            status,
+            exact: S.Literals(["ACTIVE", "INACTIVE"]),
+          }),
+          resolve: ({ status, exact }) =>
+            Effect.sync(() => {
+              received.push(status)
+              return `${status}:${exact}`
+            }),
+        })
+        .buildSchema()
+      const run = execute(schema, Layer.empty)
+      const source =
+        "query($status: String!, $exact: Status!) { echo(status: $status, exact: $exact) }"
+
+      const accepted = await Effect.runPromise(
+        run(source, { status: "PENDING", exact: "INACTIVE" })
+      )
+      expect(accepted.errors).toBeUndefined()
+      expect(accepted.data).toEqual({ echo: "pending:INACTIVE" })
+      expect(received).toEqual(["pending"])
+
+      const rejected = await Effect.runPromise(run(source, { status: "INACTIVE", exact: "ACTIVE" }))
+      expect(rejected.data).toEqual({ echo: null })
+      expect(rejected.errors?.[0].path).toEqual(["echo"])
+      expect(received).toEqual(["pending"])
+    })
+
+    it("keeps mixed-member union fallback scalar after a failed enum match", async () => {
+      const received: Array<string | number> = []
+      const schema = GraphQLSchemaBuilder.empty
+        .enumType({ name: "Status", values: ["ACTIVE", "INACTIVE"] })
+        .query("echo", {
+          type: S.String,
+          args: S.Struct({ status: S.Union([S.Literal("ACTIVE"), S.Number]) }),
+          resolve: ({ status }) =>
+            Effect.sync(() => {
+              received.push(status)
+              return String(status)
+            }),
+        })
+        .buildSchema()
+      const run = execute(schema, Layer.empty)
+      const source = "query($status: String!) { echo(status: $status) }"
+      const accepted = await Effect.runPromise(run(source, { status: "ACTIVE" }))
+      expect(accepted.errors).toBeUndefined()
+      expect(accepted.data).toEqual({ echo: "ACTIVE" })
+      const rejected = await Effect.runPromise(run(source, { status: "INACTIVE" }))
+      expect(rejected.data).toEqual({ echo: null })
+      expect(rejected.errors?.[0].path).toEqual(["echo"])
+      expect(received).toEqual(["ACTIVE"])
     })
 
     it("should handle S.optional wrapping", () => {
@@ -621,7 +724,7 @@ describe("type-registry.ts", () => {
 
     it("should handle OptionFromNullOr fields in query arguments as nullable", () => {
       const ArgsSchema = S.Struct({
-        limit: S.NonNegativeInt,
+        limit: S.Int.check(S.isGreaterThanOrEqualTo(0)),
         cursor: S.OptionFromNullOr(S.String),
         offset: S.OptionFromNullOr(S.Int),
       })
@@ -656,7 +759,7 @@ describe("type-registry.ts", () => {
       enums.set("Status", { name: "Status", values: ["ACTIVE", "INACTIVE"] })
 
       const ArgsSchema = S.Struct({
-        status: S.Literal("ACTIVE", "INACTIVE"),
+        status: S.Literals(["ACTIVE", "INACTIVE"]),
       })
 
       const args = toGraphQLArgsWithRegistry(ArgsSchema, enumRegistry, new Map(), new Map(), enums)
@@ -893,14 +996,13 @@ describe("type-registry.ts", () => {
   })
 
   // ==========================================================================
-  // Bug fixes - Nested Transformations
+  // Class schemas with declaration-backed fields
   // ==========================================================================
-  describe("Bug fixes - Nested Transformations", () => {
-    it("should handle S.Class with transformation fields (DateFromSelf)", () => {
-      // Bug 1: schemaToFields should unwrap nested Transformations in S.Class
+  describe("Class schemas with declaration-backed fields", () => {
+    it("should handle S.Class with Date fields", () => {
       class Event extends S.Class<Event>("Event")({
         id: S.String,
-        createdAt: S.DateFromSelf,
+        createdAt: S.Date,
       }) {}
 
       const ctx = createEmptyContext()
@@ -914,8 +1016,8 @@ describe("type-registry.ts", () => {
     it("should handle S.Class with multiple transformation fields", () => {
       class Record extends S.Class<Record>("Record")({
         id: S.String,
-        created: S.DateFromSelf,
-        updated: S.DateFromSelf,
+        created: S.Date,
+        updated: S.Date,
         value: S.Number,
       }) {}
 
@@ -928,9 +1030,7 @@ describe("type-registry.ts", () => {
       expect(fields.value).toBeDefined()
     })
 
-    it("should handle schemaToInputFields with transformation schema (TaggedStruct)", () => {
-      // Bug 3: schemaToInputFields should unwrap Transformations
-      // TaggedStruct creates a Transformation that wraps a TypeLiteral
+    it("should handle schemaToInputFields with TaggedStruct", () => {
       const InputData = S.TaggedStruct("InputData", {
         name: S.String,
         value: S.Number,
@@ -966,7 +1066,6 @@ describe("type-registry.ts", () => {
       const inputs = new Map()
       inputs.set("CursorInput", { name: "CursorInput", schema: CursorInput })
 
-      // The schema is a Transformation (S.Class), but should still be found
       const result = toGraphQLInputTypeWithRegistry(
         CursorInput,
         new Map(),
@@ -1006,7 +1105,6 @@ describe("type-registry.ts", () => {
   // ==========================================================================
   describe("Bug fixes - S.Option and Union handling", () => {
     it("should find registered type inside S.Option Union (from position)", () => {
-      // S.OptionFromNullOr creates: Transformation { from: Union[X.ast, Literal], to: Declaration }
       const ActorSchema = S.Struct({ id: S.String, name: S.String })
       const actorType = new GraphQLObjectType({
         name: "Actor",
@@ -1107,49 +1205,6 @@ describe("type-registry.ts", () => {
   // Bug fixes - Lookup cache with unwrapped AST forms
   // ==========================================================================
   describe("Bug fixes - Lookup cache unwrapped AST forms", () => {
-    it("buildInputTypeLookupCache should map unwrapped transformation ASTs", () => {
-      // A Schema.Class is a Transformation wrapping a Declaration wrapping a TypeLiteral
-      class MyInput extends S.Class<MyInput>("MyInput")({
-        value: S.String,
-      }) {}
-
-      const inputs = new Map()
-      inputs.set("MyInput", { name: "MyInput", schema: MyInput })
-
-      const cache = buildInputTypeLookupCache(inputs, new Map())
-
-      // The cache should have the original AST
-      expect(cache.astToInputName!.get(MyInput.ast)).toBe("MyInput")
-
-      // And also unwrapped forms (Transformation.to, Declaration.typeParameters[0])
-      const transformationTo = (MyInput.ast as any).to
-      expect(cache.astToInputName!.get(transformationTo)).toBe("MyInput")
-    })
-
-    it("buildReverseLookups should map unwrapped transformation ASTs for types", () => {
-      class MyType extends S.Class<MyType>("MyType")({
-        id: S.String,
-      }) {}
-
-      const myGraphQLType = new GraphQLObjectType({
-        name: "MyType",
-        fields: { id: { type: GraphQLString } },
-      })
-
-      const ctx = createEmptyContext()
-      ctx.types.set("MyType", { name: "MyType", schema: MyType })
-      ctx.typeRegistry.set("MyType", myGraphQLType)
-
-      buildReverseLookups(ctx)
-
-      // The lookup should have the original AST
-      expect(ctx.astToTypeName!.get(MyType.ast)).toBe("MyType")
-
-      // And also unwrapped forms
-      const transformationTo = (MyType.ast as any).to
-      expect(ctx.astToTypeName!.get(transformationTo)).toBe("MyType")
-    })
-
     it("should find registered type via unwrapped AST lookup", () => {
       class UserType extends S.Class<UserType>("UserType")({
         id: S.String,
@@ -1172,9 +1227,9 @@ describe("type-registry.ts", () => {
   })
 
   // ==========================================================================
-  // Bug fixes - S.Option(TransformationSchema) in args
+  // Registered Option schemas in arguments
   // ==========================================================================
-  describe("Bug fixes - S.Option(TransformationSchema) in args", () => {
+  describe("Registered Option schemas in arguments", () => {
     it("should find registered input when using S.Option(Schema.Class) in args - with cache", () => {
       // Simulates: S.Option(CursorFromHex) where CursorFromHex is a Schema.Class
       class CursorFromHex extends S.Class<CursorFromHex>("CursorFromHex")({
@@ -1317,7 +1372,6 @@ describe("type-registry.ts", () => {
       const inputs = new Map()
       inputs.set("CursorInput", { name: "CursorInput", schema: CursorFromHex })
 
-      // Args schema with optional cursor (using S.optional which creates Union[Type, UndefinedKeyword])
       const ArgsSchema = S.Struct({
         limit: S.Int,
         cursor: S.optional(CursorFromHex),
@@ -1336,125 +1390,6 @@ describe("type-registry.ts", () => {
       expect(args.cursor).toBeDefined()
       // The cursor type should be the registered CursorInput (nullable since it's optional)
       expect(args.cursor.type).toBe(cursorInputType)
-    })
-
-    it("DEBUG: inspect S.OptionFromSelf AST structure", () => {
-      // Debug test to understand S.OptionFromSelf structure
-      class CursorFromHex extends S.Class<CursorFromHex>("CursorFromHex")({
-        value: S.String,
-      }) {}
-
-      const OptionalCursor = S.OptionFromSelf(CursorFromHex)
-      const ast = OptionalCursor.ast as any
-
-      console.log("S.OptionFromSelf AST structure:")
-      console.log("ast._tag:", ast._tag)
-
-      if (ast._tag === "Declaration") {
-        console.log("It's a Declaration (not Transformation)")
-        console.log("ast.typeParameters count:", ast.typeParameters?.length)
-        if (ast.typeParameters?.[0]) {
-          console.log("typeParameters[0]._tag:", ast.typeParameters[0]._tag)
-          console.log(
-            "typeParameters[0] === CursorFromHex.ast:",
-            ast.typeParameters[0] === CursorFromHex.ast
-          )
-        }
-      } else if (ast._tag === "Transformation") {
-        console.log("ast.from._tag:", ast.from?._tag)
-        console.log("ast.to._tag:", ast.to?._tag)
-      }
-
-      // Verify it's a Declaration (Option declaration)
-      expect(ast._tag).toBe("Declaration")
-    })
-
-    it("DEBUG: inspect S.optional inside Struct AST structure", () => {
-      // Debug test to understand how S.optional works inside a Struct
-      class CursorFromHex extends S.Class<CursorFromHex>("CursorFromHex")({
-        value: S.String,
-      }) {}
-
-      // S.optional is used inside a Struct to create optional fields
-      const Schema = S.Struct({
-        cursor: S.optional(CursorFromHex),
-      })
-      const ast = Schema.ast as any
-
-      console.log("S.Struct with S.optional AST structure:")
-      console.log("ast._tag:", ast._tag)
-
-      if (ast._tag === "TypeLiteral") {
-        const cursorProp = ast.propertySignatures?.find((p: any) => String(p.name) === "cursor")
-        if (cursorProp) {
-          console.log("cursor.isOptional:", cursorProp.isOptional)
-          console.log("cursor.type._tag:", cursorProp.type._tag)
-          if (cursorProp.type._tag === "Union") {
-            console.log("cursor.type.types count:", cursorProp.type.types?.length)
-            for (let i = 0; i < cursorProp.type.types?.length; i++) {
-              const memberType = cursorProp.type.types[i]
-              console.log(`  type[${i}]._tag:`, memberType._tag)
-              console.log(`  type[${i}] === CursorFromHex.ast:`, memberType === CursorFromHex.ast)
-            }
-          }
-        }
-      }
-
-      expect(ast._tag).toBe("TypeLiteral")
-    })
-
-    it("DEBUG: inspect S.Option AST structure", () => {
-      // Debug test to understand the AST structure
-      class CursorFromHex extends S.Class<CursorFromHex>("CursorFromHex")({
-        value: S.String,
-      }) {}
-
-      const OptionalCursor = S.Option(CursorFromHex)
-      const ast = OptionalCursor.ast as any
-
-      // Log the structure for debugging
-      console.log("S.Option AST structure:")
-      console.log("ast._tag:", ast._tag)
-
-      if (ast._tag === "Transformation") {
-        console.log("ast.from._tag:", ast.from?._tag)
-        console.log("ast.to._tag:", ast.to?._tag)
-
-        if (ast.from?._tag === "Union") {
-          console.log("ast.from.types count:", ast.from.types?.length)
-          for (let i = 0; i < ast.from.types?.length; i++) {
-            const memberAst = ast.from.types[i]
-            console.log(`  member[${i}]._tag:`, memberAst._tag)
-            if (memberAst._tag === "TypeLiteral") {
-              const props = memberAst.propertySignatures?.map((p: any) => String(p.name))
-              console.log(`  member[${i}].properties:`, props)
-              const valueField = memberAst.propertySignatures?.find(
-                (p: any) => String(p.name) === "value"
-              )
-              if (valueField) {
-                console.log(`  member[${i}].value.type._tag:`, valueField.type?._tag)
-                console.log(
-                  `  member[${i}].value.type === CursorFromHex.ast:`,
-                  valueField.type === CursorFromHex.ast
-                )
-                // Check unwrapped forms
-                let unwrapped = CursorFromHex.ast as any
-                while (unwrapped._tag === "Transformation") {
-                  console.log(`  CursorFromHex unwrapped to:`, unwrapped.to?._tag)
-                  unwrapped = unwrapped.to
-                }
-                console.log(
-                  `  member[${i}].value.type === unwrapped CursorFromHex:`,
-                  valueField.type === unwrapped
-                )
-              }
-            }
-          }
-        }
-      }
-
-      // The test itself - just verify it's a Transformation
-      expect(ast._tag).toBe("Transformation")
     })
   })
 
@@ -1502,4 +1437,643 @@ describe("type-registry.ts", () => {
       expect(args.limit).toBeDefined()
     })
   })
+})
+
+describe("registered unencoded key-context variants", () => {
+  it.each([
+    ["optional", false],
+    ["optional", true],
+    ["mutable", false],
+    ["mutable", true],
+    ["both", false],
+    ["both", true],
+  ] as const)("prefers explicit %s registrations over aliases (%s)", async (modifier, reversed) => {
+    const Token = S.String.annotate({ identifier: "TokenValue" })
+    const KeyToken =
+      modifier === "optional"
+        ? S.optionalKey(Token)
+        : modifier === "mutable"
+          ? S.mutableKey(Token)
+          : S.optionalKey(S.mutableKey(Token))
+    const registrations = [
+      { name: "BaseToken", schema: Token },
+      { name: "KeyToken", schema: KeyToken },
+    ]
+    let builder = GraphQLSchemaBuilder.empty
+    for (const registration of reversed ? registrations.reverse() : registrations) {
+      builder = builder.objectType({
+        ...registration,
+        fields: {
+          kind: { type: S.String, resolve: () => Effect.succeed(registration.name) },
+        },
+      })
+    }
+    const schema = builder
+      .query("direct", { type: KeyToken, resolve: () => Effect.succeed("token") })
+      .query("nested", {
+        type: S.Struct({ base: Token, key: KeyToken }).annotate({ identifier: "TokenPair" }),
+        resolve: () => Effect.succeed({ base: "token", key: "token" }),
+      })
+      .buildSchema()
+    const result = await Effect.runPromise(
+      execute(schema, Layer.empty)("{ direct { kind } nested { base { kind } key { kind } } }")
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({
+      direct: { kind: "KeyToken" },
+      nested: { base: { kind: "BaseToken" }, key: { kind: "KeyToken" } },
+    })
+  })
+
+  it.each([false, true])(
+    "preserves computed fields, nullability, and distinct primitive registrations (%s)",
+    async (reversed) => {
+      const Token = S.String.annotate({ identifier: "TokenValue" })
+      const OtherToken = S.String.annotate({ identifier: "TokenValue" })
+      const Result = S.Struct({
+        required: Token,
+        mutable: S.mutableKey(Token),
+        optional: S.optionalKey(Token),
+        mutableOptional: S.mutableKey(S.optionalKey(Token)),
+        optionalMutable: S.optionalKey(S.mutableKey(Token)),
+        optionalValue: S.optional(Token),
+        other: S.optionalKey(OtherToken),
+      }).annotate({ identifier: "TokenResult" })
+      const registrations = [
+        {
+          name: "Token",
+          schema: Token,
+          fields: {
+            valid: {
+              type: S.Boolean,
+              resolve: (token: string) => Effect.succeed(token === "valid"),
+            },
+          },
+        },
+        {
+          name: "OtherToken",
+          schema: OtherToken,
+          fields: {
+            valid: { type: S.Boolean, resolve: () => Effect.succeed(false) },
+          },
+        },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reversed ? registrations.reverse() : registrations) {
+        builder = builder.objectType(registration)
+      }
+      const schema = builder
+        .query("result", {
+          type: Result,
+          resolve: () =>
+            Effect.succeed({
+              required: "valid",
+              mutable: "invalid",
+              optional: "valid",
+              mutableOptional: "valid",
+              optionalMutable: "valid",
+              optionalValue: "valid",
+              other: "valid",
+            }),
+        })
+        .query("absent", {
+          type: Result,
+          resolve: () => Effect.succeed({ required: "valid", mutable: "valid" }),
+        })
+        .buildSchema()
+
+      const fields = (
+        getNamedType(schema.getQueryType()!.getFields().result.type) as GraphQLObjectType
+      ).getFields()
+      expect(
+        Object.fromEntries(
+          Object.entries(fields).map(([name, field]) => [name, String(field.type)])
+        )
+      ).toEqual({
+        required: "Token!",
+        mutable: "Token!",
+        optional: "Token",
+        mutableOptional: "Token",
+        optionalMutable: "Token",
+        optionalValue: "Token",
+        other: "OtherToken",
+      })
+      const result = await Effect.runPromise(
+        execute(
+          schema,
+          Layer.empty
+        )(`{
+          result {
+            required { valid }
+            mutable { valid }
+            optional { valid }
+            mutableOptional { valid }
+            optionalMutable { valid }
+            optionalValue { valid }
+            other { valid }
+          }
+          absent {
+            required { valid }
+            mutable { valid }
+            optional { valid }
+            mutableOptional { valid }
+            optionalMutable { valid }
+            optionalValue { valid }
+            other { valid }
+          }
+        }`)
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        result: {
+          required: { valid: true },
+          mutable: { valid: false },
+          optional: { valid: true },
+          mutableOptional: { valid: true },
+          optionalMutable: { valid: true },
+          optionalValue: { valid: true },
+          other: { valid: false },
+        },
+        absent: {
+          required: { valid: true },
+          mutable: { valid: true },
+          optional: null,
+          mutableOptional: null,
+          optionalMutable: null,
+          optionalValue: null,
+          other: null,
+        },
+      })
+    }
+  )
+})
+
+describe("exact registration precedence", () => {
+  it.each([
+    ["optional", false],
+    ["optional", true],
+    ["mutable", false],
+    ["mutable", true],
+    ["both", false],
+    ["both", true],
+  ] as const)(
+    "keeps struct %s key registrations distinct in nested selections and named inputs (%s)",
+    async (modifier, reversed) => {
+      const Base = S.Struct({ id: S.String })
+      const Key =
+        modifier === "optional"
+          ? S.optionalKey(Base)
+          : modifier === "mutable"
+            ? S.mutableKey(Base)
+            : S.optionalKey(S.mutableKey(Base))
+      const Pair = S.Struct({ base: Base, key: Key })
+      const registrations = [
+        { name: "Base", schema: Base },
+        { name: "Key", schema: Key },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reversed ? registrations.reverse() : registrations) {
+        builder = builder
+          .objectType({
+            ...registration,
+            fields: {
+              [registration.name === "Base" ? "baseOnly" : "keyOnly"]: {
+                type: S.String,
+                resolve: () => Effect.succeed(registration.name),
+              },
+            },
+          })
+          .inputType({ name: `${registration.name}Input`, schema: registration.schema })
+      }
+      const schema = builder
+        .unionType({ name: "Either", types: ["Base", "Key"], resolveType: () => "Key" })
+        .inputType({ name: "PairInput", schema: Pair })
+        .query("directBase", {
+          type: Base,
+          resolve: () => Effect.succeed({ id: "base" }),
+        })
+        .query("directKey", {
+          type: Key,
+          resolve: () => Effect.succeed({ id: "key" }),
+        })
+        .query("nested", {
+          type: Pair,
+          resolve: () => Effect.succeed({ base: { id: "base" }, key: { id: "key" } }),
+        })
+        .query("either", {
+          type: S.Union([Base, Key]),
+          resolve: () => Effect.succeed({ id: "key" }),
+        })
+        .query("echo", {
+          type: S.String,
+          args: S.Struct({ base: Base, key: Key, pair: Pair }),
+          resolve: ({ base, key, pair }) =>
+            Effect.succeed(`${base.id}:${key?.id}:${pair.base.id}:${pair.key?.id}`),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)(
+          `query($base: BaseInput!, $key: KeyInput${modifier === "mutable" ? "!" : ""}, $pair: PairInput!) {
+            directBase { baseOnly }
+            either { __typename ... on Key { keyOnly } }
+            directKey { keyOnly }
+            nested { base { baseOnly } key { keyOnly } }
+            echo(base: $base, key: $key, pair: $pair)
+          }`,
+          {
+            base: { id: "base" },
+            key: { id: "key" },
+            pair: { base: { id: "nested-base" }, key: { id: "nested-key" } },
+          }
+        )
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        directBase: { baseOnly: "Base" },
+        directKey: { keyOnly: "Key" },
+        either: { __typename: "Key", keyOnly: "Key" },
+        nested: { base: { baseOnly: "Base" }, key: { keyOnly: "Key" } },
+        echo: "base:key:nested-base:nested-key",
+      })
+    }
+  )
+
+  it.each([
+    ["optional", false],
+    ["optional", true],
+    ["mutable", false],
+    ["mutable", true],
+    ["both", false],
+    ["both", true],
+  ] as const)(
+    "keeps struct %s key interface registrations distinct in nested selections (%s)",
+    async (modifier, reversed) => {
+      const Base = S.Struct({ id: S.String })
+      const Key =
+        modifier === "optional"
+          ? S.optionalKey(Base)
+          : modifier === "mutable"
+            ? S.mutableKey(Base)
+            : S.optionalKey(S.mutableKey(Base))
+      const registrations = [
+        { name: "BaseNode", schema: Base, resolveType: () => "BaseValue" },
+        { name: "KeyNode", schema: Key, resolveType: () => "KeyValue" },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reversed ? registrations.reverse() : registrations) {
+        builder = builder.interfaceType(registration)
+      }
+      const schema = builder
+        .objectType({
+          name: "BaseValue",
+          schema: S.Struct({ id: S.String }),
+          implements: ["BaseNode"],
+        })
+        .objectType({
+          name: "KeyValue",
+          schema: S.Struct({ id: S.String }),
+          implements: ["KeyNode"],
+        })
+        .query("nested", {
+          type: S.Struct({ base: Base, key: Key }),
+          resolve: () => Effect.succeed({ base: { id: "base" }, key: { id: "key" } }),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)("{ nested { base { __typename id } key { __typename id } } }")
+      )
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        nested: {
+          base: { __typename: "BaseValue", id: "base" },
+          key: { __typename: "KeyValue", id: "key" },
+        },
+      })
+    }
+  )
+
+  it("reuses a struct registration for unregistered key variants in output and input", async () => {
+    const Base = S.Struct({ id: S.String })
+    const Variants = S.Struct({
+      optional: S.optionalKey(Base),
+      mutable: S.mutableKey(Base),
+      mutableOptional: S.mutableKey(S.optionalKey(Base)),
+      optionalMutable: S.optionalKey(S.mutableKey(Base)),
+    })
+    const schema = GraphQLSchemaBuilder.empty
+      .objectType({
+        name: "Base",
+        schema: Base,
+        fields: { kind: { type: S.String, resolve: () => Effect.succeed("Base") } },
+      })
+      .inputType({ name: "BaseInput", schema: Base })
+      .query("variants", {
+        type: Variants,
+        resolve: () =>
+          Effect.succeed({
+            optional: { id: "1" },
+            mutable: { id: "2" },
+            mutableOptional: { id: "3" },
+            optionalMutable: { id: "4" },
+          }),
+      })
+      .query("echo", {
+        type: S.String,
+        args: Variants,
+        resolve: ({ optional, mutable, mutableOptional, optionalMutable }) =>
+          Effect.succeed(
+            `${optional?.id}:${mutable.id}:${mutableOptional?.id}:${optionalMutable?.id}`
+          ),
+      })
+      .buildSchema()
+    const result = await Effect.runPromise(
+      execute(schema, Layer.empty)(
+        `query($value: BaseInput!) {
+          variants {
+            optional { kind }
+            mutable { kind }
+            mutableOptional { kind }
+            optionalMutable { kind }
+          }
+          echo(optional: $value, mutable: $value, mutableOptional: $value, optionalMutable: $value)
+        }`,
+        { value: { id: "input" } }
+      )
+    )
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({
+      variants: {
+        optional: { kind: "Base" },
+        mutable: { kind: "Base" },
+        mutableOptional: { kind: "Base" },
+        optionalMutable: { kind: "Base" },
+      },
+      echo: "input:input:input:input",
+    })
+  })
+
+  it.each([false, true])(
+    "keeps an explicitly registered transformation distinct from its registered projection (%s)",
+    async (projectedFirst) => {
+      const decoded = S.Struct({ id: S.String })
+      const original = S.String.pipe(
+        S.decodeTo(decoded, {
+          decode: SchemaGetter.transform((id) => ({ id })),
+          encode: SchemaGetter.transform((value) => value.id),
+        })
+      )
+      const projected = S.toType(original)
+      const ctx = createEmptyContext()
+      const registrations = [
+        { name: "Original", schema: original },
+        { name: "Projected", schema: projected },
+      ]
+      for (const registration of projectedFirst ? registrations.reverse() : registrations) {
+        ctx.types.set(registration.name, registration)
+        ctx.typeRegistry.set(
+          registration.name,
+          new GraphQLObjectType({
+            name: registration.name,
+            fields: {
+              [registration.name === "Original" ? "originalOnly" : "projectedOnly"]: {
+                type: GraphQLString,
+                resolve: () => registration.name,
+              },
+            },
+          })
+        )
+      }
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            original: {
+              type: toGraphQLTypeWithRegistry(original, ctx),
+              resolve: () => ({ id: "1" }),
+            },
+            nested: {
+              type: toGraphQLTypeWithRegistry(
+                S.Struct({ original: S.optionalKey(original), projected }),
+                ctx
+              ),
+              resolve: () => ({ original: { id: "2" }, projected: { id: "3" } }),
+            },
+          },
+        }),
+      })
+      const result = await graphql({
+        schema,
+        source:
+          "{ original { originalOnly } nested { original { originalOnly } projected { projectedOnly } } }",
+      })
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        original: { originalOnly: "Original" },
+        nested: {
+          original: { originalOnly: "Original" },
+          projected: { projectedOnly: "Projected" },
+        },
+      })
+    }
+  )
+
+  it.each([false, true])(
+    "keeps generated wrappers distinct from their projection when projected-first is %s",
+    async (projectedFirst) => {
+      const original = S.String.pipe(
+        S.decodeTo(S.Struct({ id: S.String }), {
+          decode: SchemaGetter.transform((id) => ({ id })),
+          encode: SchemaGetter.transform((value) => value.id),
+        })
+      )
+      const projected = S.toType(original)
+      const wrapper = S.Struct({ value: original })
+      const projectedWrapper = S.toType(wrapper)
+      const ctx = createEmptyContext()
+      for (const registration of [
+        { name: "Original", schema: original },
+        { name: "Projected", schema: projected },
+      ]) {
+        ctx.types.set(registration.name, registration)
+        ctx.typeRegistry.set(
+          registration.name,
+          new GraphQLObjectType({
+            name: registration.name,
+            fields: {
+              [registration.name === "Original" ? "originalOnly" : "projectedOnly"]: {
+                type: GraphQLString,
+                resolve: () => registration.name,
+              },
+            },
+          })
+        )
+      }
+      const wrappers = projectedFirst ? [projectedWrapper, wrapper] : [wrapper, projectedWrapper]
+      const converted = wrappers.map((schema) => toGraphQLTypeWithRegistry(schema, ctx))
+      const [originalType, projectedType] = projectedFirst ? converted.reverse() : converted
+      expect(originalType).not.toBe(projectedType)
+      const schema = new GraphQLSchema({
+        query: new GraphQLObjectType({
+          name: "Query",
+          fields: {
+            original: { type: originalType, resolve: () => ({ value: { id: "1" } }) },
+            projected: { type: projectedType, resolve: () => ({ value: { id: "2" } }) },
+          },
+        }),
+      })
+      const result = await graphql({
+        schema,
+        source: "{ original { value { originalOnly } } projected { value { projectedOnly } } }",
+      })
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({
+        original: { value: { originalOnly: "Original" } },
+        projected: { value: { projectedOnly: "Projected" } },
+      })
+    }
+  )
+
+  it.each([false, true])(
+    "accepts distinct named inputs through generated wrappers (encoded first: %s)",
+    async (encodedFirst) => {
+      const Original = S.Struct({ amount: S.NumberFromString })
+      const Encoded = S.toEncoded(Original)
+      const Wrapper = S.Struct({ value: Original })
+      const EncodedWrapper = S.toEncoded(Wrapper)
+      const Nested = S.Struct({ items: S.Option(S.Array(S.suspend(() => Wrapper))) })
+      const EncodedNested = S.toEncoded(Nested)
+      const args = encodedFirst
+        ? S.Struct({
+            encoded: EncodedWrapper,
+            original: Wrapper,
+            encodedNested: EncodedNested,
+            originalNested: Nested,
+          })
+        : S.Struct({
+            original: Wrapper,
+            encoded: EncodedWrapper,
+            originalNested: Nested,
+            encodedNested: EncodedNested,
+          })
+      const schema = GraphQLSchemaBuilder.empty
+        .inputType({ name: "OriginalInput", schema: Original })
+        .inputType({ name: "EncodedInput", schema: Encoded })
+        .query("inspect", {
+          type: S.String,
+          args,
+          resolve: ({ original, encoded, originalNested, encodedNested }) =>
+            Effect.succeed(
+              JSON.stringify({
+                original: original.value.amount,
+                encoded: encoded.value.amount,
+                originalNested: Option.getOrElse(originalNested.items, () => [])[0].value.amount,
+                encodedNested: Option.getOrElse(encodedNested.items, () => [])[0].value.amount,
+              })
+            ),
+        })
+        .buildSchema()
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)(
+          `query($original: OriginalInput!, $encoded: EncodedInput!) {
+            inspect(
+              original: { value: $original }
+              encoded: { value: $encoded }
+              originalNested: { items: [{ value: $original }] }
+              encodedNested: { items: [{ value: $encoded }] }
+            )
+          }`,
+          { original: { amount: "2" }, encoded: { amount: "3" } }
+        )
+      )
+      expect(result.errors).toBeUndefined()
+      expect(JSON.parse(String(result.data?.inspect))).toEqual({
+        original: 2,
+        encoded: "3",
+        originalNested: 2,
+        encodedNested: "3",
+      })
+    }
+  )
+
+  it("reuses generated recursive objects through unregistered key variants", async () => {
+    interface Node {
+      readonly id: string
+      readonly next?: Node
+    }
+    const NodeSchema: S.Schema<Node> = S.Struct({
+      id: S.String,
+      next: S.optionalKey(S.suspend(() => NodeSchema)),
+    })
+    const ctx = createEmptyContext()
+    const type = toGraphQLTypeWithRegistry(NodeSchema, ctx) as GraphQLObjectType
+    for (const variant of [
+      S.optionalKey(NodeSchema),
+      S.mutableKey(NodeSchema),
+      S.mutableKey(S.optionalKey(NodeSchema)),
+      S.optionalKey(S.mutableKey(NodeSchema)),
+    ]) {
+      expect(toGraphQLTypeWithRegistry(variant, ctx)).toBe(type)
+    }
+    expect(getNamedType(type.getFields().next.type)).toBe(type)
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          node: {
+            type,
+            resolve: () => ({ id: "1", next: { id: "2", next: { id: "3" } } }),
+          },
+        },
+      }),
+    })
+    const result = await graphql({
+      schema,
+      source: "{ node { id next { id next { id } } } }",
+    })
+    expect(result.errors).toBeUndefined()
+    expect(result.data).toEqual({
+      node: { id: "1", next: { id: "2", next: { id: "3" } } },
+    })
+  })
+
+  it.each([false, true])(
+    "keeps optional-key codecs distinct when their encoded input is shared (%s)",
+    async (reversed) => {
+      const encoded = S.Struct({ id: S.String })
+      const decoded = S.Struct({ id: S.String })
+      const one = encoded.pipe(S.decodeTo(decoded))
+      const two = encoded.pipe(S.decodeTo(decoded))
+      const registrations = [
+        { name: "OneInput", schema: one },
+        { name: "TwoInput", schema: two },
+      ]
+      let builder = GraphQLSchemaBuilder.empty
+      for (const registration of reversed ? registrations.reverse() : registrations) {
+        builder = builder.inputType(registration)
+      }
+      const schema = builder
+        .query("echo", {
+          type: S.String,
+          args: S.Struct({
+            one: S.OptionFromOptionalKey(one),
+            two: S.OptionFromOptionalKey(two),
+          }),
+          resolve: ({ one, two }) =>
+            Effect.succeed(
+              `${Option.isSome(one) ? one.value.id : "absent"}:${Option.isSome(two) ? two.value.id : "absent"}`
+            ),
+        })
+        .buildSchema()
+
+      const result = await Effect.runPromise(
+        execute(schema, Layer.empty)(
+          "query($one: OneInput, $two: TwoInput) { echo(one: $one, two: $two) }",
+          { one: { id: "1" }, two: { id: "2" } }
+        )
+      )
+
+      expect(result.errors).toBeUndefined()
+      expect(result.data).toEqual({ echo: "1:2" })
+    }
+  )
 })

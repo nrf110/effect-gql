@@ -19,8 +19,10 @@ const runValidation = (
   operationName?: string,
   variables?: Record<string, unknown>
 ) =>
-  Effect.runPromiseExit(
-    validateComplexity(query, operationName, variables, schema, fieldComplexities, config)
+  Effect.runPromise(
+    Effect.result(
+      validateComplexity(query, operationName, variables, schema, fieldComplexities, config)
+    )
   )
 
 // Test schema
@@ -65,8 +67,8 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
-        expect(result.value.depth).toBe(1)
-        expect(result.value.complexity).toBeGreaterThan(0)
+        expect(result.success.depth).toBe(1)
+        expect(result.success.complexity).toBeGreaterThan(0)
       }
     })
 
@@ -89,13 +91,9 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
-        const error = result.cause
-        expect(error._tag).toBe("Fail")
-        if (error._tag === "Fail") {
-          expect(error.error._tag).toBe("ComplexityLimitExceededError")
-          if (error.error._tag === "ComplexityLimitExceededError") {
-            expect(error.error.limitType).toBe("depth")
-          }
+        expect(result.failure._tag).toBe("ComplexityLimitExceededError")
+        if (result.failure._tag === "ComplexityLimitExceededError") {
+          expect(result.failure.limitType).toBe("depth")
         }
       }
     })
@@ -120,13 +118,9 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
-        const error = result.cause
-        expect(error._tag).toBe("Fail")
-        if (error._tag === "Fail") {
-          expect(error.error._tag).toBe("ComplexityLimitExceededError")
-          if (error.error._tag === "ComplexityLimitExceededError") {
-            expect(error.error.limitType).toBe("complexity")
-          }
+        expect(result.failure._tag).toBe("ComplexityLimitExceededError")
+        if (result.failure._tag === "ComplexityLimitExceededError") {
+          expect(result.failure.limitType).toBe("complexity")
         }
       }
     })
@@ -146,13 +140,9 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
-        const error = result.cause
-        expect(error._tag).toBe("Fail")
-        if (error._tag === "Fail") {
-          expect(error.error._tag).toBe("ComplexityLimitExceededError")
-          if (error.error._tag === "ComplexityLimitExceededError") {
-            expect(error.error.limitType).toBe("aliases")
-          }
+        expect(result.failure._tag).toBe("ComplexityLimitExceededError")
+        if (result.failure._tag === "ComplexityLimitExceededError") {
+          expect(result.failure.limitType).toBe("aliases")
         }
       }
     })
@@ -177,13 +167,9 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
-        const error = result.cause
-        expect(error._tag).toBe("Fail")
-        if (error._tag === "Fail") {
-          expect(error.error._tag).toBe("ComplexityLimitExceededError")
-          if (error.error._tag === "ComplexityLimitExceededError") {
-            expect(error.error.limitType).toBe("fields")
-          }
+        expect(result.failure._tag).toBe("ComplexityLimitExceededError")
+        if (result.failure._tag === "ComplexityLimitExceededError") {
+          expect(result.failure.limitType).toBe("fields")
         }
       }
     })
@@ -248,7 +234,7 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
-        expect(result.value.fieldCount).toBeGreaterThan(3) // user + fragment fields
+        expect(result.success.fieldCount).toBeGreaterThan(3) // user + fragment fields
       }
     })
 
@@ -292,7 +278,7 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
-        expect(result.value.depth).toBe(1)
+        expect(result.success.depth).toBe(1)
       }
     })
 
@@ -313,11 +299,7 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
-        const error = result.cause
-        expect(error._tag).toBe("Fail")
-        if (error._tag === "Fail") {
-          expect(error.error._tag).toBe("ComplexityAnalysisError")
-        }
+        expect(result.failure._tag).toBe("ComplexityAnalysisError")
       }
     })
 
@@ -361,11 +343,7 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
-        const error = result.cause
-        expect(error._tag).toBe("Fail")
-        if (error._tag === "Fail") {
-          expect(error.error._tag).toBe("ComplexityAnalysisError")
-        }
+        expect(result.failure._tag).toBe("ComplexityAnalysisError")
       }
     })
 
@@ -379,7 +357,7 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
-        expect(result.value.complexity).toBe(50)
+        expect(result.success.complexity).toBe(50)
       }
     })
 
@@ -392,7 +370,7 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
-        expect(result.value.complexity).toBe(0)
+        expect(result.success.complexity).toBe(0)
       }
     })
   })
@@ -415,7 +393,7 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
-        expect(result.value.depth).toBe(4) // user.posts.comments.text
+        expect(result.success.depth).toBe(4) // user.posts.comments.text
       }
     })
 
@@ -437,7 +415,7 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
-        expect(result.value.fieldCount).toBe(6) // user, id, name, posts, id, title
+        expect(result.success.fieldCount).toBe(6) // user, id, name, posts, id, title
       }
     })
   })
@@ -459,10 +437,10 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
-        expect(result.value.depth).toBe(3)
-        expect(result.value.complexity).toBe(0) // depth-only doesn't calculate complexity
-        expect(result.value.fieldCount).toBe(0)
-        expect(result.value.aliasCount).toBe(0)
+        expect(result.success.depth).toBe(3)
+        expect(result.success.complexity).toBe(0) // depth-only doesn't calculate complexity
+        expect(result.success.fieldCount).toBe(0)
+        expect(result.success.aliasCount).toBe(0)
       }
     })
   })
@@ -489,10 +467,10 @@ describe("Complexity Analysis", () => {
 
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
-        expect(result.value.depth).toBe(100) // Max from custom
-        expect(result.value.complexity).toBe(5) // Max from custom
-        expect(result.value.fieldCount).toBe(50) // Max from custom
-        expect(result.value.aliasCount).toBe(25) // Max from custom
+        expect(result.success.depth).toBe(100) // Max from custom
+        expect(result.success.complexity).toBe(5) // Max from custom
+        expect(result.success.fieldCount).toBe(50) // Max from custom
+        expect(result.success.aliasCount).toBe(25)
       }
     })
   })
@@ -562,7 +540,7 @@ describe("Complexity Analysis", () => {
       expect(result._tag).toBe("Success")
       if (result._tag === "Success") {
         // 30 * 2 = 60, plus 1 for id field
-        expect(result.value.complexity).toBe(61)
+        expect(result.success.complexity).toBe(61)
       }
     })
   })

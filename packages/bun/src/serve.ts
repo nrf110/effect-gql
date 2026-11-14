@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { HttpApp, HttpRouter, HttpServer } from "@effect/platform"
+import { HttpRouter } from "effect/http"
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import type { GraphQLSchema } from "graphql"
 import type { GraphQLWSOptions } from "@effect-gql/core"
@@ -43,6 +43,7 @@ export interface ServeOptions<R = never> {
  *
  * This is the main entry point for running a GraphQL server on Bun.
  * It handles all the Effect runtime setup and server lifecycle.
+ * Requires Bun 1.4.2 or later; older runtimes are rejected before startup.
  *
  * @param router - The HttpRouter to serve (typically from makeGraphQLRouter or toRouter)
  * @param layer - Layer providing the router's service dependencies
@@ -74,109 +75,84 @@ export interface ServeOptions<R = never> {
  * ```
  */
 export const serve = <E, R, RE>(
-  router: HttpRouter.HttpRouter<E, R>,
+  router: Layer.Layer<
+    never,
+    E,
+    | HttpRouter.HttpRouter
+    | NoInfer<R>
+    | HttpRouter.Request<"Requires", NoInfer<R>>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", NoInfer<R>>
+    | HttpRouter.Request<"GlobalError", unknown>
+  >,
   layer: Layer.Layer<R, RE>,
-  options: ServeOptions<R> = {}
+  options: ServeOptions<NoInfer<R>> = {}
 ): void => {
-  const { port = 4000, host = "0.0.0.0", onStart, subscriptions } = options
-
-  if (subscriptions) {
-    // With WebSocket subscriptions - use Bun.serve() directly
-    serveWithSubscriptions(router, layer, port, host, subscriptions, onStart)
-  } else {
-    // Without subscriptions - use the standard Effect approach
-    const app = router.pipe(
-      Effect.catchAllCause((cause) => Effect.die(cause)),
-      HttpServer.serve()
+  if (!Bun.semver.satisfies(Bun.version, ">=1.4.2")) {
+    throw new Error(
+      `@effect-gql/bun requires Bun >=1.4.2; found ${Bun.version}. Upgrade Bun to ensure WebSocket shutdown completes.`
     )
-
-    const serverLayer = BunHttpServer.layer({ port })
-    const fullLayer = Layer.merge(serverLayer, layer)
-
-    if (onStart) {
-      onStart(`http://${host === "0.0.0.0" ? "localhost" : host}:${port}`)
-    }
-
-    BunRuntime.runMain(Layer.launch(Layer.provide(app, fullLayer)))
   }
-}
 
-/**
- * Internal implementation for serving with WebSocket subscriptions.
- * Uses Bun.serve() directly to enable WebSocket support.
- */
-function serveWithSubscriptions<E, R, RE>(
-  router: HttpRouter.HttpRouter<E, R>,
-  layer: Layer.Layer<R, RE>,
-  port: number,
-  host: string,
-  subscriptions: SubscriptionsConfig<R>,
-  onStart?: (url: string) => void
-): void {
-  // Dynamically import ws module to keep it optional
-  const importWs = Effect.tryPromise({
-    try: () => import("./ws"),
-    catch: (error) => error as Error,
-  })
+  const { port = 4000, host = "0.0.0.0", onStart, subscriptions } = options
+  const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}`
+  // Resolve construction services before interpreting request requirement markers.
+  const routes: Layer.Layer<
+    R,
+    E | RE,
+    | HttpRouter.HttpRouter
+    | HttpRouter.Request<"Requires", R>
+    | HttpRouter.Request<"Error", unknown>
+    | HttpRouter.Request<"GlobalRequires", R>
+    | HttpRouter.Request<"GlobalError", unknown>
+  > = Layer.provideMerge(router, layer)
 
-  Effect.runPromise(
-    importWs.pipe(
-      Effect.catchAll((error) =>
-        Effect.logError("Failed to load WebSocket support", error).pipe(
-          Effect.andThen(Effect.sync(() => process.exit(1))),
-          Effect.andThen(Effect.fail(error))
-        )
-      )
+  if (!subscriptions) {
+    const app = HttpRouter.serve(routes).pipe(Layer.provide(layer))
+    const serverLayer = BunHttpServer.layer({ port, hostname: host })
+    if (onStart) onStart(url)
+    BunRuntime.runMain(Layer.launch(Layer.provide(app, serverLayer)))
+    return
+  }
+
+  const program = Effect.gen(function* () {
+    const { createBunWSHandlers } = yield* Effect.tryPromise(() => import("./ws"))
+    const app = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        HttpRouter.toWebHandler<
+          R,
+          E | RE,
+          | HttpRouter.HttpRouter
+          | HttpRouter.Request<"Requires", R>
+          | HttpRouter.Request<"Error", unknown>
+          | HttpRouter.Request<"GlobalRequires", R>
+          | HttpRouter.Request<"GlobalError", unknown>,
+          never,
+          never
+        >(routes)
+      ),
+      ({ dispose }) => Effect.promise(dispose)
     )
-  ).then(({ createBunWSHandlers }) => {
-    // Create the web handler from the Effect router
-    const { handler } = HttpApp.toWebHandlerLayer(router, layer)
-
-    // Create WebSocket handlers
-    const { upgrade, websocket } = createBunWSHandlers(
-      subscriptions.schema,
-      layer as Layer.Layer<R>,
-      {
-        path: subscriptions.path,
-        complexity: subscriptions.complexity,
-        fieldComplexities: subscriptions.fieldComplexities,
-        onConnect: subscriptions.onConnect,
-        onDisconnect: subscriptions.onDisconnect,
-        onSubscribe: subscriptions.onSubscribe,
-        onComplete: subscriptions.onComplete,
-        onError: subscriptions.onError,
-      }
+    const { upgrade, websocket } = yield* Effect.acquireRelease(
+      Effect.sync(() => createBunWSHandlers(subscriptions.schema, layer, subscriptions)),
+      ({ close }) => Effect.promise(close)
     )
-
-    // Start Bun server with WebSocket support
-    const server = Bun.serve({
-      port,
-      hostname: host,
-      fetch: async (request, server) => {
-        // Try WebSocket upgrade first
-        if (upgrade(request, server)) {
-          return new Response(null, { status: 101 })
-        }
-
-        // Handle HTTP requests
-        return handler(request)
-      },
-      websocket,
-    })
-
-    if (onStart) {
-      onStart(`http://${host === "0.0.0.0" ? "localhost" : host}:${port}`)
-    }
-
-    // Handle shutdown
-    process.on("SIGINT", () => {
-      server.stop()
-      process.exit(0)
-    })
-
-    process.on("SIGTERM", () => {
-      server.stop()
-      process.exit(0)
-    })
-  })
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.serve({
+          port,
+          hostname: host,
+          fetch: (request, server) => (upgrade(request, server) ? undefined : app.handler(request)),
+          websocket,
+        })
+      ),
+      (server) =>
+        Effect.promise(async () => {
+          await server.stop(true)
+        })
+    )
+    if (onStart) yield* Effect.sync(() => onStart(url))
+    yield* Effect.never
+  }).pipe(Effect.scoped)
+  BunRuntime.runMain(program)
 }

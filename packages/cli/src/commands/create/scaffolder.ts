@@ -52,7 +52,7 @@ const writeFile = (filePath: string, content: string): Effect.Effect<void, Error
  * Run a shell command
  */
 const runCommand = (command: string, args: string[], cwd: string): Effect.Effect<void, Error> =>
-  Effect.async<void, Error>((resume) => {
+  Effect.callback<void, Error>((resume) => {
     const child = spawn(command, args, {
       cwd,
       stdio: "inherit",
@@ -175,7 +175,7 @@ export const scaffold = (options: CreateOptions): Effect.Effect<void, Error> =>
     // Install dependencies unless skipped
     if (!options.skipInstall) {
       yield* installDependencies(targetDir, packageManager).pipe(
-        Effect.catchAll((error) =>
+        Effect.catch((error) =>
           Console.log(`Warning: Failed to install dependencies: ${error.message}`).pipe(
             Effect.andThen(
               Console.log(

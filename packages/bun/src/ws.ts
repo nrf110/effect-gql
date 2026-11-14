@@ -1,4 +1,5 @@
 import { Effect, Stream, Queue, Deferred, Layer } from "effect"
+import type { Cause } from "effect"
 import { GraphQLSchema } from "graphql"
 import {
   makeGraphQLWSHandler,
@@ -13,7 +14,7 @@ import type { Server, ServerWebSocket } from "bun"
  * Data attached to each WebSocket connection
  */
 interface WebSocketData {
-  messageQueue: Queue.Queue<string>
+  messageQueue: Queue.Queue<string, Cause.Done>
   closedDeferred: Deferred.Deferred<CloseEvent, WebSocketError>
   effectSocket: EffectWebSocket
 }
@@ -57,9 +58,9 @@ export interface BunWSOptions<R> extends GraphQLWSOptions<R> {
  * })
  * ```
  */
-export const createBunWSHandlers = <R>(
+export const createBunWSHandlers = <R, LE = never>(
   schema: GraphQLSchema,
-  layer: Layer.Layer<R>,
+  layer: Layer.Layer<R, LE>,
   options?: BunWSOptions<R>
 ): {
   /**
@@ -76,6 +77,8 @@ export const createBunWSHandlers = <R>(
     close: (ws: ServerWebSocket<WebSocketData>, code: number, reason: string) => void
     error: (ws: ServerWebSocket<WebSocketData>, error: Error) => void
   }
+  /** Close connections and wait for their Effect scopes to finish. */
+  close: () => Promise<void>
 } => {
   const path = options?.path ?? "/graphql"
   const handler = makeGraphQLWSHandler(schema, layer, options)
@@ -114,7 +117,7 @@ export const createBunWSHandlers = <R>(
     open: (ws: ServerWebSocket<WebSocketData>) => {
       // Create Effect-based socket wrapper
       const setupEffect = Effect.gen(function* () {
-        const messageQueue = yield* Queue.unbounded<string>()
+        const messageQueue = yield* Queue.make<string, Cause.Done>()
         const closedDeferred = yield* Deferred.make<CloseEvent, WebSocketError>()
 
         const effectSocket: EffectWebSocket = {
@@ -133,7 +136,7 @@ export const createBunWSHandlers = <R>(
               ws.close(code ?? 1000, reason ?? "")
             }),
 
-          messages: Stream.fromQueue(messageQueue).pipe(Stream.catchAll(() => Stream.empty)),
+          messages: Stream.fromQueue(messageQueue),
 
           closed: Deferred.await(closedDeferred),
         }
@@ -152,9 +155,11 @@ export const createBunWSHandlers = <R>(
       const handlerPromise = Effect.runPromise(
         setupEffect.pipe(
           Effect.flatMap((effectSocket) => handler(effectSocket)),
-          Effect.catchAllCause(() => Effect.void)
+          Effect.catchCause(() => Effect.void)
         )
-      )
+      ).finally(() => {
+        activeHandlers.delete(ws)
+      })
 
       activeHandlers.set(ws, handlerPromise)
     },
@@ -174,14 +179,13 @@ export const createBunWSHandlers = <R>(
       if (data) {
         Effect.runPromise(
           Effect.all([
-            Queue.shutdown(data.messageQueue),
+            Queue.end(data.messageQueue),
             Deferred.succeed(data.closedDeferred, { code, reason }),
           ])
         ).catch(() => {
           // Already completed
         })
       }
-      activeHandlers.delete(ws)
     },
 
     error: (ws: ServerWebSocket<WebSocketData>, error: Error) => {
@@ -196,7 +200,15 @@ export const createBunWSHandlers = <R>(
     },
   }
 
-  return { upgrade, websocket }
+  const close = async () => {
+    const pending = Array.from(activeHandlers.values())
+    for (const ws of activeHandlers.keys()) {
+      ws.close(1001, "Server shutting down")
+    }
+    await Promise.all(pending)
+  }
+
+  return { upgrade, websocket, close }
 }
 
 /**
@@ -212,7 +224,7 @@ export const toBunEffectWebSocket = (
   ws: ServerWebSocket<WebSocketData>
 ): Effect.Effect<EffectWebSocket, never, never> =>
   Effect.gen(function* () {
-    const messageQueue = yield* Queue.unbounded<string>()
+    const messageQueue = yield* Queue.make<string, Cause.Done>()
     const closedDeferred = yield* Deferred.make<CloseEvent, WebSocketError>()
 
     const effectSocket: EffectWebSocket = {
@@ -231,7 +243,7 @@ export const toBunEffectWebSocket = (
           ws.close(code ?? 1000, reason ?? "")
         }),
 
-      messages: Stream.fromQueue(messageQueue).pipe(Stream.catchAll(() => Stream.empty)),
+      messages: Stream.fromQueue(messageQueue),
 
       closed: Deferred.await(closedDeferred),
     }

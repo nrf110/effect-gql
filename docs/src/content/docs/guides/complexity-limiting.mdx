@@ -12,15 +12,17 @@ Query complexity limiting protects your GraphQL API from expensive or malicious 
 Enable basic complexity limiting by adding the `complexity` option to your router configuration:
 
 ```typescript
-import { toRouter, GraphQLSchemaBuilder } from "@effect-gql/core"
+import { toRouter, GraphQLSchemaBuilder, query } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
 
+const UserSchema = S.Struct({ id: S.String, name: S.String })
+
 const builder = GraphQLSchemaBuilder.empty.pipe(
   query("users", {
     type: S.Array(UserSchema),
-    resolve: () => Effect.succeed([/* ... */])
+    resolve: () => Effect.succeed([{ id: "1", name: "Alice" }])
   })
 )
 
@@ -41,19 +43,19 @@ serve(router, Layer.empty, { port: 4000 })
 
 ### Query Depth
 
-Query depth measures how deeply nested a query is. Each level of nesting adds to the depth:
+Query depth counts field levels, including scalar leaves. Root fields start at depth 1:
 
 ```graphql
-# Depth: 1
+# Depth: 2
 { users { id } }
 
-# Depth: 2
+# Depth: 3
 { users { posts { id } } }
 
-# Depth: 3
+# Depth: 4
 { users { posts { comments { id } } } }
 
-# Depth: 4 - might exceed limit!
+# Depth: 5 - might exceed limit!
 { users { posts { comments { author { name } } } } }
 ```
 
@@ -87,6 +89,7 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
   }),
   query("user", {
     type: UserSchema,
+    args: S.Struct({ id: S.String }),
     complexity: 1,   // This field costs 1 point
     resolve: (args) => fetchUser(args.id)
   })
@@ -98,7 +101,7 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 Field count limits the total number of fields in a query:
 
 ```graphql
-# Field count: 5 (user + id + name + email + posts)
+# Field count: 6 (user + id + name + email + posts + posts.id)
 { user(id: "1") { id name email posts { id } } }
 ```
 
@@ -155,21 +158,24 @@ query("users", {
   type: S.Array(UserSchema),
   args: S.Struct({ limit: S.optional(S.Number) }),
   // Complexity scales with limit argument
-  complexity: (args) => (args.limit ?? 10) * 2,
+  complexity: ({ limit }) => (typeof limit === "number" ? limit : 10) * 2,
   resolve: (args) => db.users.findMany({ take: args.limit })
 })
 ```
 
+Complexity callbacks receive raw `Record<string, unknown>` arguments, not the
+resolver's decoded argument type. Narrow values before arithmetic.
+
 This query has different costs depending on the `limit`:
 
 ```graphql
-# Complexity: 20 (limit 10 * 2)
+# Complexity: 21 (limit 10 * 2 + id's default cost 1)
 { users { id } }
 
-# Complexity: 200 (limit 100 * 2)
+# Complexity: 201 (limit 100 * 2 + id's default cost 1)
 { users(limit: 100) { id } }
 
-# Complexity: 2000 (limit 1000 * 2) - likely rejected!
+# Complexity: 2001 (limit 1000 * 2 + id's default cost 1) - likely rejected!
 { users(limit: 1000) { id } }
 ```
 
@@ -183,7 +189,7 @@ GraphQLSchemaBuilder.empty.pipe(
   field("User", "recommendations", {
     type: S.Array(ProductSchema),
     complexity: 25,  // ML-based recommendations are expensive
-    resolve: (user) => recommendationEngine.forUser(user.id)
+    resolve: (user: typeof UserSchema.Type) => recommendationEngine.forUser(user.id)
   })
 )
 ```
@@ -273,20 +279,16 @@ Execute custom logic when limits are exceeded (e.g., logging, metrics):
 For advanced use cases, implement custom complexity calculators:
 
 ```typescript
-import { ComplexityCalculator, ComplexityResult } from "@effect-gql/core"
+import { Effect } from "effect"
+import { type ComplexityCalculator, defaultComplexityCalculator } from "@effect-gql/core"
 
-const myCalculator: ComplexityCalculator = (
-  document,      // Parsed GraphQL document
-  schema,        // GraphQL schema
-  variables,     // Query variables
-  operationName, // Operation name
-  fieldComplexities // Field complexity map
-) => Effect.succeed<ComplexityResult>({
-  depth: 5,
-  complexity: 42,
-  fieldCount: 10,
-  aliasCount: 2
-})
+const calculate = defaultComplexityCalculator()
+
+// Example policy: double the normal cost while retaining the other metrics.
+const myCalculator: ComplexityCalculator = (info) =>
+  calculate(info).pipe(
+    Effect.map((result) => ({ ...result, complexity: result.complexity * 2 }))
+  )
 
 const router = toRouter(builder, Layer.empty, {
   complexity: {
@@ -295,6 +297,12 @@ const router = toRouter(builder, Layer.empty, {
   }
 })
 ```
+The calculator receives **one** `ComplexityAnalysisInfo` object containing
+`document`, the selected `operation` AST, `schema`, optional `variables`, and
+`fieldComplexities`. Read an operation name from `info.operation.name?.value`;
+there is no separate positional `operationName` argument. Calculators and
+`onExceeded` hooks must return Effects without service requirements.
+
 
 ### Built-in Calculators
 
@@ -368,6 +376,22 @@ GRAPHQL_MAX_FIELDS=100
 GRAPHQL_DEFAULT_FIELD_COMPLEXITY=1
 ```
 
+Limits are optional; omitted limits remain disabled, and the default field complexity is `1`.
+Both `GraphQLRouterConfigFromEnv` and `ComplexityConfigFromEnv` reject `NaN` for all five
+settings above with a configuration error instead of silently disabling query limits.
+
+Numeric environment values retain JavaScript `Number` parsing: surrounding
+whitespace (`" 2 "`), hexadecimal/binary/octal prefixes (`"0x10"`, `"0b10"`,
+`"0o10"`), trailing decimal points (`"2."`), and scientific notation (`"2e1"`)
+are accepted. The same parsing applies to cache-control max age.
+
+The cache-control setting `GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE` also rejects `NaN`
+in both `GraphQLRouterConfigFromEnv` and `CacheControlConfigFromEnv`, preventing
+`max-age=NaN` headers. Its default remains `0` (`no-store`); zero, negative,
+fractional, and infinite numeric values retain their existing behavior. This does
+not change enable defaults: standalone cache control defaults to enabled, while
+the router defaults to disabled.
+
 Load with `GraphQLRouterConfigFromEnv`:
 
 ```typescript
@@ -404,12 +428,14 @@ Always scale complexity with pagination arguments:
 
 ```typescript
 query("posts", {
+  type: S.Array(PostSchema),
   args: S.Struct({
     first: S.optional(S.Number),
     last: S.optional(S.Number)
   }),
   complexity: (args) => {
-    const count = args.first ?? args.last ?? 10
+    const count = typeof args.first === "number" ? args.first
+      : typeof args.last === "number" ? args.last : 10
     return count * 2  // Each post costs 2 points
   },
   resolve: (args) => fetchPosts(args)
@@ -439,9 +465,10 @@ Use the `onExceeded` hook to track blocked queries:
   complexity: {
     maxComplexity: 1000,
     onExceeded: (info) =>
-      MetricsService.increment("graphql.complexity.exceeded", {
+      Effect.logInfo("graphql.complexity.exceeded", {
         limitType: info.exceededLimit,
-        query: info.query.substring(0, 100)
+        actual: info.actual,
+        limit: info.limit
       })
   }
 }
@@ -466,6 +493,14 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
   })
 )
 ```
+Builder extensions must be supplied explicitly to the current router helper:
+
+```typescript
+const router = toRouter(builder, Layer.empty, {
+  extensions: builder.getExtensions()
+})
+```
+
 
 Responses will include complexity metrics:
 
@@ -565,6 +600,7 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 )
 
 const router = toRouter(builder, Layer.empty, {
+  extensions: builder.getExtensions(),
   // Block queries that exceed limits
   complexity: {
     maxDepth: 10,

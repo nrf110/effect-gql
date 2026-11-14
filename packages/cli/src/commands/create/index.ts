@@ -67,7 +67,7 @@ Examples:
  * Simple prompt helper using readline
  */
 const prompt = (question: string): Effect.Effect<string, Error> =>
-  Effect.async<string, Error>((resume) => {
+  Effect.callback<string, Error>((resume) => {
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,

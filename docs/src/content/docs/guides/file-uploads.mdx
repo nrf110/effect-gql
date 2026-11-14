@@ -75,7 +75,7 @@ const FileMetadata = S.Struct({
   id: S.String,
   filename: S.String,
   contentType: S.String,
-  size: S.Number,
+  size: S.Int,
   url: S.String,
 })
 
@@ -86,7 +86,7 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
     args: S.Struct({
       filename: S.String,
       contentType: S.String,
-      size: S.Number,
+      size: S.Int,
     }),
     resolve: ({ filename, contentType, size }) =>
       Effect.gen(function* () {
@@ -130,7 +130,7 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
         const storage = yield* StorageService
 
         // Verify the file was actually uploaded
-        const file = yield* storage.verifyUpload(fileId)
+        yield* storage.verifyUpload(fileId)
 
         // Mark upload as complete and get final metadata
         const metadata = yield* storage.completeUpload(fileId)
@@ -161,11 +161,19 @@ const builder = GraphQLSchemaBuilder.empty.pipe(
 
 ### Storage Service
 
+The storage snippets below are application integration sketches: `Database`,
+`PendingUpload`, `StoredFile`, and `StorageError` belong to your application.
+`StorageError` should extend `Error`; database operations here use that same
+error channel. SDK credentials and persistence must be supplied by the application.
+Byte counts use `S.Int` to match the client's GraphQL `Int!` variables
+(GraphQL `Int` is signed 32-bit, so use another scalar for larger uploads).
+
 <Tabs>
   <TabItem label="AWS S3">
 ```typescript
 import { Context, Effect, Layer } from "effect"
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3"
+import { NotFoundError } from "@effect-gql/core"
+import { S3Client, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 interface UploadUrlOptions {
@@ -175,16 +183,17 @@ interface UploadUrlOptions {
   expiresIn: number
 }
 
-class StorageService extends Context.Tag("StorageService")<
+class StorageService extends Context.Service<
   StorageService,
   {
-    createUploadUrl: (options: UploadUrlOptions) => Effect.Effect<{ url: string; expiresAt: Date }>
-    createPendingUpload: (metadata: PendingUpload) => Effect.Effect<void>
-    verifyUpload: (fileId: string) => Effect.Effect<void>
-    completeUpload: (fileId: string) => Effect.Effect<FileMetadata>
-    cancelUpload: (fileId: string) => Effect.Effect<void>
+    createUploadUrl: (options: UploadUrlOptions) => Effect.Effect<{ url: string; expiresAt: Date }, StorageError>
+    createPendingUpload: (metadata: PendingUpload) => Effect.Effect<void, StorageError>
+    verifyUpload: (fileId: string) => Effect.Effect<void, StorageError | NotFoundError>
+    completeUpload: (fileId: string) => Effect.Effect<StoredFile, StorageError | NotFoundError>
+    cancelUpload: (fileId: string) => Effect.Effect<void, StorageError>
+    deleteFile: (key: string) => Effect.Effect<void, StorageError>
   }
->() {}
+>()("StorageService") {}
 
 const makeS3StorageService = Effect.gen(function* () {
   const client = new S3Client({ region: process.env.AWS_REGION })
@@ -192,7 +201,7 @@ const makeS3StorageService = Effect.gen(function* () {
   const db = yield* Database
 
   return {
-    createUploadUrl: ({ key, contentType, maxSize, expiresIn }) =>
+    createUploadUrl: ({ key, contentType, maxSize, expiresIn }: UploadUrlOptions) =>
       Effect.tryPromise({
         try: async () => {
           const command = new PutObjectCommand({
@@ -210,14 +219,14 @@ const makeS3StorageService = Effect.gen(function* () {
         catch: (error) => new StorageError({ cause: error }),
       }),
 
-    createPendingUpload: (metadata) =>
+    createPendingUpload: (metadata: PendingUpload) =>
       db.pendingUploads.insert({
         ...metadata,
         status: "pending",
         createdAt: new Date(),
       }),
 
-    verifyUpload: (fileId) =>
+    verifyUpload: (fileId: string) =>
       Effect.gen(function* () {
         const pending = yield* db.pendingUploads.findById(fileId)
         if (!pending) {
@@ -236,9 +245,12 @@ const makeS3StorageService = Effect.gen(function* () {
         })
       }),
 
-    completeUpload: (fileId) =>
+    completeUpload: (fileId: string) =>
       Effect.gen(function* () {
         const pending = yield* db.pendingUploads.findById(fileId)
+        if (!pending) {
+          return yield* Effect.fail(new NotFoundError({ message: "Upload not found" }))
+        }
 
         // Get actual file size from S3
         const command = new HeadObjectCommand({
@@ -269,8 +281,14 @@ const makeS3StorageService = Effect.gen(function* () {
         }
       }),
 
-    cancelUpload: (fileId) =>
+    cancelUpload: (fileId: string) =>
       db.pendingUploads.delete(fileId),
+
+    deleteFile: (key: string) =>
+      Effect.tryPromise({
+        try: () => client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })),
+        catch: (error) => new StorageError({ cause: error }),
+      }).pipe(Effect.asVoid),
   }
 })
 
@@ -288,7 +306,7 @@ const makeGCSStorageService = Effect.gen(function* () {
   const db = yield* Database
 
   return {
-    createUploadUrl: ({ key, contentType, maxSize, expiresIn }) =>
+    createUploadUrl: ({ key, contentType, maxSize, expiresIn }: UploadUrlOptions) =>
       Effect.tryPromise({
         try: async () => {
           const file = bucket.file(key)
@@ -330,7 +348,7 @@ const makeR2StorageService = Effect.gen(function* () {
   const db = yield* Database
 
   return {
-    createUploadUrl: ({ key, contentType, maxSize, expiresIn }) =>
+    createUploadUrl: ({ key, contentType, maxSize, expiresIn }: UploadUrlOptions) =>
       Effect.tryPromise({
         try: async () => {
           const command = new PutObjectCommand({
@@ -446,7 +464,7 @@ async function uploadFileWithProgress(file, onProgress) {
 
 ### React Hook
 
-```typescript
+```tsx
 import { useState, useCallback } from "react"
 import { useMutation } from "@apollo/client"
 
@@ -618,7 +636,7 @@ mutation("createMultipleUploadUrls", {
     files: S.Array(S.Struct({
       filename: S.String,
       contentType: S.String,
-      size: S.Number,
+      size: S.Int,
     })),
   }),
   resolve: ({ files }) =>
@@ -639,7 +657,9 @@ mutation("createMultipleUploadUrls", {
 
             yield* storage.createPendingUpload({
               fileId,
-              ...file,
+              filename: file.filename,
+              contentType: file.contentType,
+              expectedSize: file.size,
             })
 
             return { uploadUrl: url, fileId, expiresAt: expiresAt.toISOString() }

@@ -1,6 +1,6 @@
 import { Effect, Layer, Stream } from "effect"
 import * as S from "effect/Schema"
-import { HttpApp } from "@effect/platform"
+import { HttpRouter } from "effect/http"
 import { GraphQLSchemaBuilder, makeGraphQLRouter } from "@effect-gql/core"
 import { DirectiveLocation, GraphQLSchema } from "graphql"
 import { createServer, IncomingMessage, ServerResponse } from "node:http"
@@ -102,7 +102,7 @@ export const createTestSchema = () => {
 export const startTestServer = async (port: number = 0) => {
   const schema = createTestSchema()
   const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
-  const { handler } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -153,13 +153,15 @@ export const startTestServer = async (port: number = 0) => {
       const addr = server.address() as { port: number }
       resolve({
         port: addr.port,
-        stop: () =>
-          new Promise<void>((res, rej) => {
+        stop: async () => {
+          await dispose()
+          return new Promise<void>((res, rej) => {
             server.close((err) => {
               if (err) rej(err)
               else res()
             })
-          }),
+          })
+        },
       })
     })
   })
@@ -201,7 +203,7 @@ export const getGraphiQL = async (port: number): Promise<{ status: number; body:
 export const startTestServerWithWS = async (port: number = 0) => {
   const schema = createTestSchema()
   const router = makeGraphQLRouter(schema, Layer.empty, { graphiql: true })
-  const { handler } = HttpApp.toWebHandlerLayer(router, Layer.empty)
+  const { handler, dispose } = HttpRouter.toWebHandler(router)
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -269,6 +271,7 @@ export const startTestServerWithWS = async (port: number = 0) => {
         schema,
         stop: async () => {
           await closeWS()
+          await dispose()
           return new Promise<void>((res, rej) => {
             server.close((err) => {
               if (err) rej(err)

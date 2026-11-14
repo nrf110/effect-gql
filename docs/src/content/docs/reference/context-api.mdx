@@ -73,7 +73,7 @@ const maybeUser = yield* ResolverContext.getOption(CurrentUser)
 // Type: Option<User>
 
 if (Option.isSome(maybeUser)) {
-  console.log(maybeUser.value.name)
+  yield* Effect.logInfo(maybeUser.value.name)
 }
 ```
 
@@ -153,7 +153,10 @@ const isAuthenticated = yield* ResolverContext.has(CurrentUser)
 
 ### `ResolverContext.scoped(slot, value)`
 
-Run an effect with a temporary context value. The value is set before the effect runs and restored after.
+Run an effect with a temporary override of one context slot. Nested effects
+inherit the override; parent and sibling scopes keep their own value, including
+when the effect fails or is interrupted. Writes to unrelated slots still
+propagate through the shared request store.
 
 ```typescript
 function scoped<A>(
@@ -170,7 +173,7 @@ function scoped<A>(
 const result = yield* ResolverContext.scoped(LogPrefix, "[Resolver]")(
   Effect.gen(function* () {
     const prefix = yield* ResolverContext.get(LogPrefix)
-    console.log(prefix, "Running...")
+    yield* Effect.logInfo(`${prefix} Running...`)
     return yield* someEffect
   })
 )
@@ -207,7 +210,7 @@ function makeStoreLayer(): Effect.Effect<Layer.Layer<ResolverContextStore>>
 The Effect Context tag for the store. Useful for advanced use cases.
 
 ```typescript
-const Store: Context.Tag<ResolverContextStore, ResolverContextStore>
+const Store: Context.Service<ResolverContextStore, ResolverContextStore>
 ```
 
 ## Type Definitions
@@ -231,12 +234,13 @@ Internal storage for resolver context values.
 ```typescript
 interface ResolverContextStore {
   readonly ref: Ref.Ref<HashMap.HashMap<string, unknown>>
+  readonly scoped?: { readonly name: string; readonly parent: ResolverContextStore }
 }
 ```
 
 ### `MissingResolverContextError`
 
-Error thrown when accessing a context slot that hasn't been set.
+Typed error returned when accessing a context slot that hasn't been set.
 
 ```typescript
 class MissingResolverContextError extends Error {
@@ -280,7 +284,7 @@ interface GraphQLRequestContext {
   }
 }
 
-const GraphQLRequestContext: Context.Tag<GraphQLRequestContext, GraphQLRequestContext>
+const GraphQLRequestContext: Context.Service<GraphQLRequestContext, GraphQLRequestContext>
 ```
 
 **Example:**
@@ -323,76 +327,68 @@ const requestLayer = makeRequestContextLayer({
 
 ```typescript
 import {
-  GraphQLSchemaBuilder,
-  query,
-  directive,
-  ResolverContext,
-  GraphQLRequestContext,
-  AuthorizationError
+  GraphQLSchemaBuilder, query, directive, ResolverContext,
+  GraphQLRequestContext, makeRequestContextLayer, AuthorizationError, execute,
+  type ResolverContextStore
 } from "@effect-gql/core"
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
+import { DirectiveLocation } from "graphql"
 import * as S from "effect/Schema"
 
-// Define context slots
+const UserSchema = S.Struct({ id: S.String, name: S.String })
+type User = S.Schema.Type<typeof UserSchema>
+class AuthService extends Context.Service<AuthService, {
+  validateToken: (token: string) => Effect.Effect<User, AuthorizationError>
+}>()("AuthService") {}
+const AuthServiceLive = Layer.succeed(AuthService, {
+  validateToken: (token) => token === "demo"
+    ? Effect.succeed({ id: "1", name: "Alice" })
+    : Effect.fail(new AuthorizationError({ message: "Invalid token" }))
+})
 const CurrentUser = ResolverContext.make<User>("CurrentUser")
-const Permissions = ResolverContext.make<Set<string>>("Permissions")
 
-// Auth directive that populates context
 const builder = GraphQLSchemaBuilder.empty.pipe(
-  directive("auth", {
-    locations: ["FIELD_DEFINITION"],
-    transformer: (next) => Effect.gen(function* () {
-      // Get auth header from request
+  directive<void, AuthService | GraphQLRequestContext | ResolverContextStore>({
+    name: "authContext",
+    locations: [DirectiveLocation.FIELD_DEFINITION],
+    apply: () => (next) => Effect.gen(function* () {
       const ctx = yield* GraphQLRequestContext
       const token = ctx.request.headers.authorization?.replace("Bearer ", "")
-
-      if (!token) {
-        return yield* Effect.fail(new AuthorizationError({
-          message: "Authentication required"
-        }))
+      if (token) {
+        const auth = yield* AuthService
+        const user = yield* auth.validateToken(token).pipe(Effect.option)
+        if (Option.isSome(user)) {
+          yield* ResolverContext.set(CurrentUser, user.value)
+        }
       }
-
-      // Validate and set context
-      const user = yield* AuthService.validateToken(token)
-      const perms = yield* PermissionService.getForUser(user.id)
-
-      yield* ResolverContext.setMany([
-        [CurrentUser, user],
-        [Permissions, new Set(perms)]
-      ])
-
       return yield* next
     })
   }),
-
   query("me", {
     type: UserSchema,
-    directives: ["@auth"],
-    resolve: () => ResolverContext.get(CurrentUser)
-  }),
-
-  query("adminDashboard", {
-    type: DashboardSchema,
-    directives: ["@auth"],
-    resolve: () => Effect.gen(function* () {
-      const perms = yield* ResolverContext.get(Permissions)
-
-      if (!perms.has("admin:read")) {
-        return yield* Effect.fail(new AuthorizationError({
-          message: "Admin access required"
-        }))
-      }
-
-      return yield* DashboardService.getData()
-    })
+    directives: [{ name: "authContext" }],
+    resolve: () => ResolverContext.get(CurrentUser).pipe(
+      Effect.catchTag("MissingResolverContextError", () =>
+        Effect.fail(new AuthorizationError({ message: "Authentication required" }))
+      )
+    )
   })
 )
 
-// Service layer must include ResolverContext.storeLayer
+// execute() has no HTTP request to inject, so supply it explicitly.
+// The HTTP router supplies GraphQLRequestContext from the incoming request.
 const serviceLayer = Layer.mergeAll(
   AuthServiceLive,
-  PermissionServiceLive,
-  DashboardServiceLive,
-  ResolverContext.storeLayer
+  ResolverContext.storeLayer,
+  makeRequestContextLayer({
+    request: { headers: { authorization: "Bearer demo" }, query: "{ me { name } }" }
+  })
+)
+const result = await Effect.runPromise(
+  execute(builder.buildSchema(), serviceLayer)("{ me { name } }")
 )
 ```
+
+Executable directives must preserve the resolver's polymorphic error channel.
+This initializer records a user only if authentication succeeds. The resolver
+performs the required-user guard, so authorization remains a typed failure.

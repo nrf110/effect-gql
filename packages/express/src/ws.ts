@@ -76,10 +76,10 @@ export interface ExpressWSOptions<R> extends GraphQLWSOptions<R> {
  * })
  * ```
  */
-export const attachWebSocket = <R>(
+export const attachWebSocket = <R, LE = never>(
   server: Server,
   schema: GraphQLSchema,
-  layer: Layer.Layer<R>,
+  layer: Layer.Layer<R, LE>,
   options?: ExpressWSOptions<R>
 ): { close: () => Promise<void> } => {
   const wss = new WebSocketServer({ noServer: true })
@@ -88,25 +88,35 @@ export const attachWebSocket = <R>(
   // Create the handler from core
   const handler = makeGraphQLWSHandler(schema, layer, options)
 
-  // Track active connections for cleanup
-  const activeConnections = new Set<WebSocket>()
+  // Keep handlers until their connection scopes have finished finalizing.
+  const activeHandlers = new Map<WebSocket, Promise<void>>()
+  let closePromise: Promise<void> | undefined
 
   wss.on("connection", (ws) => {
-    activeConnections.add(ws)
+    if (closePromise) {
+      ws.close(1001, "Server shutting down")
+      return
+    }
 
     const effectSocket = toEffectWebSocketFromWs(ws)
 
     // Run the handler
-    Effect.runPromise(
+    const handlerPromise = Effect.runPromise(
       handler(effectSocket).pipe(
-        Effect.catchAll((error) => Effect.logError("GraphQL WebSocket handler error", error))
+        Effect.catchCause((cause) => Effect.logError("GraphQL WebSocket handler error", cause))
       )
     ).finally(() => {
-      activeConnections.delete(ws)
+      activeHandlers.delete(ws)
     })
+    activeHandlers.set(ws, handlerPromise)
   })
 
   const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (closePromise) {
+      socket.destroy()
+      return
+    }
+
     // Check if this is the GraphQL WebSocket path
     const url = new URL(request.url ?? "/", `http://${request.headers.host}`)
     if (url.pathname !== path) {
@@ -132,20 +142,26 @@ export const attachWebSocket = <R>(
     handleUpgrade(request, socket as Duplex, head)
   })
 
-  const close = async () => {
-    // Close all active connections
-    for (const ws of activeConnections) {
-      ws.close(1001, "Server shutting down")
-    }
-    activeConnections.clear()
+  const close = () => {
+    if (closePromise) return closePromise
+    closePromise = (async () => {
+      const pending = Array.from(activeHandlers.values())
+      for (const ws of activeHandlers.keys()) {
+        ws.close(1001, "Server shutting down")
+      }
 
-    // Close the WebSocket server
-    return new Promise<void>((resolve, reject) => {
-      wss.close((error) => {
-        if (error) reject(error)
-        else resolve()
-      })
-    })
+      try {
+        await new Promise<void>((resolve, reject) => {
+          wss.close((error) => {
+            if (error) reject(error)
+            else resolve()
+          })
+        })
+      } finally {
+        await Promise.all(pending)
+      }
+    })()
+    return closePromise
   }
 
   return { close }

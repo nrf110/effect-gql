@@ -126,7 +126,7 @@ export const makeSafelistStore = (
         Effect.succeed(queries[hash] !== undefined ? Option.some(queries[hash]) : Option.none()),
 
       // No-op for safelist mode - queries cannot be added at runtime
-      set: () => Effect.void,
+      set: () => Effect.succeed(undefined),
 
       has: (hash) => Effect.succeed(queries[hash] !== undefined),
     })

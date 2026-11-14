@@ -13,55 +13,47 @@ import { NotFoundError, AuthorizationError } from "@effect-gql/core"
 // Auth Service
 // =============================================================================
 
-export class AuthService extends Context.Tag("AuthService")<
-  AuthService,
-  {
-    readonly getCurrentUser: () => Effect.Effect<User | null>
-    readonly requireAuth: () => Effect.Effect<User, AuthorizationError>
-    readonly requireRole: (role: string) => Effect.Effect<User, AuthorizationError>
-  }
->() {}
+export class AuthService extends Context.Service<AuthService,
+{
+  readonly getCurrentUser: () => Effect.Effect<User | null>
+  readonly requireAuth: () => Effect.Effect<User, AuthorizationError>
+  readonly requireRole: (role: string) => Effect.Effect<User, AuthorizationError>
+}>()("AuthService") {}
 
 // =============================================================================
 // User Service
 // =============================================================================
 
-export class UserService extends Context.Tag("UserService")<
-  UserService,
-  {
-    readonly findById: (id: string) => Effect.Effect<User, NotFoundError>
-    readonly findByIds: (ids: readonly string[]) => Effect.Effect<readonly User[]>
-    readonly findAll: () => Effect.Effect<readonly User[]>
-    readonly create: (input: CreateUserInput) => Effect.Effect<User>
-  }
->() {}
+export class UserService extends Context.Service<UserService,
+{
+  readonly findById: (id: string) => Effect.Effect<User, NotFoundError>
+  readonly findByIds: (ids: readonly string[]) => Effect.Effect<readonly User[]>
+  readonly findAll: () => Effect.Effect<readonly User[]>
+  readonly create: (input: CreateUserInput) => Effect.Effect<User>
+}>()("UserService") {}
 
 // =============================================================================
 // Post Service
 // =============================================================================
 
-export class PostService extends Context.Tag("PostService")<
-  PostService,
-  {
-    readonly findById: (id: string) => Effect.Effect<Post, NotFoundError>
-    readonly findByAuthorIds: (authorIds: readonly string[]) => Effect.Effect<readonly Post[]>
-    readonly findAll: () => Effect.Effect<readonly Post[]>
-    readonly create: (authorId: string, input: CreatePostInput) => Effect.Effect<Post>
-    readonly publish: (id: string) => Effect.Effect<Post, NotFoundError>
-  }
->() {}
+export class PostService extends Context.Service<PostService,
+{
+  readonly findById: (id: string) => Effect.Effect<Post, NotFoundError>
+  readonly findByAuthorIds: (authorIds: readonly string[]) => Effect.Effect<readonly Post[]>
+  readonly findAll: () => Effect.Effect<readonly Post[]>
+  readonly create: (authorId: string, input: CreatePostInput) => Effect.Effect<Post>
+  readonly publish: (id: string) => Effect.Effect<Post, NotFoundError>
+}>()("PostService") {}
 
 // =============================================================================
 // Comment Service
 // =============================================================================
 
-export class CommentService extends Context.Tag("CommentService")<
-  CommentService,
-  {
-    readonly findByPostIds: (postIds: readonly string[]) => Effect.Effect<readonly Comment[]>
-    readonly create: (postId: string, authorId: string, content: string) => Effect.Effect<Comment>
-  }
->() {}
+export class CommentService extends Context.Service<CommentService,
+{
+  readonly findByPostIds: (postIds: readonly string[]) => Effect.Effect<readonly Comment[]>
+  readonly create: (postId: string, authorId: string, content: string) => Effect.Effect<Comment>
+}>()("CommentService") {}
 
 // =============================================================================
 // In-Memory Implementations
@@ -87,9 +79,9 @@ const initialComments: Comment[] = [
 ]
 
 // Refs for mutable state
-const usersRef = Ref.unsafeMake<User[]>([...initialUsers])
-const postsRef = Ref.unsafeMake<Post[]>([...initialPosts])
-const commentsRef = Ref.unsafeMake<Comment[]>([...initialComments])
+const usersRef = Ref.makeUnsafe<User[]>([...initialUsers])
+const postsRef = Ref.makeUnsafe<Post[]>([...initialPosts])
+const commentsRef = Ref.makeUnsafe<Comment[]>([...initialComments])
 
 // Counters for IDs
 let userIdCounter = initialUsers.length

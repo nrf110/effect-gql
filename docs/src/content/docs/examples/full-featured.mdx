@@ -1,11 +1,22 @@
 ---
 title: Full-Featured Example
-description: Production-ready GraphQL server with services, auth, and modular architecture
+description: A modular GraphQL demo with services, auth patterns, and DataLoaders
 ---
 
 import { Aside, FileTree, Tabs, TabItem } from '@astrojs/starlight/components';
 
-This example demonstrates a production-ready GraphQL server with proper separation of concerns, service-based architecture, and Effect best practices.
+This example demonstrates modular GraphQL schema composition, service-based
+architecture, and Effect DataLoaders using in-memory data.
+The files below form a runnable compact version. Append the `services.ts`
+continuations in order. The repository example also includes additional queries
+and mutations, such as publishing posts and creating comments.
+
+<Aside type="caution">
+The demo authenticates every request as Alice, an administrator. It is not
+production authentication. Before deployment, replace `AuthServiceLive` with
+request-scoped authentication that validates credentials, and replace the
+in-memory stores with persistent storage.
+</Aside>
 
 ## Running the Example
 
@@ -44,9 +55,10 @@ Define your domain with Effect Schema. These serve as the single source of truth
 
 ```typescript
 // domain.ts
+import { Effect } from "effect"
 import * as S from "effect/Schema"
 
-export const UserRole = S.Literal("ADMIN", "USER", "GUEST")
+export const UserRole = S.Literals(["ADMIN", "USER", "GUEST"])
 export type UserRole = S.Schema.Type<typeof UserRole>
 
 export const User = S.Struct({
@@ -58,10 +70,11 @@ export const User = S.Struct({
 export type User = S.Schema.Type<typeof User>
 
 export const CreateUserInput = S.Struct({
-  name: S.String.pipe(S.minLength(1), S.maxLength(100)),
-  email: S.String.pipe(S.pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
-  role: S.optional(UserRole).pipe(S.withDefault(() => "USER" as const)),
+  name: S.String.check(S.isMinLength(1), S.isMaxLength(100)),
+  email: S.String.check(S.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
+  role: UserRole.pipe(S.withDecodingDefaultKey(Effect.succeed("USER" as const))),
 })
+export type CreateUserInput = S.Schema.Type<typeof CreateUserInput>
 
 export const Post = S.Struct({
   id: S.String,
@@ -71,6 +84,23 @@ export const Post = S.Struct({
   published: S.Boolean,
   createdAt: S.Number,
 })
+export type Post = S.Schema.Type<typeof Post>
+
+export const CreatePostInput = S.Struct({
+  title: S.String.check(S.isMinLength(1)),
+  content: S.String,
+  published: S.optional(S.Boolean),
+})
+export type CreatePostInput = S.Schema.Type<typeof CreatePostInput>
+
+export const Comment = S.Struct({
+  id: S.String,
+  content: S.String,
+  postId: S.String,
+  authorId: S.String,
+  createdAt: S.Number,
+})
+export type Comment = S.Schema.Type<typeof Comment>
 ```
 
 <Aside type="tip">
@@ -83,19 +113,20 @@ Services encapsulate business logic and external dependencies:
 
 ```typescript
 // services.ts
-import { Effect, Context, Layer } from "effect"
+import { Effect, Context, Layer, Ref } from "effect"
+import type { User, Post, Comment, CreateUserInput, CreatePostInput } from "./domain"
 import { NotFoundError, AuthorizationError } from "@effect-gql/core"
 
-export class AuthService extends Context.Tag("AuthService")<
+export class AuthService extends Context.Service<
   AuthService,
   {
     readonly getCurrentUser: () => Effect.Effect<User | null>
     readonly requireAuth: () => Effect.Effect<User, AuthorizationError>
     readonly requireRole: (role: string) => Effect.Effect<User, AuthorizationError>
   }
->() {}
+>()("AuthService") {}
 
-export class UserService extends Context.Tag("UserService")<
+export class UserService extends Context.Service<
   UserService,
   {
     readonly findById: (id: string) => Effect.Effect<User, NotFoundError>
@@ -103,48 +134,126 @@ export class UserService extends Context.Tag("UserService")<
     readonly findAll: () => Effect.Effect<readonly User[]>
     readonly create: (input: CreateUserInput) => Effect.Effect<User>
   }
->() {}
+>()("UserService") {}
 
-export class PostService extends Context.Tag("PostService")<
+export class PostService extends Context.Service<
   PostService,
   {
     readonly findById: (id: string) => Effect.Effect<Post, NotFoundError>
     readonly findByAuthorIds: (ids: readonly string[]) => Effect.Effect<readonly Post[]>
+    readonly findAll: () => Effect.Effect<readonly Post[]>
     readonly create: (authorId: string, input: CreatePostInput) => Effect.Effect<Post>
   }
->() {}
+>()("PostService") {}
+```
+
+```typescript
+// services.ts (continued)
+export class CommentService extends Context.Service<CommentService, {
+  readonly findByPostIds: (ids: readonly string[]) => Effect.Effect<readonly Comment[]>
+}>()("CommentService") {}
 ```
 
 ### Service Implementations
 
 ```typescript
+// services.ts (continued)
+const usersRef = Ref.makeUnsafe<readonly User[]>([
+  { id: "1", name: "Alice", email: "alice@example.com", role: "ADMIN" },
+  { id: "2", name: "Bob", email: "bob@example.com", role: "USER" },
+])
+const postsRef = Ref.makeUnsafe<readonly Post[]>([
+  {
+    id: "p1", title: "Getting Started with Effect", content: "Welcome!",
+    authorId: "1", published: true, createdAt: Date.now(),
+  },
+])
+const commentsRef = Ref.makeUnsafe<readonly Comment[]>([
+  { id: "c1", content: "Great article!", postId: "p1", authorId: "2", createdAt: Date.now() },
+])
+let userId = 2
+let postId = 1
+
+const getCurrentUser = () => Ref.get(usersRef).pipe(
+  Effect.map((users) => users[0] ?? null)
+)
+const requireAuth = () => Effect.gen(function* () {
+  const user = yield* getCurrentUser()
+  if (!user) {
+    return yield* Effect.fail(new AuthorizationError({ message: "Authentication required" }))
+  }
+  return user
+})
+
+export const AuthServiceLive = Layer.succeed(AuthService, {
+  getCurrentUser,
+  requireAuth,
+  requireRole: (role) => Effect.gen(function* () {
+    const user = yield* requireAuth()
+    if (user.role !== role) {
+      return yield* Effect.fail(new AuthorizationError({ message: `${role} role required` }))
+    }
+    return user
+  }),
+})
+
 export const UserServiceLive = Layer.succeed(UserService, {
-  findById: (id: string) =>
-    Effect.gen(function* () {
-      const users = yield* Ref.get(usersRef)
-      const user = users.find((u) => u.id === id)
-      if (!user) {
-        return yield* Effect.fail(
-          new NotFoundError({ message: "User not found", resource: `User:${id}` })
-        )
-      }
-      return user
-    }),
-  
-  findByIds: (ids: readonly string[]) =>
-    Effect.gen(function* () {
-      const users = yield* Ref.get(usersRef)
-      return users.filter((u) => ids.includes(u.id))
-    }),
-  
-  // ... other methods
+  findById: (id) => Effect.gen(function* () {
+    const users = yield* Ref.get(usersRef)
+    const user = users.find((candidate) => candidate.id === id)
+    if (!user) {
+      return yield* Effect.fail(
+        new NotFoundError({ message: "User not found", resource: `User:${id}` })
+      )
+    }
+    return user
+  }),
+  findByIds: (ids) => Ref.get(usersRef).pipe(
+    Effect.map((users) => users.filter((user) => ids.includes(user.id)))
+  ),
+  findAll: () => Ref.get(usersRef),
+  create: (input) => Effect.gen(function* () {
+    const user: User = { ...input, id: String(++userId) }
+    yield* Ref.update(usersRef, (users) => [...users, user])
+    return user
+  }),
+})
+
+export const PostServiceLive = Layer.succeed(PostService, {
+  findById: (id) => Effect.gen(function* () {
+    const posts = yield* Ref.get(postsRef)
+    const post = posts.find((candidate) => candidate.id === id)
+    if (!post) {
+      return yield* Effect.fail(
+        new NotFoundError({ message: "Post not found", resource: `Post:${id}` })
+      )
+    }
+    return post
+  }),
+  findByAuthorIds: (ids) => Ref.get(postsRef).pipe(
+    Effect.map((posts) => posts.filter((post) => ids.includes(post.authorId)))
+  ),
+  findAll: () => Ref.get(postsRef).pipe(
+    Effect.map((posts) => posts.filter((post) => post.published))
+  ),
+  create: (authorId, input) => Effect.gen(function* () {
+    const post: Post = {
+      ...input, id: `p${++postId}`, authorId,
+      published: input.published ?? false, createdAt: Date.now(),
+    }
+    yield* Ref.update(postsRef, (posts) => [...posts, post])
+    return post
+  }),
+})
+
+export const CommentServiceLive = Layer.succeed(CommentService, {
+  findByPostIds: (ids) => Ref.get(commentsRef).pipe(
+    Effect.map((comments) => comments.filter((comment) => ids.includes(comment.postId)))
+  ),
 })
 
 export const ServicesLive = Layer.mergeAll(
-  AuthServiceLive,
-  UserServiceLive,
-  PostServiceLive,
-  CommentServiceLive
+  AuthServiceLive, UserServiceLive, PostServiceLive, CommentServiceLive
 )
 ```
 
@@ -154,8 +263,10 @@ Define loaders that integrate with your services:
 
 ```typescript
 // loaders.ts
+import { Effect } from "effect"
 import { Loader } from "@effect-gql/core"
-import { UserService, PostService } from "./services"
+import { UserService, PostService, CommentService } from "./services"
+import type { User, Post, Comment } from "./domain"
 
 export const loaders = Loader.define({
   UserById: Loader.single<string, User, UserService>({
@@ -175,6 +286,13 @@ export const loaders = Loader.define({
       }),
     groupBy: (post) => post.authorId,
   }),
+  CommentsByPostId: Loader.grouped<string, Comment, CommentService>({
+    batch: (ids) => Effect.gen(function* () {
+      const service = yield* CommentService
+      return yield* service.findByPostIds(ids)
+    }),
+    groupBy: (comment) => comment.postId,
+  }),
 })
 ```
 
@@ -184,6 +302,8 @@ Compose the schema using the pipe API:
 
 ```typescript
 // schema.ts
+import { Effect } from "effect"
+import * as S from "effect/Schema"
 import {
   GraphQLSchemaBuilder,
   query,
@@ -192,24 +312,47 @@ import {
   enumType,
   field,
 } from "@effect-gql/core"
+import { UserRole, User, Post, Comment, CreateUserInput, CreatePostInput } from "./domain"
+import { AuthService, UserService, PostService } from "./services"
+import { loaders } from "./loaders"
 
 export const schema = GraphQLSchemaBuilder.empty
   .pipe(
     // Register types
-    enumType({ name: "UserRole", schema: UserRole }),
+    enumType({ name: "UserRole", values: ["ADMIN", "USER", "GUEST"] }),
     objectType({ name: "User", schema: User }),
     objectType({ name: "Post", schema: Post }),
+    objectType({ name: "Comment", schema: Comment }),
+  )
+  .pipe(
 
     // Computed fields with loaders
     field("User", "posts", {
       type: S.Array(Post),
-      resolve: (parent) => loaders.load("PostsByAuthorId", parent.id),
+      resolve: (parent: User) => loaders.load("PostsByAuthorId", parent.id),
     }),
 
     field("Post", "author", {
       type: User,
-      resolve: (parent) => loaders.load("UserById", parent.authorId),
+      resolve: (parent: Post) => loaders.load("UserById", parent.authorId),
     }),
+
+    field("Post", "comments", {
+      type: S.Array(Comment),
+      resolve: (parent: Post) => loaders.load("CommentsByPostId", parent.id),
+    }),
+    field("Post", "commentCount", {
+      type: S.Int,
+      resolve: (parent: Post) => loaders.load("CommentsByPostId", parent.id).pipe(
+        Effect.map((comments) => comments.length)
+      ),
+    }),
+    field("Comment", "author", {
+      type: User,
+      resolve: (parent: Comment) => loaders.load("UserById", parent.authorId),
+    }),
+  )
+  .pipe(
 
     // Queries
     query("me", {
@@ -230,6 +373,14 @@ export const schema = GraphQLSchemaBuilder.empty
         }),
     }),
 
+    query("posts", {
+      type: S.Array(Post),
+      resolve: () => Effect.gen(function* () {
+        const service = yield* PostService
+        return [...(yield* service.findAll())]
+      }),
+    }),
+
     // Mutations with auth
     mutation("createUser", {
       args: CreateUserInput,
@@ -243,6 +394,16 @@ export const schema = GraphQLSchemaBuilder.empty
           return yield* userService.create(args)
         }),
     }),
+    mutation("createPost", {
+      args: CreatePostInput,
+      type: Post,
+      resolve: (input) => Effect.gen(function* () {
+        const auth = yield* AuthService
+        const user = yield* auth.requireAuth()
+        const service = yield* PostService
+        return yield* service.create(user.id, input)
+      }),
+    }),
   )
   .buildSchema()
 ```
@@ -254,7 +415,7 @@ Bring everything together:
 ```typescript
 // index.ts
 import { Layer } from "effect"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { makeGraphQLRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 
@@ -262,8 +423,8 @@ import { schema } from "./schema"
 import { ServicesLive } from "./services"
 import { loaders } from "./loaders"
 
-// Combine all layers
-const AppLayer = Layer.mergeAll(ServicesLive, loaders.toLayer())
+// Supply loader dependencies, keeping application services available too.
+const AppLayer = loaders.toLayer().pipe(Layer.provideMerge(ServicesLive))
 
 // Create router
 const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
@@ -271,9 +432,9 @@ const graphqlRouter = makeGraphQLRouter(schema, AppLayer, {
   graphiql: { path: "/graphiql", endpoint: "/graphql" },
 })
 
-const app = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const app = Layer.mergeAll(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 // Start server

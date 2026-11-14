@@ -1,6 +1,7 @@
 import { Config, Option } from "effect"
-import type { ComplexityConfig } from "./complexity"
+import { ComplexityConfigFromEnv, type ComplexityConfig } from "./complexity"
 import type { CacheControlConfig } from "./cache-control"
+import { numberFromConfig } from "./config-number"
 
 /**
  * Configuration for the GraphiQL UI
@@ -97,25 +98,20 @@ export const normalizeConfig = (input: GraphQLRouterConfigInput = {}): GraphQLRo
  * - GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE: Default scope - PUBLIC or PRIVATE (default: PUBLIC)
  */
 export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> = Config.all({
-  path: Config.string("GRAPHQL_PATH").pipe(Config.withDefault("/graphql")),
-  introspection: Config.boolean("GRAPHQL_INTROSPECTION").pipe(Config.withDefault(true)),
-  graphiqlEnabled: Config.boolean("GRAPHIQL_ENABLED").pipe(Config.withDefault(false)),
-  graphiqlPath: Config.string("GRAPHIQL_PATH").pipe(Config.withDefault("/graphiql")),
-  graphiqlEndpoint: Config.string("GRAPHIQL_ENDPOINT").pipe(Config.option),
-  maxDepth: Config.number("GRAPHQL_MAX_DEPTH").pipe(Config.option),
-  maxComplexity: Config.number("GRAPHQL_MAX_COMPLEXITY").pipe(Config.option),
-  maxAliases: Config.number("GRAPHQL_MAX_ALIASES").pipe(Config.option),
-  maxFields: Config.number("GRAPHQL_MAX_FIELDS").pipe(Config.option),
-  defaultFieldComplexity: Config.number("GRAPHQL_DEFAULT_FIELD_COMPLEXITY").pipe(
-    Config.withDefault(1)
-  ),
-  cacheControlEnabled: Config.boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(
+  path: Config.String("GRAPHQL_PATH").pipe(Config.withDefault("/graphql")),
+  introspection: Config.Boolean("GRAPHQL_INTROSPECTION").pipe(Config.withDefault(true)),
+  graphiqlEnabled: Config.Boolean("GRAPHIQL_ENABLED").pipe(Config.withDefault(false)),
+  graphiqlPath: Config.String("GRAPHIQL_PATH").pipe(Config.withDefault("/graphiql")),
+  graphiqlEndpoint: Config.String("GRAPHIQL_ENDPOINT").pipe(Config.option),
+  complexity: ComplexityConfigFromEnv,
+  cacheControlEnabled: Config.Boolean("GRAPHQL_CACHE_CONTROL_ENABLED").pipe(
     Config.withDefault(false)
   ),
-  cacheControlDefaultMaxAge: Config.number("GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE").pipe(
-    Config.withDefault(0)
-  ),
-  cacheControlDefaultScope: Config.string("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
+  cacheControlDefaultMaxAge: Config.schema(
+    numberFromConfig,
+    "GRAPHQL_CACHE_CONTROL_DEFAULT_MAX_AGE"
+  ).pipe(Config.withDefault(0)),
+  cacheControlDefaultScope: Config.String("GRAPHQL_CACHE_CONTROL_DEFAULT_SCOPE").pipe(
     Config.withDefault("PUBLIC")
   ),
 }).pipe(
@@ -126,21 +122,17 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> = Co
       graphiqlEnabled,
       graphiqlPath,
       graphiqlEndpoint,
-      maxDepth,
-      maxComplexity,
-      maxAliases,
-      maxFields,
-      defaultFieldComplexity,
+      complexity,
       cacheControlEnabled,
       cacheControlDefaultMaxAge,
       cacheControlDefaultScope,
     }) => {
       // Check if any complexity option is set
       const hasComplexity =
-        Option.isSome(maxDepth) ||
-        Option.isSome(maxComplexity) ||
-        Option.isSome(maxAliases) ||
-        Option.isSome(maxFields)
+        complexity.maxDepth !== undefined ||
+        complexity.maxComplexity !== undefined ||
+        complexity.maxAliases !== undefined ||
+        complexity.maxFields !== undefined
 
       return {
         path,
@@ -151,15 +143,7 @@ export const GraphQLRouterConfigFromEnv: Config.Config<GraphQLRouterConfig> = Co
               endpoint: Option.isSome(graphiqlEndpoint) ? graphiqlEndpoint.value : path,
             }
           : (false as const),
-        complexity: hasComplexity
-          ? {
-              maxDepth: Option.getOrUndefined(maxDepth),
-              maxComplexity: Option.getOrUndefined(maxComplexity),
-              maxAliases: Option.getOrUndefined(maxAliases),
-              maxFields: Option.getOrUndefined(maxFields),
-              defaultFieldComplexity,
-            }
-          : undefined,
+        complexity: hasComplexity ? complexity : undefined,
         cacheControl: cacheControlEnabled
           ? {
               enabled: true,

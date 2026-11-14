@@ -15,6 +15,14 @@ Generate SDL from a GraphQL schema.
 
 ```typescript
 import { generateSDL } from "@effect-gql/cli"
+import { Effect } from "effect"
+import * as S from "effect/Schema"
+import { GraphQLSchemaBuilder } from "@effect-gql/core"
+
+const schema = GraphQLSchemaBuilder.empty.query("hello", {
+  type: S.String,
+  resolve: () => Effect.succeed("world"),
+}).buildSchema()
 
 const sdl = generateSDL(schema)
 
@@ -48,7 +56,7 @@ const sdl = await Effect.runPromise(
 )
 
 // With options
-const sdl = await Effect.runPromise(
+const unsortedSdl = await Effect.runPromise(
   generateSDLFromModule("./src/schema.ts", { sort: false })
 )
 ```
@@ -131,23 +139,23 @@ The `scaffold` function takes a `CreateOptions` object:
 #### Example: Custom Scaffolding Script
 
 ```typescript
-import { scaffold, SERVER_TYPES } from "@effect-gql/cli"
-import { Effect, Option, Console } from "effect"
+import { scaffold, type ServerType } from "@effect-gql/cli"
+import { Effect, Option } from "effect"
 
-const createProject = (name: string, serverType: string) =>
+const createProject = (name: string, serverType: ServerType) =>
   Effect.gen(function* () {
-    yield* Console.log(`Creating ${name} with ${serverType}...`)
+    yield* Effect.logInfo(`Creating ${name} with ${serverType}...`)
     
     yield* scaffold({
       name,
-      serverType: serverType as "node" | "bun" | "express" | "web",
+      serverType,
       directory: Option.some(`./projects/${name}`),
       monorepo: Option.some(false),
       skipInstall: true,
       packageManager: Option.some("pnpm"),
     })
     
-    yield* Console.log("Done!")
+    yield* Effect.logInfo("Done!")
   })
 
 Effect.runPromise(createProject("my-api", "node"))
@@ -210,8 +218,14 @@ The module should export one of:
 - `default` - Either of the above as the default export
 
 ```typescript
-// Any of these work:
-export const builder = GraphQLSchemaBuilder.empty.pipe(...)
+import { Effect } from "effect"
+import * as S from "effect/Schema"
+import { GraphQLSchemaBuilder } from "@effect-gql/core"
+
+export const builder = GraphQLSchemaBuilder.empty.query("hello", {
+  type: S.String,
+  resolve: () => Effect.succeed("world"),
+})
 export const schema = builder.buildSchema()
 export default builder
 ```
@@ -223,12 +237,13 @@ export default builder
 ```typescript
 // scripts/generate-schema.ts
 import { generateSDL } from "@effect-gql/cli"
+import { Effect } from "effect"
 import { builder } from "../src/schema"
-import { writeFileSync } from "fs"
+import { writeFileSync } from "node:fs"
 
 const sdl = generateSDL(builder.buildSchema())
 writeFileSync("schema.graphql", sdl)
-console.log("Generated schema.graphql")
+Effect.runSync(Effect.logInfo("Generated schema.graphql"))
 ```
 
 ### Schema Validation
@@ -243,11 +258,12 @@ const program = Effect.gen(function* () {
   const errors = validateSchema(schema)
   
   if (errors.length > 0) {
-    console.error("Schema validation errors:", errors)
-    process.exit(1)
+    yield* Effect.logError("Schema validation errors", errors)
+    process.exitCode = 1
+    return
   }
   
-  console.log("Schema is valid!")
+  yield* Effect.logInfo("Schema is valid")
 })
 
 Effect.runPromise(program)
@@ -258,18 +274,19 @@ Effect.runPromise(program)
 ```typescript
 import { generateSDLFromModule } from "@effect-gql/cli"
 import { Effect } from "effect"
-import { readFileSync } from "fs"
+import { readFileSync } from "node:fs"
 
 const program = Effect.gen(function* () {
   const currentSDL = yield* generateSDLFromModule("./src/schema.ts")
   const committedSDL = readFileSync("schema.graphql", "utf-8")
   
   if (currentSDL !== committedSDL) {
-    console.error("Schema has changed! Run 'effect-gql generate-schema' to update.")
-    process.exit(1)
+    yield* Effect.logError("Schema has changed! Run 'effect-gql generate-schema' to update.")
+    process.exitCode = 1
+    return
   }
   
-  console.log("Schema is up to date.")
+  yield* Effect.logInfo("Schema is up to date")
 })
 
 Effect.runPromise(program)

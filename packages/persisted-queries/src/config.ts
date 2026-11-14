@@ -108,15 +108,14 @@ export interface PersistedQueriesRouterOptions
  * ```typescript
  * import { PersistedQueriesConfigFromEnv } from "@effect-gql/persisted-queries"
  *
- * const config = yield* Config.unwrap(PersistedQueriesConfigFromEnv)
+ * const config = yield* PersistedQueriesConfigFromEnv
  * ```
  */
 export const PersistedQueriesConfigFromEnv: Config.Config<Omit<PersistedQueriesConfig, "store">> =
   Config.all({
-    mode: Config.literal(
-      "apq",
-      "safelist"
-    )("PERSISTED_QUERIES_MODE").pipe(Config.withDefault("apq" as const)),
-    enableGet: Config.boolean("PERSISTED_QUERIES_ENABLE_GET").pipe(Config.withDefault(true)),
-    validateHash: Config.boolean("PERSISTED_QUERIES_VALIDATE_HASH").pipe(Config.withDefault(true)),
+    mode: Config.Literals(["apq", "safelist"], "PERSISTED_QUERIES_MODE").pipe(
+      Config.withDefault("apq" as const)
+    ),
+    enableGet: Config.Boolean("PERSISTED_QUERIES_ENABLE_GET").pipe(Config.withDefault(true)),
+    validateHash: Config.Boolean("PERSISTED_QUERIES_VALIDATE_HASH").pipe(Config.withDefault(true)),
   })

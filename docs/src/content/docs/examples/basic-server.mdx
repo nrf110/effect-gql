@@ -27,7 +27,7 @@ pnpm example:basic
 ```typescript
 import { Effect, Layer } from "effect"
 import * as S from "effect/Schema"
-import { HttpRouter, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { GraphQLSchemaBuilder, query, mutation, makeGraphQLRouter } from "@effect-gql/core"
 import { serve } from "@effect-gql/node"
 
@@ -64,7 +64,7 @@ const schema = GraphQLSchemaBuilder.empty
     // Query with optional return
     query("user", {
       args: S.Struct({ id: S.String }),
-      type: S.OptionFromNullOr(User),
+      type: S.NullOr(User),
       resolve: (args) =>
         Effect.succeed(users.find((u) => u.id === args.id) ?? null),
     }),
@@ -97,17 +97,19 @@ const graphqlRouter = makeGraphQLRouter(schema, Layer.empty, {
 })
 
 // Compose with other routes
-const app = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.concat(graphqlRouter)
+const app = Layer.mergeAll(
+  HttpRouter.add("GET", "/health", HttpServerResponse.json({ status: "ok" })),
+  graphqlRouter
 )
 
 // Start the server
 serve(app, Layer.empty, {
   port: 4000,
   onStart: (url) => {
-    console.log(`Server ready at ${url}`)
-    console.log(`GraphiQL: ${url}/graphiql`)
+    Effect.runSync(Effect.logInfo("Server ready", {
+      url,
+      graphiql: `${url}/graphiql`,
+    }))
   },
 })
 ```
@@ -156,12 +158,12 @@ Try these in GraphiQL:
 
 ```graphql
 # Simple query
-query {
+query Hello {
   hello
 }
 
 # Get all users
-query {
+query AllUsers {
   users {
     id
     name
@@ -170,7 +172,7 @@ query {
 }
 
 # Get user by ID
-query {
+query UserById {
   user(id: "1") {
     name
     email
@@ -178,7 +180,7 @@ query {
 }
 
 # Create a new user
-mutation {
+mutation CreateUser {
   createUser(name: "Charlie", email: "charlie@example.com") {
     id
     name

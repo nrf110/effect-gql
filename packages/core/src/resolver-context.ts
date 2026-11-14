@@ -62,11 +62,19 @@ export interface ResolverContextSlot<A> {
  */
 export interface ResolverContextStore {
   readonly ref: Ref.Ref<HashMap.HashMap<string, unknown>>
+  readonly scoped?: { readonly name: string; readonly parent: ResolverContextStore }
 }
 
-export const ResolverContextStore = Context.GenericTag<ResolverContextStore>(
+export const ResolverContextStore = Context.Service<ResolverContextStore>(
   "effect-gql/ResolverContextStore"
 )
+
+const storeForSlot = (store: ResolverContextStore, name: string): ResolverContextStore => {
+  while (store.scoped && store.scoped.name !== name) {
+    store = store.scoped.parent
+  }
+  return store
+}
 
 /**
  * Create a Layer that provides the ResolverContextStore.
@@ -121,7 +129,7 @@ export const get = <A>(
   slot: ResolverContextSlot<A>
 ): Effect.Effect<A, MissingResolverContextError, ResolverContextStore> =>
   Effect.flatMap(ResolverContextStore, (store) =>
-    Effect.flatMap(Ref.get(store.ref), (map) => {
+    Effect.flatMap(Ref.get(storeForSlot(store, slot.name).ref), (map) => {
       const value = HashMap.get(map, slot.name)
       return Option.match(value, {
         onNone: () => Effect.fail(new MissingResolverContextError(slot.name)),
@@ -140,7 +148,10 @@ export const getOption = <A>(
   slot: ResolverContextSlot<A>
 ): Effect.Effect<Option.Option<A>, never, ResolverContextStore> =>
   Effect.flatMap(ResolverContextStore, (store) =>
-    Effect.map(Ref.get(store.ref), (map) => HashMap.get(map, slot.name) as Option.Option<A>)
+    Effect.map(
+      Ref.get(storeForSlot(store, slot.name).ref),
+      (map) => HashMap.get(map, slot.name) as Option.Option<A>
+    )
   )
 
 /**
@@ -164,7 +175,7 @@ export const set = <A>(
   value: A
 ): Effect.Effect<void, never, ResolverContextStore> =>
   Effect.flatMap(ResolverContextStore, (store) =>
-    Ref.update(store.ref, (map) => HashMap.set(map, slot.name, value))
+    Ref.update(storeForSlot(store, slot.name).ref, (map) => HashMap.set(map, slot.name, value))
   )
 
 /**
@@ -174,13 +185,21 @@ export const setMany = (
   values: ReadonlyArray<readonly [ResolverContextSlot<any>, any]>
 ): Effect.Effect<void, never, ResolverContextStore> =>
   Effect.flatMap(ResolverContextStore, (store) =>
-    Ref.update(store.ref, (map) => {
-      let result = map
-      for (const [slot, value] of values) {
-        result = HashMap.set(result, slot.name, value)
-      }
-      return result
-    })
+    store.scoped
+      ? Effect.gen(function* () {
+          for (const [slot, value] of values) {
+            yield* Ref.update(storeForSlot(store, slot.name).ref, (map) =>
+              HashMap.set(map, slot.name, value)
+            )
+          }
+        })
+      : Ref.update(store.ref, (map) => {
+          let result = map
+          for (const [slot, value] of values) {
+            result = HashMap.set(result, slot.name, value)
+          }
+          return result
+        })
   )
 
 /**
@@ -190,7 +209,7 @@ export const has = <A>(
   slot: ResolverContextSlot<A>
 ): Effect.Effect<boolean, never, ResolverContextStore> =>
   Effect.flatMap(ResolverContextStore, (store) =>
-    Effect.map(Ref.get(store.ref), (map) => HashMap.has(map, slot.name))
+    Effect.map(Ref.get(storeForSlot(store, slot.name).ref), (map) => HashMap.has(map, slot.name))
   )
 
 /**
@@ -201,38 +220,28 @@ export const getOrElse = <A>(
   orElse: () => A
 ): Effect.Effect<A, never, ResolverContextStore> =>
   Effect.flatMap(ResolverContextStore, (store) =>
-    Effect.map(Ref.get(store.ref), (map) =>
+    Effect.map(Ref.get(storeForSlot(store, slot.name).ref), (map) =>
       Option.getOrElse(HashMap.get(map, slot.name) as Option.Option<A>, orElse)
     )
   )
 
 /**
- * Run an effect with a temporary context value.
- * The value is set before the effect runs and removed after.
- * Useful for scoped context that shouldn't persist.
+ * Run an effect with a temporary value isolated from parent and sibling scopes.
+ * Other slots remain shared with the request; nested effects inherit this override.
  */
 export const scoped =
   <A>(slot: ResolverContextSlot<A>, value: A) =>
   <B, E, R>(effect: Effect.Effect<B, E, R>): Effect.Effect<B, E, R | ResolverContextStore> =>
-    Effect.flatMap(ResolverContextStore, (store) =>
-      Effect.acquireUseRelease(
-        // Acquire: save current value and set new one
-        Effect.flatMap(Ref.get(store.ref), (map) => {
-          const previous = HashMap.get(map, slot.name)
-          return Effect.as(Ref.set(store.ref, HashMap.set(map, slot.name, value)), previous)
-        }),
-        // Use: run the effect
-        () => effect,
-        // Release: restore previous value
-        (previous) =>
-          Ref.update(store.ref, (map) =>
-            Option.match(previous, {
-              onNone: () => HashMap.remove(map, slot.name),
-              onSome: (v) => HashMap.set(map, slot.name, v),
-            })
-          )
+    Effect.gen(function* () {
+      const store = yield* ResolverContextStore
+      const ref = yield* Ref.make<HashMap.HashMap<string, unknown>>(
+        HashMap.make([slot.name, value])
       )
-    )
+      return yield* Effect.provideService(effect, ResolverContextStore, {
+        ref,
+        scoped: { name: slot.name, parent: store },
+      })
+    })
 
 /**
  * Namespace for ResolverContext functions

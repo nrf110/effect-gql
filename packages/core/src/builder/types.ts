@@ -1,4 +1,4 @@
-import { Effect, Runtime, Stream } from "effect"
+import { Context, Effect, Stream } from "effect"
 import * as S from "effect/Schema"
 import { DirectiveLocation, GraphQLResolveInfo } from "graphql"
 import type { FieldComplexity } from "../server/complexity"
@@ -38,9 +38,9 @@ export interface CacheHint {
 /**
  * Configuration for a query or mutation field
  */
-export interface FieldRegistration<Args = any, A = any, E = any, R = any> {
-  type: S.Schema<A, any, any>
-  args?: S.Schema<Args, any, any>
+export interface FieldRegistration<Args = any, A = any, E = any, R = any, RArgs = never> {
+  type: S.Schema<A>
+  args?: S.Decoder<Args, RArgs>
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
@@ -76,7 +76,7 @@ export interface FieldRegistration<Args = any, A = any, E = any, R = any> {
  */
 export interface TypeRegistration {
   name: string
-  schema: S.Schema<any, any, any>
+  schema: S.Schema<any>
   description?: string
   implements?: readonly string[]
   directives?: readonly DirectiveApplication[]
@@ -96,7 +96,7 @@ export interface TypeRegistration {
  */
 export interface InterfaceRegistration {
   name: string
-  schema: S.Schema<any, any, any>
+  schema: S.Schema<any>
   resolveType: (value: any) => string
   directives?: readonly DirectiveApplication[]
 }
@@ -126,7 +126,7 @@ export interface UnionRegistration {
  */
 export interface InputTypeRegistration {
   name: string
-  schema: S.Schema<any, any, any>
+  schema: S.Schema<any>
   description?: string
   directives?: readonly DirectiveApplication[]
 }
@@ -146,7 +146,7 @@ export interface DirectiveRegistration<Args = any, R = never> {
   name: string
   description?: string
   locations: readonly DirectiveLocation[]
-  args?: S.Schema<Args, any, any>
+  args?: S.Schema<Args>
   /**
    * For executable directives - transforms the resolver Effect.
    * Called with directive args, returns an Effect transformer.
@@ -224,9 +224,15 @@ export interface MiddlewareRegistration<R = never> {
  * Configuration for a subscription field
  * Returns a Stream that yields values over time
  */
-export interface SubscriptionFieldRegistration<Args = any, A = any, E = any, R = any> {
-  type: S.Schema<A, any, any>
-  args?: S.Schema<Args, any, any>
+export interface SubscriptionFieldRegistration<
+  Args = any,
+  A = any,
+  E = any,
+  R = any,
+  RArgs = never,
+> {
+  type: S.Schema<A>
+  args?: S.Decoder<Args, RArgs>
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
@@ -256,9 +262,16 @@ export interface SubscriptionFieldRegistration<Args = any, A = any, E = any, R =
 /**
  * Configuration for a field on an object type
  */
-export interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = any, R = any> {
-  type: S.Schema<A, any, any>
-  args?: S.Schema<Args, any, any>
+export interface ObjectFieldRegistration<
+  Parent = any,
+  Args = any,
+  A = any,
+  E = any,
+  R = any,
+  RArgs = never,
+> {
+  type: S.Schema<A>
+  args?: S.Decoder<Args, RArgs>
   description?: string
   directives?: readonly DirectiveApplication[]
   /**
@@ -286,12 +299,43 @@ export interface ObjectFieldRegistration<Parent = any, Args = any, A = any, E = 
   resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R>
 }
 
+type ObjectFieldServices<Field> = Field extends {
+  resolve: (...args: never[]) => Effect.Effect<unknown, unknown, infer R>
+}
+  ?
+      | R
+      | (Field extends { args?: infer Args }
+          ? Args extends S.Decoder<unknown, infer RArgs>
+            ? RArgs
+            : never
+          : never)
+  : never
+
 /**
- * GraphQL context that contains the Effect runtime
+ * Requirements of every possible inline field map, resolver, and argument decoder.
+ */
+export type ObjectFieldsServices<Fields> = Fields extends unknown
+  ? {
+      [K in keyof Fields]-?: ObjectFieldServices<NonNullable<Fields[K]>>
+    }[keyof Fields]
+  : never
+
+/**
+ * GraphQL context containing the request's Effect services.
  */
 export interface GraphQLEffectContext<R> {
-  runtime: Runtime.Runtime<R>
+  services: Context.Context<R>
 }
+
+declare const subscriptionContextBrand: unique symbol
+
+/**
+ * A context created by makeSubscriptionContext for one subscription operation.
+ * The private registration, not a copied property, establishes runtime identity.
+ */
+export type SubscriptionContext<
+  C extends GraphQLEffectContext<never> = GraphQLEffectContext<never>,
+> = C & { readonly [subscriptionContextBrand]: true }
 
 /**
  * Type registries used during schema building

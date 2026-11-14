@@ -1,4 +1,4 @@
-import { Effect, Layer, Stream } from "effect"
+import { Cause, Context, Effect, Layer, Stream } from "effect"
 import {
   GraphQLSchema,
   parse,
@@ -10,7 +10,7 @@ import {
   type DocumentNode,
   type OperationDefinitionNode,
 } from "graphql"
-import type { GraphQLEffectContext } from "../builder/types"
+import { makeSubscriptionContext, subscriptionOperations } from "../subscription-context"
 import {
   SSEError,
   type GraphQLSSEOptions,
@@ -64,224 +64,265 @@ export const makeSSESubscriptionStream = <R>(
 ): Stream.Stream<SSEEvent, SSEError> => {
   const complexityConfig = options?.complexity
   const fieldComplexities: FieldComplexityMap = options?.fieldComplexities ?? new Map()
+  const onComplete = options?.onComplete
 
   return Stream.unwrap(
     Effect.gen(function* () {
-      // Create a runtime from the layer
-      const runtime = yield* Effect.provide(Effect.runtime<R>(), layer)
+      // Keep the service layer alive until the subscription stream is finalized.
+      const ambient = yield* Effect.context<never>()
+      const memoMap = yield* Layer.makeMemoMap
+      const scope = yield* Effect.scope
+      const services = Context.merge(ambient, yield* Layer.buildWithMemoMap(layer, memoMap, scope))
 
-      // Run onConnect hook if provided
-      let connectionContext: Record<string, unknown> = {}
-      if (options?.onConnect) {
-        try {
-          connectionContext = yield* Effect.provide(options.onConnect(request, headers), layer)
-        } catch {
-          // Connection rejected
-          return Stream.make(
-            formatErrorEvent([
-              new GraphQLError("Subscription connection rejected", {
-                extensions: { code: "CONNECTION_REJECTED" },
-              }),
-            ]),
-            formatCompleteEvent()
-          )
-        }
+      const ctx: SSEConnectionContext<R> = {
+        services,
+        request,
+        connectionContext: {},
       }
-
-      // Parse the query
-      let document: DocumentNode
-      try {
-        document = parse(request.query)
-      } catch (syntaxError) {
-        return Stream.make(formatErrorEvent([syntaxError]), formatCompleteEvent())
-      }
-
-      // Validate the query
-      const validationErrors = validate(schema, document)
-      if (validationErrors.length > 0) {
-        return Stream.make(formatErrorEvent(validationErrors), formatCompleteEvent())
-      }
-
-      // Find the subscription operation
-      const operations = document.definitions.filter(
-        (d): d is OperationDefinitionNode => d.kind === Kind.OPERATION_DEFINITION
-      )
-
-      const operation = request.operationName
-        ? operations.find((o) => o.name?.value === request.operationName)
-        : operations[0]
-
-      if (!operation) {
-        return Stream.make(
-          formatErrorEvent([new GraphQLError("No operation found in query")]),
-          formatCompleteEvent()
+      let completed = false
+      let streaming = false
+      let closeSource: Effect.Effect<void> = Effect.void
+      const connectionAbort = new AbortController()
+      const pendingWork = new Set<Promise<unknown>>()
+      const runHook = (hook: () => Effect.Effect<void, never, R>) =>
+        Effect.suspend(hook).pipe(
+          Effect.provide(services),
+          Effect.catchCause(() => Effect.void),
+          Effect.uninterruptible
         )
-      }
+      const errorStream = (errors: readonly unknown[], error: unknown = errors) =>
+        Stream.unwrap(
+          closeSource.pipe(
+            Effect.andThen(
+              options?.onError ? runHook(() => options.onError!(ctx, error)) : Effect.void
+            ),
+            Effect.as(Stream.make(formatErrorEvent(errors), formatCompleteEvent()))
+          )
+        )
 
-      if (operation.operation !== "subscription") {
-        return Stream.make(
-          formatErrorEvent([
+      const setup = Effect.gen(function* () {
+        // Run onConnect hook if provided
+        let connectionContext: Record<string, unknown> = {}
+        if (options?.onConnect) {
+          const connected = yield* Effect.try({
+            try: () => options.onConnect!(request, headers),
+            catch: (error) => error,
+          }).pipe(
+            Effect.flatMap((effect) => effect),
+            Effect.provide(services),
+            Effect.match({
+              onFailure: (error) =>
+                new GraphQLError(error instanceof Error ? error.message : String(error), {
+                  extensions: { code: "CONNECTION_REJECTED" },
+                }),
+              onSuccess: (value) => value,
+            })
+          )
+          if (connected instanceof GraphQLError) {
+            return errorStream([connected])
+          }
+          connectionContext = connected
+          Object.assign(ctx.connectionContext, connectionContext)
+        }
+
+        // Parse the query
+        let document: DocumentNode
+        try {
+          document = parse(request.query)
+        } catch (syntaxError) {
+          return errorStream([syntaxError], syntaxError)
+        }
+
+        // Validate the query
+        const validationErrors = validate(schema, document)
+        if (validationErrors.length > 0) {
+          return errorStream(validationErrors)
+        }
+
+        // Find the subscription operation
+        const operations = document.definitions.filter(
+          (d): d is OperationDefinitionNode => d.kind === Kind.OPERATION_DEFINITION
+        )
+
+        const operation = request.operationName
+          ? operations.find((o) => o.name?.value === request.operationName)
+          : operations[0]
+
+        if (!operation) {
+          return errorStream([new GraphQLError("No operation found in query")])
+        }
+
+        if (operation.operation !== "subscription") {
+          return errorStream([
             new GraphQLError(
               `SSE endpoint only supports subscriptions, received: ${operation.operation}`,
               { extensions: { code: "OPERATION_NOT_SUPPORTED" } }
             ),
-          ]),
-          formatCompleteEvent()
-        )
-      }
-
-      // Validate complexity if configured
-      if (complexityConfig) {
-        const complexityResult = yield* validateComplexity(
-          request.query,
-          request.operationName,
-          request.variables,
-          schema,
-          fieldComplexities,
-          complexityConfig
-        ).pipe(
-          Effect.map(() => null),
-          Effect.catchAll((error) => {
-            if (error._tag === "ComplexityLimitExceededError") {
-              return Effect.succeed(
-                new GraphQLError(error.message, {
-                  extensions: {
-                    code: "COMPLEXITY_LIMIT_EXCEEDED",
-                    limitType: error.limitType,
-                    limit: error.limit,
-                    actual: error.actual,
-                  },
-                })
-              )
-            }
-            // Log analysis errors but don't block (fail open)
-            return Effect.logWarning("Complexity analysis failed for SSE subscription", error).pipe(
-              Effect.map(() => null)
-            )
-          })
-        )
-
-        if (complexityResult) {
-          return Stream.make(formatErrorEvent([complexityResult]), formatCompleteEvent())
+          ])
         }
-      }
 
-      // Build the context for the subscription
-      const ctx: SSEConnectionContext<R> = {
-        runtime,
-        request,
-        connectionContext,
-      }
-
-      // Call onSubscribe hook if provided
-      if (options?.onSubscribe) {
-        yield* Effect.provide(options.onSubscribe(ctx), layer).pipe(
-          Effect.catchAll(() => Effect.void)
-        )
-      }
-
-      // Execute the subscription
-      const graphqlContext: GraphQLEffectContext<R> & Record<string, unknown> = {
-        runtime,
-        ...connectionContext,
-      }
-
-      const subscriptionResult = yield* Effect.tryPromise({
-        try: () =>
-          subscribe({
+        // Validate complexity if configured
+        if (complexityConfig) {
+          const complexityResult = yield* validateComplexity(
+            request.query,
+            request.operationName,
+            request.variables,
             schema,
-            document,
-            variableValues: request.variables,
-            operationName: request.operationName ?? undefined,
-            contextValue: graphqlContext,
-          }),
-        catch: (error) => new SSEError({ cause: error }),
-      })
-
-      // Check if subscribe returned an error result instead of async iterator
-      if (!isAsyncIterable(subscriptionResult)) {
-        // It's an ExecutionResult with errors
-        const result = subscriptionResult as ExecutionResult
-        if (result.errors) {
-          return Stream.make(formatErrorEvent(result.errors), formatCompleteEvent())
-        }
-        // Shouldn't happen, but handle gracefully
-        return Stream.make(formatNextEvent(result), formatCompleteEvent())
-      }
-
-      // Create a stream from the async iterator
-      const asyncIterator = subscriptionResult[Symbol.asyncIterator]()
-
-      const eventStream = Stream.async<SSEEvent, SSEError>((emit) => {
-        let done = false
-
-        const iterate = async () => {
-          try {
-            while (!done) {
-              const result = await asyncIterator.next()
-              if (result.done) {
-                emit.end()
-                break
+            fieldComplexities,
+            complexityConfig
+          ).pipe(
+            Effect.map(() => null),
+            Effect.catch((error) => {
+              if (error._tag === "ComplexityLimitExceededError") {
+                return Effect.succeed(
+                  new GraphQLError(error.message, {
+                    extensions: {
+                      code: "COMPLEXITY_LIMIT_EXCEEDED",
+                      limitType: error.limitType,
+                      limit: error.limit,
+                      actual: error.actual,
+                    },
+                  })
+                )
               }
-              emit.single(formatNextEvent(result.value))
-            }
-          } catch (error) {
-            if (!done) {
-              emit.single(
-                formatErrorEvent([
-                  error instanceof GraphQLError
-                    ? error
-                    : new GraphQLError(
-                        error instanceof Error ? error.message : "Subscription error",
-                        { extensions: { code: "SUBSCRIPTION_ERROR" } }
-                      ),
-                ])
-              )
-              emit.end()
-            }
+              // Log analysis errors but don't block (fail open)
+              return Effect.logWarning(
+                "Complexity analysis failed for SSE subscription",
+                error
+              ).pipe(Effect.map(() => null))
+            })
+          )
+
+          if (complexityResult) {
+            return errorStream([complexityResult], complexityResult)
           }
         }
 
-        iterate()
+        // Call onSubscribe hook if provided
+        if (options?.onSubscribe) {
+          yield* Effect.provide(
+            Effect.suspend(() => options.onSubscribe!(ctx)),
+            services
+          )
+        }
 
-        // Return cleanup function
-        return Effect.sync(() => {
-          done = true
-          asyncIterator.return?.()
+        // Execute the subscription
+        const graphqlContext = makeSubscriptionContext({
+          ...connectionContext,
+          services,
         })
-      })
+        const operationState = subscriptionOperations.get(graphqlContext)!
+        operationState.runOptions = { signal: connectionAbort.signal }
+        operationState.pendingWork = pendingWork
 
-      // Add complete event at the end and handle cleanup
-      return eventStream.pipe(
-        Stream.onDone(() =>
-          Effect.gen(function* () {
-            yield* Effect.sync(() => {})
-          }).pipe(Effect.asVoid)
-        ),
-        Stream.concat(Stream.make(formatCompleteEvent())),
-        Stream.onDone(() => {
-          if (options?.onComplete) {
-            return Effect.provide(options.onComplete(ctx), layer).pipe(
-              Effect.catchAll(() => Effect.void)
-            )
+        const subscriptionResult = yield* Effect.tryPromise({
+          try: () =>
+            subscribe({
+              schema,
+              document,
+              variableValues: request.variables,
+              operationName: request.operationName ?? undefined,
+              contextValue: graphqlContext,
+            }),
+          catch: (error) => new SSEError({ cause: error }),
+        })
+
+        // Check if subscribe returned an error result instead of async iterator
+        if (!isAsyncIterable(subscriptionResult)) {
+          // It's an ExecutionResult with errors
+          const result = subscriptionResult as ExecutionResult
+          if (result.errors) {
+            return errorStream(result.errors)
           }
-          return Effect.void
-        })
-      )
-    }).pipe(
-      Effect.catchAll((error) =>
-        Effect.succeed(
-          Stream.make(
-            formatErrorEvent([
-              new GraphQLError(error instanceof Error ? error.message : "Internal error", {
-                extensions: { code: "INTERNAL_ERROR" },
-              }),
-            ]),
-            formatCompleteEvent()
+          // Shouldn't happen, but handle gracefully
+          return Stream.make(formatNextEvent(result), formatCompleteEvent())
+        }
+
+        streaming = true
+        const iterator = subscriptionResult[Symbol.asyncIterator]()
+        let closing: Promise<unknown> | undefined
+        // The native adapter does not await return() while next() is pending.
+        // Own it here so resolver cleanup finishes before lifecycle hooks.
+        closeSource = Effect.tryPromise({
+          try: () => (closing ??= Promise.resolve().then(() => iterator.return?.())),
+          catch: (error) => error,
+        }).pipe(
+          Effect.asVoid,
+          Effect.catchCause(() => Effect.void),
+          Effect.uninterruptible
+        )
+        return Stream.fromAsyncIterable(
+          { [Symbol.asyncIterator]: () => ({ next: () => iterator.next() }) },
+          (error) => error
+        ).pipe(
+          Stream.mapEffect((result) =>
+            Effect.gen(function* () {
+              if (result.errors?.length && options?.onError) {
+                yield* runHook(() => options.onError!(ctx, result.errors))
+              }
+              return yield* Effect.try({
+                try: () => formatNextEvent(result),
+                catch: (error) => error,
+              })
+            })
+          ),
+          Stream.concat(Stream.make(formatCompleteEvent())),
+          Stream.catch((error) =>
+            errorStream(
+              [
+                error instanceof GraphQLError
+                  ? error
+                  : new GraphQLError(
+                      error instanceof Error ? error.message : "Subscription error",
+                      {
+                        extensions: { code: "SUBSCRIPTION_ERROR" },
+                      }
+                    ),
+              ],
+              error
+            )
           )
         )
+      }).pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterrupts(cause)) return Effect.failCause(cause).pipe(Effect.orDie)
+          const error = Cause.squash(cause)
+          return Effect.succeed(
+            errorStream(
+              [
+                new GraphQLError(error instanceof Error ? error.message : "Internal error", {
+                  extensions: { code: "INTERNAL_ERROR" },
+                }),
+              ],
+              error
+            )
+          )
+        })
       )
-    )
+
+      return Stream.unwrap(setup).pipe(
+        Stream.tap((event) =>
+          Effect.sync(() => {
+            if (event.event === "complete") completed = true
+          })
+        ),
+        Stream.ensuring(
+          Effect.gen(function* () {
+            connectionAbort.abort()
+            yield* closeSource
+            while (pendingWork.size > 0) {
+              yield* Effect.promise(() => Promise.allSettled(pendingWork))
+            }
+            if (!completed && options?.onDisconnect) {
+              yield* runHook(() => options.onDisconnect!(ctx))
+            }
+            if (streaming && onComplete) {
+              yield* runHook(() => onComplete(ctx))
+            }
+          })
+        )
+      )
+    })
   )
 }
 

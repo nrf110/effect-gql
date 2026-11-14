@@ -1,4 +1,4 @@
-import { Data, Effect, Runtime, Stream } from "effect"
+import { Context, Data, Effect, Stream } from "effect"
 import type { ExecutionResult } from "graphql"
 import type { ComplexityConfig, FieldComplexityMap } from "./complexity"
 
@@ -81,10 +81,10 @@ export interface SSESubscriptionRequest {
  */
 export interface SSEConnectionContext<R> {
   /**
-   * The Effect runtime for this connection.
-   * Use this to run Effects within the connection scope.
+   * Effect services available for the lifetime of this subscription.
+   * Use Effect.runPromiseWith(services) to run Effects in the connection scope.
    */
-  readonly runtime: Runtime.Runtime<R>
+  readonly services: Context.Context<R>
 
   /**
    * The original subscription request.
@@ -147,17 +147,29 @@ export interface GraphQLSSEOptions<R> {
   readonly onSubscribe?: (ctx: SSEConnectionContext<R>) => Effect.Effect<void, never, R>
 
   /**
-   * Called when the subscription completes (normally or due to error).
+   * Called once when an established subscription iterator finalizes, including
+   * normal completion, execution failure, and consumer cancellation.
+   * Runs after iterator and resolver cleanup, before connection services release.
+   * Not called for setup failures that do not produce a subscription iterator.
+   * Hook construction and Effect failures are ignored after being awaited.
    */
   readonly onComplete?: (ctx: SSEConnectionContext<R>) => Effect.Effect<void, never, R>
 
   /**
-   * Called when the client disconnects.
+   * Called once when the consumer cancels or the client disconnects, including
+   * during setup. Not called on normal completion or a delivered terminal error.
+   * Runs after source cleanup and before onComplete, with services still alive.
+   * Hook failures are ignored after being awaited; cancellation is not an error.
    */
   readonly onDisconnect?: (ctx: SSEConnectionContext<R>) => Effect.Effect<void, never, R>
 
   /**
-   * Called when an error occurs during subscription execution.
+   * Called for setup failures, iterator/serialization failures, and each GraphQL
+   * ExecutionResult containing errors, before the corresponding SSE event.
+   * Receives the thrown failure or the ExecutionResult/validation error array.
+   * GraphQL result errors remain in their existing next/error wire events.
+   * Runs with connection services available; hook failures are ignored after
+   * being awaited. Consumer cancellation does not invoke this hook.
    */
   readonly onError?: (ctx: SSEConnectionContext<R>, error: unknown) => Effect.Effect<void, never, R>
 }

@@ -11,7 +11,7 @@ import {
  *
  * Note: These tests run on Node.js via vitest to verify the GraphQL routing
  * logic works correctly. The test utilities use Node.js http server with
- * HttpApp.toWebHandlerLayer(), which tests the same code paths that would
+ * HttpRouter.toWebHandler(), which tests the same code paths that would
  * be used by the Bun server.
  *
  * For true Bun runtime testing, use `bun test` with Bun's native test runner.

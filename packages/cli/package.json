@@ -1,6 +1,6 @@
 {
   "name": "@effect-gql/cli",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "description": "CLI tools for Effect GraphQL development",
   "repository": {
     "url": "https://github.com/nrf110/effect-gql"
@@ -31,8 +31,8 @@
     "test:watch": "vitest"
   },
   "peerDependencies": {
-    "@effect-gql/core": "^1.5.0",
-    "effect": "^3.19.0",
+    "@effect-gql/core": "^2.0.0",
+    "effect": "^4.1.1",
     "graphql": "^16.0.0"
   },
   "dependencies": {
@@ -40,7 +40,7 @@
   },
   "devDependencies": {
     "@effect-gql/core": "workspace:*",
-    "effect": "^3.19.15",
+    "effect": "^4.1.1",
     "graphql": "^16.0.0"
   },
   "keywords": [

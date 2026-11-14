@@ -142,7 +142,7 @@ const main = Effect.gen(function* () {
 
 Effect.runPromise(
   main.pipe(
-    Effect.catchAll((error) =>
+    Effect.catch((error) =>
       Console.error(`Error: ${error.message}`).pipe(
         Effect.andThen(
           Effect.sync(() => {

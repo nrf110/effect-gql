@@ -182,16 +182,16 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a query field
    */
-  query<A, E, R2, Args = void>(
+  query<A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
-  ): FederatedSchemaBuilder<R | R2> {
+  ): FederatedSchemaBuilder<R | R2 | RArgs> {
     return this.with({
       coreBuilder: this.state.coreBuilder.query(name, config) as GraphQLSchemaBuilder<any>,
     })
@@ -200,16 +200,16 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a mutation field
    */
-  mutation<A, E, R2, Args = void>(
+  mutation<A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (args: Args) => Effect.Effect<A, E, R2>
     }
-  ): FederatedSchemaBuilder<R | R2> {
+  ): FederatedSchemaBuilder<R | R2 | RArgs> {
     return this.with({
       coreBuilder: this.state.coreBuilder.mutation(name, config) as GraphQLSchemaBuilder<any>,
     })
@@ -218,17 +218,17 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a subscription field
    */
-  subscription<A, E, R2, Args = void>(
+  subscription<A, E, R2, Args = void, RArgs = never>(
     name: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       subscribe: (args: Args) => Effect.Effect<import("effect").Stream.Stream<A, E, R2>, E, R2>
       resolve?: (value: A, args: Args) => Effect.Effect<A, E, R2>
     }
-  ): FederatedSchemaBuilder<R | R2> {
+  ): FederatedSchemaBuilder<R | R2 | RArgs> {
     return this.with({
       coreBuilder: this.state.coreBuilder.subscription(name, config) as GraphQLSchemaBuilder<any>,
     })
@@ -239,7 +239,7 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   objectType<A, R2 = never>(config: {
     name?: string
-    schema: S.Schema<A, any, any>
+    schema: S.Schema<A>
     implements?: readonly string[]
     directives?: readonly DirectiveApplication[]
   }): FederatedSchemaBuilder<R | R2> {
@@ -253,7 +253,7 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   interfaceType(config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     resolveType?: (value: any) => string
     directives?: readonly DirectiveApplication[]
   }): FederatedSchemaBuilder<R> {
@@ -295,7 +295,7 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
    */
   inputType(config: {
     name?: string
-    schema: S.Schema<any, any, any>
+    schema: S.Schema<any>
     description?: string
     directives?: readonly DirectiveApplication[]
   }): FederatedSchemaBuilder<R> {
@@ -307,17 +307,17 @@ export class FederatedSchemaBuilder<R = never> implements Pipeable.Pipeable {
   /**
    * Add a computed/relational field to an object type
    */
-  field<Parent, A, E, R2, Args = void>(
+  field<Parent, A, E, R2, Args = void, RArgs = never>(
     typeName: string,
     fieldName: string,
     config: {
-      type: S.Schema<A, any, any>
-      args?: S.Schema<Args, any, any>
+      type: S.Schema<A>
+      args?: S.Decoder<Args, RArgs>
       description?: string
       directives?: readonly DirectiveApplication[]
       resolve: (parent: Parent, args: Args) => Effect.Effect<A, E, R2>
     }
-  ): FederatedSchemaBuilder<R | R2> {
+  ): FederatedSchemaBuilder<R | R2 | RArgs> {
     return this.with({
       coreBuilder: this.state.coreBuilder.field(
         typeName,

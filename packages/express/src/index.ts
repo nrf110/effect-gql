@@ -1,4 +1,4 @@
-export { toMiddleware } from "./middleware"
+export { toMiddleware, type ToMiddlewareOptions } from "./middleware"
 
 // WebSocket subscription support
 export { attachWebSocket, type ExpressWSOptions } from "./ws"

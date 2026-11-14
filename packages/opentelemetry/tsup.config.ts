@@ -10,7 +10,6 @@ export default defineConfig({
   treeshake: true,
   external: [
     "effect",
-    "@effect/platform",
     "@effect/opentelemetry",
     "@effect-gql/core",
     "graphql",
